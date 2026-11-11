@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import os
 
+WINDOWS = os.name == "nt"
+
 # Where things are installed. The installer puts the speech models in "models" here.
-INSTALL_DIR = os.path.expanduser(os.environ.get("LS_INSTALL_DIR", "~/linux-speaking"))
+INSTALL_DIR = os.path.normpath(os.path.expanduser(
+    os.environ.get("LS_INSTALL_DIR", "~/linux-speaking")))
 _OWN_MODELS = os.path.join(INSTALL_DIR, "models")
 _SPEECH_NOTE = os.path.expanduser(
     "~/.var/app/net.mkiol.SpeechNote/cache/net.mkiol/dsnote/speech-models"
@@ -23,9 +26,14 @@ USE_CONTEXT = os.environ.get("LS_USE_CONTEXT", "1") == "1"
 CONTEXT_CHARS = int(os.environ.get("LS_CONTEXT_CHARS", "200"))
 # Show a desktop notification on wake up and go to sleep.
 NOTIFY = os.environ.get("LS_NOTIFY", "1") == "1"
-STATE_FILE = os.path.expanduser(
-    os.environ.get("LS_STATE_FILE", "~/.local/state/linux-speaking/state")
-)
+# On Windows everything is kept together in the install folder.
+STATE_FILE = os.path.expanduser(os.environ.get("LS_STATE_FILE") or (
+    os.path.join(INSTALL_DIR, "state", "state") if WINDOWS
+    else "~/.local/state/linux-speaking/state"))
+SETTINGS_FILE = os.path.expanduser(os.environ.get("LS_SETTINGS_FILE") or (
+    os.path.join(INSTALL_DIR, "settings.json") if WINDOWS
+    else "~/.config/linux-speaking/settings.json"))
+LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "log.txt")  # Windows, with no console
 RATE = 16000
 FRAME = 320  # samples per 20 ms frame
 PREROLL_FRAMES = 15  # audio kept from before a phrase starts (300 ms)
@@ -48,9 +56,14 @@ PENDING_EXTENSION = os.path.expanduser(
 CHOICE_SECONDS = float(os.environ.get("LS_CHOICE_SECONDS", "20"))
 # The Thunderbird add-on connects to this port on this computer. LS_MAIL=0 turns it off.
 MAIL_PORT = int(os.environ.get("LS_MAIL_PORT", "47613"))
-MAIL = os.environ.get("LS_MAIL", "1") == "1"
+MAIL = os.environ.get("LS_MAIL", "0" if WINDOWS else "1") == "1"
 # Dictation into Kate and KWrite, through the accessibility interface. LS_EDITOR=0 turns it off.
-EDITOR = os.environ.get("LS_EDITOR", "1") == "1"
+EDITOR = os.environ.get("LS_EDITOR", "0" if WINDOWS else "1") == "1"
+# On Windows, typing into any other text box, when the "other programs" setting is on.
+# LS_OTHER=0 turns it off altogether.
+OTHER = os.environ.get("LS_OTHER", "1" if WINDOWS else "0") == "1"
+# Dictation into Microsoft Word and Outlook, on Windows. LS_OFFICE=0 turns it off.
+OFFICE = os.environ.get("LS_OFFICE", "1" if WINDOWS else "0") == "1"
 # "Wake up" is listened for with the wake model, on short phrases only: longer sound,
 # such as a video playing, is not transcribed at all while asleep.
 WAKE_MODEL = os.environ.get("LS_WAKE_MODEL", AWAKE_MODEL)

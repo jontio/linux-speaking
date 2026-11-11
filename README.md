@@ -91,6 +91,50 @@ system packages. It has **not** yet been run on a freshly installed system, and 
 lists for Fedora, Arch and openSUSE are untested. If it fails for you, please open an issue
 with the output.
 
+## On Windows: Word, Outlook and VS Code
+
+The same engine also runs on Windows 10 and 11, where it dictates into:
+
+- **Microsoft Word**,
+- **classic Outlook**, in a message you are writing, whether in its own window or as a
+  reply in the reading pane,
+- **Visual Studio Code**, with everything described for it below, including the C and C++
+  commands.
+
+Word and Outlook are reached the way Dragon reached them, through Word's own automation
+interface, so the spacing, capitals, "select", "scratch that" and "undo that" all work as
+they do in Writer. When "select" finds several places, small yellow numbers appear over
+them on screen.
+
+To install, get Python 3.9 or newer (from the Microsoft Store or python.org), download or
+clone this repository, and in PowerShell, in its folder, run:
+
+```
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Nothing needs administrator rights. Everything goes in `linux-speaking` in your user
+folder, a shortcut is added to the Start menu, and it starts when you sign in (set
+`LS_NO_AUTOSTART=1` first if you would rather it didn't). `uninstall.ps1` removes it all.
+
+Things to know:
+
+- **Choose your microphone** in Settings if the level meter doesn't move when you talk.
+  Windows' default recording device isn't always the one you expect.
+- The tray icon may be tucked behind the little arrow by the clock. Drag it out to keep it
+  in view.
+- **Other programs' text boxes**, such as a chat box in a web page or Notepad, can be
+  dictated into by ticking "Dictate into other programs' text boxes" in Settings. The
+  words are typed in as keystrokes, with the spacing and capitals still fitted to what is
+  around the cursor. Nothing is typed unless Windows says a text box that can be edited
+  has the keyboard, and never into a password box. Here "new line" is Shift+Enter, and
+  "press enter" is the Enter key, which in a chat box sends the message. There are no
+  choice numbers and no bold or italic.
+- The **new Outlook** (the one with the "New Outlook" switch) only works that way, as
+  another program's text box. LibreOffice and Thunderbird have no link of their own on
+  Windows yet.
+- This part is new, and has been tested on one Windows 11 PC with Microsoft 365.
+
 ## Using it
 
 1. Click into a Writer document, a Thunderbird message, a file in VS Code, or a Kate or

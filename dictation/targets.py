@@ -1,4 +1,4 @@
-"""Choosing where dictation goes: Thunderbird, Kate, VS Code or Writer.
+"""Choosing where dictation goes: Thunderbird, Kate, VS Code, Word, Outlook or Writer.
 
 Whichever has its window in front gets the words. All answer the same requests.
 """
@@ -12,10 +12,12 @@ REPICK_SECONDS = 0.7
 
 
 class Targets:
-    def __init__(self, mail=None, editor=None, vscode=None):
+    def __init__(self, mail=None, editor=None, vscode=None, office=None, other=None):
         self.mail = mail
         self.editor = editor  # Kate and KWrite
         self.vscode = vscode
+        self.office = office  # Microsoft Word and Outlook, on Windows
+        self.other = other    # on Windows, any other text box, typed into; asked last
         self.name = ""  # the program in front, such as "Writer", or "" when none is
         self._send = client.request
         self._picked = 0.0
@@ -32,6 +34,12 @@ class Targets:
         if self.vscode is not None and self.vscode.request({"op": "status"}).get("ready"):
             self._send, self.name = self.vscode.request, self.vscode.name
             return
+        if self.office is not None and self.office.request({"op": "status"}).get("ready"):
+            self._send, self.name = self.office.request, self.office.name
+            return
+        if self.other is not None and self.other.request({"op": "status"}).get("ready"):
+            self._send, self.name = self.other.request, self.other.name
+            return
         self._send = client.request
         self.name = "Writer" if client.request({"op": "status"}).get("ready") else ""
 
@@ -42,6 +50,10 @@ class Targets:
             answers["editor"] = self.editor.request({"op": "status"})
         if self.vscode is not None:
             answers["vscode"] = self.vscode.request({"op": "status"})
+        if self.office is not None:
+            answers["office"] = self.office.request({"op": "status"})
+        if self.other is not None:
+            answers["other"] = self.other.request({"op": "status"})
         if self.mail is not None:
             answers["mail"] = (self.mail.request({"op": "status"}, timeout=1.5)
                                if self.mail.connected() else "not connected")
@@ -59,3 +71,5 @@ class Targets:
             self.mail.request(message, timeout=1.5)
         if self.vscode is not None:
             self.vscode.broadcast(message)
+        if self.office is not None:
+            self.office.broadcast(message)

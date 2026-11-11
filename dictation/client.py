@@ -8,6 +8,8 @@ import socket
 
 def runtime_dir() -> str:
     """The user's private runtime folder, where the sockets live."""
+    if os.name == "nt":
+        return "\\\\.\\pipe\\"
     return os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
 
 
@@ -19,6 +21,9 @@ def socket_path() -> str:
 
 def send(path: str, message: dict, timeout: float = 6.0) -> dict:
     """Send one request to the socket at `path` and return the reply. Raises on failure."""
+    if os.name == "nt":  # a named pipe there
+        from . import pipe
+        return pipe.send(path, message, timeout)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         s.connect(path)
@@ -34,6 +39,8 @@ def send(path: str, message: dict, timeout: float = 6.0) -> dict:
 
 def request(message: dict, timeout: float = 6.0) -> dict:
     """Send one request to Writer and return the reply. Never raises."""
+    if os.name == "nt":  # the Writer extension isn't on Windows yet
+        return {"ok": False, "why": "writer not running"}
     try:
         return send(socket_path(), message, timeout)
     except (OSError, ValueError) as e:

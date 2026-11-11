@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from . import APP_NAME, HOMEPAGE, __version__, config
+from . import APP_NAME, HOMEPAGE, __version__, audio, config
 from .engine import Engine, read_number, saved_on, write_text
 from .settings import ITEMS, available_models
 from .status import State
@@ -97,14 +97,59 @@ def make_pixmap(state: State, level: int = 0, pixels: int = 64, meter: bool = Tr
 
 
 def write_app_icon(path: str, pixels: int = 256) -> None:
-    """Save the green microphone as a picture, for the application menu."""
-    make_pixmap(State.AWAKE, pixels=pixels, meter=False).save(path, "PNG")
+    """Save the green microphone as a picture, for the application menu. A name ending
+    in .ico gives a Windows icon."""
+    kind = "ICO" if path.lower().endswith(".ico") else "PNG"
+    make_pixmap(State.AWAKE, pixels=pixels, meter=False).save(path, kind)
 
 
 class Bridge(QObject):
     changed = pyqtSignal()
     level = pyqtSignal()
     event = pyqtSignal(str)
+    numbers = pyqtSignal(list)  # numbered matches to show over another program's window
+
+
+class Numbers:
+    """Small numbers shown over another program's window, one over each match for
+    "select ...". Used where the program itself has nowhere to show them (Word, Outlook)."""
+
+    def __init__(self):
+        self.labels = []
+
+    def show(self, places: list) -> None:
+        """`places` is [(number, left, top, width, height), ...] in screen pixels, or []."""
+        while len(self.labels) < len(places):
+            label = QLabel()
+            label.setWindowFlags(
+                Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowTransparentForInput
+                | Qt.WindowType.WindowDoesNotAcceptFocus)
+            label.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet(
+                "background: #ffe066; color: #1b1b1b; border: 1px solid #8a6d00;"
+                "border-radius: 3px; padding: 0px 3px; font: bold 9pt 'Segoe UI', sans-serif;")
+            self.labels.append(label)
+        for label, (number, left, top, _width, _height) in zip(self.labels, places):
+            label.setText(str(number))
+            label.adjustSize()
+            x, y = from_screen_pixels(left, top)
+            label.move(x, max(0, y - label.height() + 2))  # just above the first letter
+            label.show()
+        for label in self.labels[len(places):]:
+            label.hide()
+
+
+def from_screen_pixels(x: int, y: int) -> tuple:
+    """A point in real screen pixels, as Qt counts it on a scaled display."""
+    for screen in QApplication.screens():
+        area, scale = screen.geometry(), screen.devicePixelRatio()
+        if (area.x() <= x < area.x() + area.width() * scale
+                and area.y() <= y < area.y() + area.height() * scale):
+            return (round(area.x() + (x - area.x()) / scale),
+                    round(area.y() + (y - area.y()) / scale))
+    return x, y
 
 
 class LevelBar(QWidget):
@@ -215,6 +260,8 @@ class SettingsWindow(QWidget):
         inner = QWidget()
         layout = QVBoxLayout(inner)
         layout.addWidget(self.model_box())
+        if audio.microphones():
+            layout.addWidget(self.microphone_box())
         groups = {}
         for item in ITEMS:
             if item.group not in groups:
@@ -222,7 +269,11 @@ class SettingsWindow(QWidget):
                 box.setLayout(QVBoxLayout())
                 layout.addWidget(box)
                 groups[item.group] = box
-            tick = QCheckBox(item.label)
+            label = item.label
+            if item.key == "other_apps" and config.WINDOWS:
+                label = ("Dictate into other programs' text boxes, such as a chat box  "
+                         "(typed in as keystrokes)")
+            tick = QCheckBox(label)
             tick.setChecked(engine.settings.enabled(item.key))
             tick.toggled.connect(lambda on, key=item.key: (
                 engine.settings.set(key, on), engine.setting_changed(key)))
@@ -259,6 +310,26 @@ class SettingsWindow(QWidget):
         note = QLabel("Bigger models make fewer mistakes but take longer after each phrase. "
                       "The change takes a few seconds to load. \"Wake up\" always uses "
                       "the recommended model.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return box
+
+    def microphone_box(self) -> QGroupBox:
+        """A chooser for the recording device, where the desktop has no good one itself."""
+        box = QGroupBox("Microphone")
+        layout = QVBoxLayout(box)
+        self.microphones = QComboBox()
+        self.microphones.addItem("Windows' default recording device", "")
+        for name in audio.microphones():
+            self.microphones.addItem(name, name)
+        at = self.microphones.findData(self.engine.settings.microphone)
+        if at >= 0:
+            self.microphones.setCurrentIndex(at)
+        self.microphones.activated.connect(
+            lambda index: self.engine.set_microphone(self.microphones.itemData(index)))
+        layout.addWidget(self.microphones)
+        note = QLabel("Open \"Show level meter\" from the tray icon and talk: the bar should "
+                      "move. If it doesn't, try another microphone here.")
         note.setWordWrap(True)
         layout.addWidget(note)
         return box
@@ -428,6 +499,11 @@ class Tray:
         self.engine = Engine(on_change=self.bridge.changed.emit)
         self.engine.on_event = self.bridge.event.emit
         self.engine.on_level = self.bridge.level.emit
+        self.numbers = Numbers()
+        self.bridge.numbers.connect(self.numbers.show)
+        if self.engine.targets.office is not None:
+            # Called from the thread that talks to Word; the signal brings it to this one.
+            self.engine.targets.office.show_numbers = self.bridge.numbers.emit
         self.meter = MeterWindow(self.engine)
         self.settings_window = SettingsWindow(self.engine)
         self.spell_window = SpellWindow(self.engine)
@@ -563,6 +639,23 @@ def main() -> int:
         app = QApplication(sys.argv[:1])
         write_app_icon(sys.argv[2])
         return 0
+    if config.WINDOWS:
+        import ctypes
+        # Only one may run: two would both type what is said. A second start asks the
+        # first to show its level meter, then leaves.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW(None, False, "Local\\LinuxSpeaking")
+        if ctypes.get_last_error() == 183:  # it already exists
+            write_text(config.SHOW_FILE, "")
+            return 0
+        if sys.stdout is None:  # started without a console: keep a log file instead
+            os.makedirs(os.path.dirname(config.LOG_FILE), exist_ok=True)
+            fresh = (not os.path.exists(config.LOG_FILE)
+                     or os.path.getsize(config.LOG_FILE) > 1_000_000)
+            sys.stdout = sys.stderr = open(
+                config.LOG_FILE, "w" if fresh else "a", buffering=1, encoding="utf-8")
+        # Its own taskbar identity, so its windows show its icon.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("jontio.LinuxSpeaking")
     app = QApplication(sys.argv)
     app.setApplicationName("Linux Speaking")
     app.setApplicationDisplayName(APP_NAME)
@@ -582,8 +675,9 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     # For troubleshooting: "systemctl --user kill -s USR1 linux-speaking" writes to the log
     # what each program's link answers when asked whether it is in front.
-    signal.signal(signal.SIGUSR1, lambda *_: tray.engine.run_soon(
-        lambda: print("in front? " + tray.engine.targets.describe(), flush=True)))
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, lambda *_: tray.engine.run_soon(
+            lambda: print("in front? " + tray.engine.targets.describe(), flush=True)))
     code = app.exec()
     tray.engine.quit()
     tray.tray.hide()

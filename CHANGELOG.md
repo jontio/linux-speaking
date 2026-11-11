@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Runs on Windows 10 and 11, dictating into Microsoft Word, classic Outlook and Visual
+  Studio Code. `install.ps1` installs it and `uninstall.ps1` removes it.
+- On Windows, a microphone chooser in Settings, and small numbers shown on screen over the
+  matches for "select" in Word and Outlook.
+- On Windows, the "other programs" setting types into any text box that has the keyboard,
+  such as a chat box, reading what is around the cursor through UI Automation.
+- The Visual Studio Code extension is packaged by a Python script, the same on Linux and
+  Windows.
+
 ## 0.5.0
 
 - Dictation into Visual Studio Code, with extras for Markdown: capitals after heading and

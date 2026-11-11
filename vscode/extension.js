@@ -590,6 +590,10 @@ async function handle(m) {
 
 // ---- the socket ------------------------------------------------------------------------
 function defaultSocketPath() {
+  if (process.platform === "win32") {
+    // Windows has no socket files. A named pipe does the same job.
+    return "\\\\.\\pipe\\linux-speaking-vscode-" + process.pid;
+  }
   // Not XDG_RUNTIME_DIR: a snap-packaged VS Code is given a private one the engine can't see.
   const shared = path.join("/run/user", String(os.userInfo().uid));
   const folder = fs.existsSync(shared) ? shared : process.env.XDG_RUNTIME_DIR || os.tmpdir();
