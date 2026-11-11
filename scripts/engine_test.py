@@ -13,6 +13,7 @@ import wave
 import numpy as np
 
 os.environ["LS_MAIL"] = "0"  # the running engine owns the Thunderbird port
+os.environ["LS_VSCODE"] = "0"
 os.environ["LS_EDITOR"] = "0"  # test Writer only, whatever window is in front
 os.environ.setdefault("LS_STATE_FILE", os.path.join(tempfile.mkdtemp(), "state"))
 
@@ -79,6 +80,21 @@ engine.status.state = State.ASLEEP  # as if switched on, but without the microph
 
 hear(engine, say("this should be ignored"))
 check("asleep ignores speech", (engine.status.state, doc()), (State.ASLEEP, ""))
+rng = np.random.default_rng(7)
+for label, seconds in (("hiss", 1.3), ("longer hiss", 2.4)):
+    noise = rng.normal(0, 0.02, int(16000 * seconds)).astype(np.float32)
+    hear(engine, noise)
+    check(f"{label} does not wake it", engine.status.state, State.ASLEEP)
+bumps = rng.normal(0, 0.003, 32000).astype(np.float32)
+for at in (5000, 12000, 20000, 27000):
+    bumps[at:at + 300] += rng.normal(0, 0.2, 300).astype(np.float32) * np.hanning(300).astype(np.float32)
+hear(engine, bumps)
+check("bumps and clicks do not wake it", engine.status.state, State.ASLEEP)
+quiet = say("wake up")
+quiet = quiet * 0.05 + rng.normal(0, 0.05 * float(np.sqrt((quiet ** 2).mean())) / 4, len(quiet)).astype(np.float32)
+hear(engine, quiet)
+check("a quiet, noisy wake up still wakes it", engine.status.state, State.AWAKE)
+engine.status.state = State.ASLEEP
 hear(engine, say("wake up"))
 check("wake up", engine.status.state, State.AWAKE)
 hear(engine, say("the weather is nice today"))
@@ -104,6 +120,34 @@ engine.handle_text("Delete last two words.", awake=True)
 check("delete last two words", doc(), "One")
 engine.handle_text("Delete last word.", awake=True)
 check("delete the only word", doc(), "")
+engine.handle_text("one two three four five", awake=True)
+engine.handle_text("Move left two words.", awake=True)
+engine.handle_text("and", awake=True)
+check("move left two words", doc(), "One two three and four five")
+engine.handle_text("Move right a word.", awake=True)
+engine.handle_text("then", awake=True)
+check("move right a word", doc(), "One two three and four then five")
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+for line in ("top line", "New paragraph.", "middle line", "New paragraph.", "bottom line"):
+    engine.handle_text(line, awake=True)
+engine.handle_text("Up one line.", awake=True)
+engine.handle_text("Delete line.", awake=True)
+check("up one line, then delete line", doc(), "Top line\n\nBottom line")
+engine.handle_text("Down a line.", awake=True)
+engine.handle_text("Select line.", awake=True)
+check("down a line, then select line", client.request({"op": "text"})["selected"], "Bottom line")
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+engine.handle_text("some words here", awake=True)
+engine.handle_text("New paragraph.", awake=True)
+engine.handle_text("and more below", awake=True)
+engine.handle_text("Select all.", awake=True)
+check("select all", client.request({"op": "text"})["selected"].split(), "Some words here And more below".split())
+engine.handle_text("Delete that.", awake=True)
+check("select all, then delete that, empties the document", doc(), "")
 # Paragraph moves carry on into the next or previous paragraph when already at the edge.
 for line in ("first", "New paragraph.", "second", "New paragraph.", "third"):
     engine.handle_text(line, awake=True)
@@ -142,6 +186,17 @@ engine.handle_text("Spell that.", awake=True)
 engine.handle_text("C-O-M-M-A", awake=True)
 engine.handle_text("That's it.", awake=True)
 check("a spelled word is never turned into punctuation", doc(), "My name is Jonti comma")
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+# Speaking over a selection adds no spaces of its own.
+engine.handle_text("the price is 5 dollars", awake=True)
+client.request({"op": "command", "name": "select", "arg": "5", "nearest": True})
+engine.handle_text("six", awake=True)
+check("select-and-say keeps the spacing that was there", doc(), "The price is six dollars")
+client.request({"op": "command", "name": "select", "arg": "price is", "nearest": True})
+engine.handle_text("cost was", awake=True)
+check("and for several words", doc(), "The cost was six dollars")
 client.request({"op": "command", "name": "doc_top"})
 client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
 client.request({"op": "command", "name": "delete"})

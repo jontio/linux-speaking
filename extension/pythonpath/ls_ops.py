@@ -82,8 +82,11 @@ class Ops:
                 op == "command" and message.get("name") != "choose")):
             self._clear_choices()  # doing anything else takes the numbers away
         if op == "context":
-            before, after, _, _ = self._around(doc)
-            return {"ok": True, "before": before, "after": after}
+            before, after, view, _ = self._around(doc)
+            reply = {"ok": True, "before": before, "after": after}
+            if not view.isCollapsed():
+                reply["selected"] = True  # what is dictated will replace the selection
+            return reply
         if op == "text":  # the whole document, for tests
             return {"ok": True, "text": doc.getText().getString(),
                     "rubies": self._rubies(doc), "modified": doc.isModified(),

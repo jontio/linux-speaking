@@ -1,22 +1,82 @@
-"""Dictating into Kate and KWrite, through the desktop's accessibility interface.
+"""Dictating through the desktop's accessibility interface: Kate, KWrite, and optionally
+any other program's text boxes.
 
 Kate has no add-on that could talk to the engine, but like a screen reader the engine
-can read its text and cursor and make edits. Everything here runs in the engine.
-Kate must be started with QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 for this to work.
+can read a text box's text and cursor and make edits. Everything here runs in the engine.
+
+A program only offers this interface when accessibility is on for it. Kate and KWrite are
+started with QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1. For everything else the desktop's
+accessibility switch has to be on, which the "other programs" setting does.
 """
 from __future__ import annotations
 
+import os
 import re
 
 from .formatting import LINE, PARAGRAPH
 from .selecting import find_nearest
 
 APPS = ("kate", "kwrite")
+# Programs reached a better way, through their own add-on or extension.
+HAVE_THEIR_OWN = ("soffice", "soffice.bin", "libreoffice", "thunderbird", "code", "code-oss",
+                  "codium", "vscodium")
 NAMES = {"kate": "Kate", "kwrite": "KWrite"}
 WINDOW = 4000  # how far around the cursor to read
 HISTORY = 20
 BLANK_LINE = re.compile(r"\n[ \t]*(?=\n)")  # the end of a line that a blank line follows
 AFTER_BLANK = re.compile(r"\n(?:[ \t]*\n)+")  # ends where the line after blank lines starts
+
+
+def _in_word(c: str) -> bool:
+    return c.isalnum() or c in "'\u2019"
+
+
+def words_left(before: str, count: int) -> int:
+    """How far to move left to reach the start of the word `count` words back."""
+    at = len(before)
+    for _ in range(count):
+        while at > 0 and not _in_word(before[at - 1]):
+            at -= 1
+        while at > 0 and _in_word(before[at - 1]):
+            at -= 1
+    return len(before) - at
+
+
+def words_right(after: str, count: int) -> int:
+    """How far to move right to reach the start of the word `count` words on."""
+    at = 0
+    for _ in range(count):
+        while at < len(after) and _in_word(after[at]):
+            at += 1
+        while at < len(after) and not _in_word(after[at]):
+            at += 1
+    return at
+
+
+def line_span(text: str, caret: int) -> tuple:
+    """Start and end of the line the cursor is on, the end not counting its line break."""
+    start = text.rfind("\n", 0, caret) + 1
+    end = text.find("\n", caret)
+    return start, len(text) if end < 0 else end
+
+
+def line_move(text: str, caret: int, lines: int) -> int:
+    """Where the cursor lands `lines` down (or up, if negative), keeping its column
+    where the line is long enough."""
+    start, _ = line_span(text, caret)
+    column = caret - start
+    for _ in range(abs(lines)):
+        if lines < 0:
+            if start == 0:
+                break
+            start = text.rfind("\n", 0, start - 1) + 1
+        else:
+            following = text.find("\n", start)
+            if following < 0:
+                break
+            start = following + 1
+    _, end = line_span(text, start)
+    return min(start + column, end)
 
 
 def paragraph_end(after: str) -> int:
@@ -58,7 +118,9 @@ def units(text: str) -> int:
 
 
 class EditorTarget:
-    def __init__(self):
+    """Kate and KWrite always. With `everything`, any program's focused text box."""
+
+    def __init__(self, everything=lambda: False):
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi
@@ -66,17 +128,33 @@ class EditorTarget:
         self.A = Atspi
         self.T = Atspi.Text
         self.E = Atspi.EditableText
+        self.everything = everything   # called each time: the Settings tick box
         self.name = ""
         self._object = None
         self._app = None
+        self._utf16 = True     # Qt counts in UTF-16 units; GTK counts characters
+        self._one_line = False
         self.history = []  # {"start", "text", "edits"} for recent phrases, newest last
 
-    # ---- finding the editor ---------------------------------------------------
+    # ---- finding the text box ---------------------------------------------------
+    def _wanted(self, app) -> bool:
+        """Whether to look in this program at all."""
+        name = (app.get_name() or "").lower()
+        if name in APPS:
+            return True
+        if not self.everything() or name in HAVE_THEIR_OWN:
+            return False
+        return app.get_process_id() != os.getpid()
+
     def _is_focused_editor(self, o) -> bool:
         states = o.get_state_set()
         S = self.A.StateType
-        return (states.contains(S.FOCUSED) and states.contains(S.EDITABLE)
-                and states.contains(S.MULTI_LINE) and o.get_editable_text_iface() is not None)
+        if not (states.contains(S.FOCUSED) and states.contains(S.EDITABLE)
+                and o.get_editable_text_iface() is not None):
+            return False
+        if o.get_role() == self.A.Role.PASSWORD_TEXT:
+            return False       # never dictate into a password box
+        return states.contains(S.MULTI_LINE) or self.everything()
 
     def _search(self, o, depth=0):
         if self._is_focused_editor(o):
@@ -89,8 +167,16 @@ class EditorTarget:
                     return found
         return None
 
+    def _in_front(self, app):
+        """The program's windows that are in front. Only those are searched."""
+        S = self.A.StateType
+        for i in range(min(app.get_child_count(), 50)):
+            window = app.get_child_at_index(i)
+            if window is not None and window.get_state_set().contains(S.ACTIVE):
+                yield window
+
     def focused(self):
-        """The text area with the keyboard focus in Kate or KWrite, or None."""
+        """The text box with the keyboard, in a program we may dictate into, or None."""
         try:
             if self._object is not None and self._is_focused_editor(self._object):
                 return self._object
@@ -99,20 +185,33 @@ class EditorTarget:
         self._object = None
         desktop = self.A.get_desktop(0)
         for i in range(desktop.get_child_count()):
-            app = desktop.get_child_at_index(i)
             try:
-                if app is None or app.get_name() not in APPS:
+                app = desktop.get_child_at_index(i)
+                if app is None or not self._wanted(app):
                     continue
-                found = self._search(app)
+                found = next((f for f in (self._search(w) for w in self._in_front(app))
+                              if f is not None), None)
             except Exception:
                 continue
             if found is not None:
                 if self._app is None or app.get_process_id() != self._app.get_process_id():
                     self.history = []
                 self._object, self._app = found, app
-                self.name = NAMES.get(app.get_name(), app.get_name())
+                name = app.get_name() or "another program"
+                self.name = NAMES.get(name.lower(), name[:1].upper() + name[1:])
+                self._utf16 = (app.get_toolkit_name() or "").lower().startswith("qt")
+                self._one_line = not found.get_state_set().contains(self.A.StateType.MULTI_LINE)
                 return found
         return None
+
+    def _count(self, text: str) -> int:
+        """The length of `text` as this program counts positions."""
+        return units(text) if self._utf16 else len(text)
+
+    def _put(self, o, position: int, text: str) -> None:
+        # Qt wants the length in its own units; GTK wants it in bytes.
+        self.E.insert_text(o, position, text,
+                           units(text) if self._utf16 else len(text.encode("utf-8")))
 
     # ---- reading ----------------------------------------------------------------
     def _span(self, o):
@@ -160,8 +259,11 @@ class EditorTarget:
         if o is None:
             return {"ok": False, "why": "editor not focused"}
         if op == "context":
-            before, after, _, _ = self._around(o)
-            return {"ok": True, "before": before, "after": after}
+            before, after, start, end = self._around(o)
+            reply = {"ok": True, "before": before, "after": after}
+            if start != end:
+                reply["selected"] = True  # what is dictated will replace the selection
+            return reply
         if op == "insert":
             return self._insert(o, m.get("text", ""), int(m.get("delete_before", 0)),
                                 int(m.get("delete_after", 0)), bool(m.get("capitalise_next")))
@@ -175,6 +277,9 @@ class EditorTarget:
 
     # ---- inserting ----------------------------------------------------------------
     def _insert(self, o, text, delete_before, delete_after, capitalise_next) -> dict:
+        if self._one_line:
+            # A one-line box can't hold a line break: a space is the nearest thing.
+            text = text.replace(PARAGRAPH, " ").replace(LINE, " ")
         # In plain text a paragraph is set off by a blank line.
         text = text.replace(PARAGRAPH, "\n\n").replace(LINE, "\n")
         if not text and not delete_before and not delete_after:
@@ -195,9 +300,9 @@ class EditorTarget:
             self.E.delete_text(o, position, position + delete_after)
             edits += 1
         if text:
-            self.E.insert_text(o, position, text, units(text))
+            self._put(o, position, text)
             edits += 1
-        after = position + units(text)
+        after = position + self._count(text)
         if capitalise_next:
             rest = self.T.get_text(o, after, min(self.T.get_character_count(o), after + 200))
             rest = rest.split("\n", 1)[0]
@@ -205,7 +310,7 @@ class EditorTarget:
                 if c.isalpha():
                     if c != c.upper() and units(c.upper()) == 1:
                         self.E.delete_text(o, after + i, after + i + 1)
-                        self.E.insert_text(o, after + i, c.upper(), 1)
+                        self._put(o, after + i, c.upper())
                         edits += 2
                     break
         self._place(o, after)
@@ -220,7 +325,7 @@ class EditorTarget:
         if not self.history:
             return None
         phrase = self.history[-1]
-        size = units(phrase["text"])
+        size = self._count(phrase["text"])
         caret = self.T.get_caret_offset(o)
         for start in (phrase["start"], caret - size):  # where it went in, or just before the cursor
             if start >= 0 and self.T.get_text(o, start, start + size) == phrase["text"]:
@@ -281,7 +386,7 @@ class EditorTarget:
         count = T.get_character_count(o)
         if name == "new_paragraph":
             return self._insert(o, PARAGRAPH, 0, 0, False)
-        if name == "new_line":
+        if name in ("new_line", "press_enter"):  # the Enter key is one line break here
             return self._insert(o, LINE, 0, 0, False)
         if name == "undo":
             return self._undo(o)
@@ -314,6 +419,9 @@ class EditorTarget:
                 return {"ok": False, "why": "nothing to select"}
             self._select(o, *found)
             return {"ok": True}
+        if name == "select_all":
+            self._select(o, 0, count)
+            return {"ok": True}
         if name == "unselect":
             self._place(o, end)
             return {"ok": True}
@@ -325,6 +433,34 @@ class EditorTarget:
             return {"ok": True}
         if name in ("para_end", "para_start"):
             self._place(o, self._paragraph_edge(o, name == "para_end"))
+            return {"ok": True}
+        if name in ("line_up", "line_down", "go_to_line", "select_line", "delete_line"):
+            text = T.get_text(o, 0, count)
+            number = max(1, int(arg or 1))
+            if name in ("line_up", "line_down"):
+                self._place(o, line_move(text, caret, number if name == "line_down" else -number))
+            elif name == "go_to_line":
+                self._place(o, line_move(text, 0, number - 1))
+            elif name == "select_line":
+                self._select(o, *line_span(text, caret))
+            else:
+                first, last = line_span(text, caret)
+                for _ in range(min(number, 99) - 1):
+                    last = line_span(text, min(last + 1, len(text)))[1]
+                if last < len(text):
+                    last += 1                      # with its line break, so lines below move up
+                elif first > 0:
+                    first -= 1                     # the last line: take the break before it
+                self._place(o, first)
+                self.E.delete_text(o, first, last)
+                self._place(o, min(first, len(text) - (last - first)))
+            return {"ok": True}
+        if name in ("word_left", "word_right"):
+            words = max(1, min(99, int(arg or 1)))
+            if name == "word_left":
+                self._place(o, caret - words_left(T.get_text(o, max(0, caret - WINDOW), caret), words))
+            else:
+                self._place(o, caret + words_right(T.get_text(o, caret, min(count, caret + WINDOW)), words))
             return {"ok": True}
         if name == "doc_top":
             self._place(o, 0)
@@ -341,10 +477,10 @@ class EditorTarget:
                 start, end = found
             old = T.get_text(o, start, end)
             new = {"cap": old.title(), "all_caps": old.upper(), "no_caps": old.lower()}[name]
-            if units(new) == units(old) and new != old:
+            if self._count(new) == self._count(old) and new != old:
                 self._place(o, start)
                 self.E.delete_text(o, start, end)
-                self.E.insert_text(o, start, new, units(new))
+                self._put(o, start, new)
                 if last:
                     self.history[-1]["text"] = new
                     self.history[-1]["start"] = start
@@ -357,3 +493,4 @@ class EditorTarget:
         if name == "choose":
             return {"ok": False, "why": "nothing to choose from"}
         return {"ok": False, "why": "unknown command"}
+

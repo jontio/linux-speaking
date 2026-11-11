@@ -18,7 +18,7 @@ class Status:
     state: State = State.OFF
     last_heard: str = ""
     writer_ready: bool = False  # something is in front to type into
-    target: str = ""  # "Writer", "Thunderbird", "Kate" or "KWrite"
+    target: str = ""  # the program in front, such as "Writer" or "VS Code"
     ready: bool = True  # False while the speech models are still loading
     level: int = 0  # microphone level, 0 to 5 bars
     loud: bool = False  # the microphone signal is at or near its limit, and distorting
@@ -40,7 +40,7 @@ class Status:
     def tooltip(self) -> str:
         lines = [f"Dictation: {self.label()}"]
         if self.state is not State.OFF and not self.writer_ready:
-            lines.append("No Writer, Thunderbird message or Kate in front")
+            lines.append("No program to type into is in front")
         elif self.state is not State.OFF and self.target:
             lines.append(f"Typing into {self.target}")
         if self.loud and self.state is not State.OFF:

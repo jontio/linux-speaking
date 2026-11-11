@@ -3,7 +3,7 @@
 # editing engine. Uses its own throwaway profile. Run from the repo root.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-profile="$PWD/build/test-firefox-profile"   # snap Firefox can only read files in the home folder
+profile="$PWD/build/test-firefox-profile"   # snap Firefox can only read the home folder, and not hidden folders in it
 rm -rf "$profile" && mkdir -p "$profile"
 python3 - "$PWD/thunderbird" "$profile" <<'PY'
 import functools, http.server, subprocess, sys, threading

@@ -11,7 +11,7 @@ class Tooltip(unittest.TestCase):
 
     def test_awake_without_writer(self):
         s = Status(State.AWAKE, last_heard="hello")
-        self.assertEqual(s.tooltip(), "Dictation: Awake\nNo Writer, Thunderbird message or Kate in front\nHeard: hello")
+        self.assertEqual(s.tooltip(), "Dictation: Awake\nNo program to type into is in front\nHeard: hello")
         self.assertTrue(s.awake)
         self.assertEqual(s.menu_toggle_label(), "Turn off")
 
