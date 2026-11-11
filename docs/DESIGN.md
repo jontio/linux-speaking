@@ -98,6 +98,30 @@ not only Kate's. That needs accessibility on for the whole desktop, so `accessib
 turns the desktop's switch on, and off again when the setting is unticked. Programs that
 have their own link are skipped, and so are password boxes.
 
+### Word and Outlook, on Windows
+
+`word_target.py` runs in the engine and speaks to Word through COM, Word's automation
+interface. Classic Outlook's message editor is Word underneath, so one piece of code
+serves both.
+
+It doesn't ask Windows for "the running Word". It asks which control has the keyboard,
+and if that is a Word editing area (window class `_WwG`, in Word and in Outlook alike) it
+asks that window for its own automation object. That gives exactly the document being
+typed in, and works for a reply in Outlook's reading pane as well as a message window. For
+Outlook it also asks whether the window in front is a message being written, so that a
+message being read isn't offered.
+
+All COM calls are made on one thread of the target's own. COM wants objects used from the
+thread that got them, and a busy Word (a dialog open, say) can't then hold up the engine:
+a request that isn't answered in time simply fails.
+
+Word has nowhere to draw numbers over matches, so for "select" the target asks Word where
+each match is on screen and the tray shows a small label there. The labels follow the text
+if it scrolls and go when another window comes to the front.
+
+On Windows the engine reads the microphone with `sounddevice` instead of `parec`, and
+talks to the VS Code extension over a named pipe instead of a socket file (`pipe.py`).
+
 ### Adding another program
 
 Write something that answers the four requests above, and add it to `targets.py`. If the
@@ -116,6 +140,9 @@ name is added to `APPS` and it is started with accessibility on.
 | `PYTHONPATH=. scripts/test-vscode.sh` | The VS Code extension, in a separate VS Code window with its own settings, which shows briefly | VS Code, a desktop session |
 | `PYTHONPATH=. scripts/test-form.sh` | Any program's text boxes, using a small form window that shows briefly | PyQt6, a desktop session |
 | `PYTHONPATH=. scripts/test-editor.sh` | Kate's editor, using a scratch KWrite window that shows briefly | KWrite, a desktop session |
+
+| `venv\Scripts\python.exe app\scripts\word_test.py` (on Windows, in the install folder) | Word, using a blank document of its own that it closes unsaved | Word |
+| `venv\Scripts\python.exe app\scripts\outlook_test.py` (the same) | An Outlook message, using a new one of its own that it discards | Classic Outlook, open |
 
 `scripts/deploy.sh user@host` installs or updates another computer over ssh, which is
 handy when you develop on one machine and dictate on another.

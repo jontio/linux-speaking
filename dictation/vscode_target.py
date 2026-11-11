@@ -11,6 +11,7 @@ import os
 from . import client
 
 PATTERN = "linux-speaking-vscode-*.sock"
+PIPE_PREFIX = "linux-speaking-vscode-"  # Windows: named pipes instead of socket files
 NOT_FOCUSED = {"ok": False, "why": "editor not focused"}
 
 
@@ -22,6 +23,9 @@ class VSCodeTarget:
         self._path = None  # the socket of the window in front
 
     def _sockets(self) -> list:
+        if os.name == "nt":
+            from . import pipe
+            return pipe.names(PIPE_PREFIX)
         return sorted(glob.glob(os.path.join(self.folder, PATTERN)))
 
     def _ask(self, path: str, message: dict, timeout: float) -> dict | None:

@@ -8,9 +8,9 @@ import json
 import os
 from dataclasses import dataclass
 
-PATH = os.path.expanduser(
-    os.environ.get("LS_SETTINGS_FILE", "~/.config/linux-speaking/settings.json")
-)
+from . import config
+
+PATH = config.SETTINGS_FILE
 
 
 @dataclass(frozen=True)
@@ -86,10 +86,12 @@ OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps"})  # settings 
 
 
 class Settings:
-    def __init__(self, states: dict | None = None, path: str | None = None, model: str = ""):
+    def __init__(self, states: dict | None = None, path: str | None = None, model: str = "",
+                 microphone: str = ""):
         self.states = dict(states or {})
         self.path = path
         self.model = model  # the chosen speech model's folder name, or "" for the default
+        self.microphone = microphone  # Windows: the recording device's name, or "" for the default
 
     @classmethod
     def load(cls, path: str = PATH) -> "Settings":
@@ -97,16 +99,20 @@ class Settings:
             with open(path, encoding="utf-8") as f:
                 saved = json.load(f)
             states, model = saved.get("states", {}), str(saved.get("model", ""))
+            microphone = str(saved.get("microphone", ""))
         except (OSError, ValueError, AttributeError):
-            states, model = {}, ""
-        return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model)
+            states, model, microphone = {}, "", ""
+        return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model, microphone)
 
     def save(self) -> None:
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
-            json.dump({"states": self.states, "model": self.model}, f, indent=1, sort_keys=True)
+            saved = {"states": self.states, "model": self.model}
+            if self.microphone:
+                saved["microphone"] = self.microphone
+            json.dump(saved, f, indent=1, sort_keys=True)
 
     def enabled(self, key: str) -> bool:
         return self.states.get(key, BY_KEY[key].default)
@@ -117,6 +123,10 @@ class Settings:
 
     def set_model(self, model: str) -> None:
         self.model = model
+        self.save()
+
+    def set_microphone(self, microphone: str) -> None:
+        self.microphone = microphone
         self.save()
 
     def disabled_commands(self) -> frozenset:

@@ -5,7 +5,6 @@ import collections
 import math
 import os
 import queue
-import subprocess
 import threading
 import time
 
@@ -22,7 +21,7 @@ from .vscode_target import VSCodeTarget
 from .words import Lexicon
 from .settings import Settings
 from .segmenter import END, START, Segmenter, SegmenterConfig
-from . import accessibility, coding, spelling
+from . import accessibility, audio, coding, spelling
 from .status import State, Status
 
 
@@ -31,15 +30,6 @@ def log(message: str) -> None:
     """One line to the service log. Dictated text is never logged, only its length."""
     print(message, flush=True)
 
-
-# parec is used, not pw-record, because it lets the client be named. The desktop's
-# microphone indicator then says "Linux Speaking is using the microphone".
-RECORD_COMMAND = [
-    "parec", "--raw", f"--rate={config.RATE}", "--channels=1", "--format=s16le",
-    "--latency-msec=20", "--client-name=Linux Speaking",
-    "--stream-name=Listening for dictation",
-    "--property=application.icon_name=audio-input-microphone",
-]
 
 # Things Whisper invents from noise. Dropped unless Whisper is confident.
 PHANTOMS = {"thank you", "thanks for watching", "you", "bye", "thank you very much"}
@@ -174,7 +164,22 @@ class Engine:
                 editor = EditorTarget(lambda: self.settings.enabled("other_apps"))
             except Exception as e:  # the accessibility library isn't installed
                 log(f"dictation into Kate is off: {e}")
-        self.targets = Targets(mail, editor, VSCodeTarget() if config.VSCODE else None)
+        office = None
+        if config.OFFICE:
+            try:
+                from .word_target import WordTarget
+                office = WordTarget()
+            except Exception as e:
+                log(f"dictation into Word and Outlook is off: {e}")
+        other = None
+        if config.OTHER:
+            try:
+                from .keys_target import KeysTarget
+                other = KeysTarget(lambda: self.settings.enabled("other_apps"))
+            except Exception as e:
+                log(f"dictation into other programs is off: {e}")
+        self.targets = Targets(mail, editor, VSCodeTarget() if config.VSCODE else None, office,
+                               other)
         self.lexicon = Lexicon.load_default()
         self.keep_final = os.environ.get("LS_KEEP_FINAL") == "1"
         self._transcriber = transcriber
@@ -196,10 +201,13 @@ class Engine:
         with self._lock:
             if self._recorder is not None:
                 return
-            self._recorder = subprocess.Popen(
-                RECORD_COMMAND,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            )
+            try:
+                self._recorder = audio.open_microphone(self.settings.microphone)
+            except Exception as e:
+                log(f"could not open the microphone: {e}")
+                self.status.last_heard = f"(could not open the microphone: {e})"
+                self.on_change()
+                return
             recorder = self._recorder
         self._set(State.AWAKE if awake else State.ASLEEP)
         threading.Thread(target=self._listen, args=(recorder,), daemon=True).start()
@@ -209,7 +217,7 @@ class Engine:
         with self._lock:
             recorder, self._recorder = self._recorder, None
         if recorder is not None:
-            recorder.terminate()
+            recorder.close()
         self._set(State.OFF, remember)
 
     def wake(self) -> None:
@@ -256,7 +264,7 @@ class Engine:
         phrase = []
         nbytes = config.FRAME * 2
         while True:
-            data = recorder.stdout.read(nbytes)
+            data = recorder.read(nbytes)
             if len(data) < nbytes:
                 break
             # The audio itself is kept untouched, so it can't be clipped. The boost only
@@ -366,6 +374,15 @@ class Engine:
         self.status.ready = False
         self.on_change()
         self._phrases.put(("call", lambda: self._load(model)))
+
+    def set_microphone(self, name: str) -> None:
+        """Choose the recording device (Windows). Listening restarts on the new one."""
+        self.settings.set_microphone(name)
+        log("microphone changed")
+        if self.status.state is not State.OFF:
+            awake = self.status.awake
+            self.turn_off(remember=False)
+            self.turn_on(awake=awake)
 
     def run_soon(self, action) -> None:
         """Run something on the worker, after anything already heard. For the tray's buttons."""
