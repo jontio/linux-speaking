@@ -10,6 +10,8 @@
   such as a chat box, reading what is around the cursor through UI Automation.
 - The Visual Studio Code extension is packaged by a Python script, the same on Linux and
   Windows.
+- Clicking the tray icon when dictation is off turns it on awake, ready to talk, not
+  asleep.
 
 ## 0.5.0
 

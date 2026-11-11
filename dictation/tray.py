@@ -623,8 +623,14 @@ class Tray:
             self.engine.wake()
 
     def on_click(self, reason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.on_toggle()
+        """A click switches off, or from off straight to awake: someone who clicks the icon
+        wants to talk now, not to say "wake up" first."""
+        if reason != QSystemTrayIcon.ActivationReason.Trigger:
+            return
+        if self.engine.status.state is State.OFF:
+            self.engine.wake()
+        else:
+            self.engine.turn_off()
 
     def on_quit(self) -> None:
         shown = self.meter.isVisible()

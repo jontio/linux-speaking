@@ -147,8 +147,8 @@ Words go to whichever supported window is in front. Hover over the tray icon to 
 A command is a phrase said on its own, with a short pause before and after. Said in the
 middle of a sentence, the same words are just typed.
 
-Clicking the tray icon turns the microphone off or on. Right-clicking it gives you the
-level meter, Settings and About.
+Clicking the tray icon turns the microphone off, or back on and awake, ready for you to
+talk. Right-clicking it gives you the level meter, Settings and About.
 
 ### Commands
 
