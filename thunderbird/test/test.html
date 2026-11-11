@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>compose.js tests</title></head>
+<body>
+<pre id="out">running</pre>
+<iframe id="ed" src="editor.html" style="width:600px;height:300px"></iframe>
+<script>
+"use strict";
+// Runs compose.js against a real editable document and reports to a local test server.
+const P = "\u2029", L = "\u2028";
+const lines = [];
+let failures = 0;
+function check(label, got, want) {
+  const same = JSON.stringify(got) === JSON.stringify(want);
+  if (!same) failures++;
+  lines.push((same ? "PASS " : "FAIL ") + label +
+    (same ? "" : "\n     got  " + JSON.stringify(got) + "\n     want " + JSON.stringify(want)));
+}
+function runTests() {
+  const win = document.getElementById("ed").contentWindow;
+  const doc = win.document;
+  if (typeof win.linuxSpeaking !== "function") throw new Error("compose.js did not load: " + win.loadError);
+  doc.designMode = "on";
+  doc.body.innerHTML = "<p><br></p>";
+  win.focus();
+  win.getSelection().collapse(doc.body.firstChild, 0);
+  const H = (m) => win.linuxSpeaking(m);
+  const text = () => H({ op: "text" }).text;
+  const cmd = (name, arg, extra) => H(Object.assign({ op: "command", name, arg }, extra || {}));
+  const say = (t, extra) => H(Object.assign({ op: "insert", text: t }, extra || {}));
+
+  check("empty context", H({ op: "context" }), { ok: true, before: "", after: "" });
+  say("The cat sat");
+  check("insert", text(), "The cat sat");
+  check("context after insert", H({ op: "context" }).before, "The cat sat");
+  say(". It was happy");
+  check("second phrase", text(), "The cat sat. It was happy");
+  cmd("scratch");
+  check("scratch that", text(), "The cat sat");
+  cmd("undo");
+  check("undo restores it", text(), "The cat sat. It was happy");
+  check("scratch needs something it typed", cmd("scratch").why, "nothing to scratch");
+  cmd("backspace", "14");
+  say(" and  ");
+  say(",", { delete_before: 2 });
+  check("delete_before removes spaces", text(), "The cat sat and,");
+  cmd("backspace", "5");
+  check("backspace 5", text(), "The cat sat");
+  say(P + "Second paragraph here");
+  check("new paragraph", text(), "The cat sat\nSecond paragraph here");
+  check("context is the current paragraph", H({ op: "context" }).before, "Second paragraph here");
+  say(L + "Next line");
+  check("new line", text(), "The cat sat\nSecond paragraph here\nNext line");
+  check("context is the current line", H({ op: "context" }).before, "Next line");
+  check("select one match", cmd("select", "cat").ok, true);
+  check("selected", H({ op: "text" }).selected, "cat");
+  check("context around a selection", H({ op: "context" }), { ok: true, before: "The ", after: " sat" });
+  say("dog");
+  check("select-and-say", text(), "The dog sat\nSecond paragraph here\nNext line");
+  cmd("line_end");
+  say(" down");
+  check("go to end of line", text(), "The dog sat down\nSecond paragraph here\nNext line");
+  cmd("line_start");
+  say("Well ");
+  check("go to start of line", text(), "Well The dog sat down\nSecond paragraph here\nNext line");
+  cmd("para_end");
+  cmd("para_end");
+  say(" end");
+  check("end of paragraph twice reaches the next", text(), "Well The dog sat down\nSecond paragraph here\nNext line end");
+  cmd("para_start");
+  cmd("para_start");
+  say("Top ");
+  check("start of paragraph twice reaches the one before", text().split("\n")[0], "Top Well The dog sat down");
+  cmd("doc_end");
+  say(P + "the fox saw a fox chase a third fox");
+  const picked = cmd("select", "fox");
+  check("several matches are numbered", [picked.choices, H({ op: "text" }).numbers], [3, 3]);
+  check("the numbers sit outside the message", doc.body.querySelector("[data-linux-speaking]"), null);
+  check("the numbers leave the text alone", text().split("\n").pop(), "the fox saw a fox chase a third fox");
+  check("choose 2", [cmd("choose", "2").ok, H({ op: "text" }).selected, H({ op: "text" }).numbers], [true, "fox", 0]);
+  say("dog");
+  check("the second one is replaced", text().split("\n").pop(), "the fox saw a dog chase a third fox");
+  cmd("select", "fox");
+  say("x");
+  check("typing cancels the numbers", H({ op: "text" }).numbers, 0);
+  cmd("undo");
+  check("nearest match", [cmd("select", "fox", { nearest: true }).ok, H({ op: "text" }).numbers], [true, 0]);
+  check("can't find", cmd("select", "zebra").why, "can't find that");
+  check("choose with nothing showing", cmd("choose", "1").why, "nothing to choose from");
+  cmd("select", "third");
+  cmd("all_caps");
+  check("all caps that", text().split("\n").pop().includes("a THIRD fox"), true);
+  cmd("no_caps");
+  cmd("cap");
+  check("cap that", text().split("\n").pop().includes("a Third fox"), true);
+  cmd("bold");
+  check("bold that", doc.queryCommandState("bold"), true);
+  cmd("unselect");
+  cmd("doc_end");
+  say(". next", { capitalise_next: false });
+  cmd("select", "next", { nearest: true });
+  cmd("delete");
+  check("delete that", text().split("\n").pop().slice(-10), "hird fox. ");
+  cmd("doc_top");
+  say("X", { capitalise_next: true, delete_after: 0 });
+  check("go to top", text().startsWith("XTop Well"), true);
+  cmd("doc_end");
+  say(P + "start here and then", {});
+  cmd("select", "and", { nearest: true });
+  say(".", { delete_before: 1, capitalise_next: true });
+  check("full stop capitalises the next word", text().split("\n").pop(), "start here. Then");
+  check("unknown request", H({ op: "move", steps: [] }).why, "unknown request");
+  check("unknown command", cmd("fly").why, "unknown command");
+}
+window.addEventListener("load", () => {
+  try { runTests(); } catch (e) { failures++; lines.push("CRASH " + e + "\n" + (e.stack || "")); }
+  lines.push("failures: " + failures);
+  document.getElementById("out").textContent = lines.join("\n");
+  fetch("/results", { method: "POST", body: lines.join("\n") });
+});
+</script>
+</body></html>

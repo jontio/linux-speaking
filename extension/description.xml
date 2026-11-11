@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/description/2006" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <identifier value="io.github.jontio.linuxspeaking"/>
+  <version value="0.4.0"/>
+  <display-name><name lang="en">Linux Speaking</name></display-name>
+  <publisher><name lang="en" xlink:href="https://github.com/jontio/linux-speaking">Jonti Olds</name></publisher>
+</description>
