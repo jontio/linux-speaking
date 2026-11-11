@@ -10,6 +10,9 @@ if pgrep -x soffice.bin >/dev/null; then
 else
   unopkg remove io.github.jontio.linuxspeaking 2>/dev/null
 fi
+for editor in code codium code-insiders; do
+  command -v "$editor" >/dev/null && "$editor" --uninstall-extension jontio.linux-speaking >/dev/null 2>&1
+done
 for app in org.kde.kate org.kde.kwrite; do
   file="$HOME/.local/share/applications/$app.desktop"
   grep -q QT_LINUX_ACCESSIBILITY_ALWAYS_ON "$file" 2>/dev/null && rm -f "$file"

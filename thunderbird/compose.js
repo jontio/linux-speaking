@@ -56,7 +56,9 @@
     const after = document.createRange();
     after.selectNodeContents(blockOf(r.endContainer));
     after.setStart(r.endContainer, r.endOffset);
-    return { before: lineText(before.cloneContents(), true), after: lineText(after.cloneContents(), false) };
+    const reply = { before: lineText(before.cloneContents(), true), after: lineText(after.cloneContents(), false) };
+    if (!s.isCollapsed) reply.selected = true; // what is dictated will replace the selection
+    return reply;
   }
 
   function extend(direction, count) {
@@ -348,9 +350,31 @@
         return ok();
       case "select": return select(m.arg || "", Boolean(m.nearest));
       case "select_last": return selectLast() ? ok() : fail("nothing to select");
+      case "select_all": s.selectAllChildren(document.body); return ok();
       case "unselect": s.collapseToEnd(); return ok();
       case "line_end": s.modify("move", "forward", "lineboundary"); return ok();
       case "line_start": s.modify("move", "backward", "lineboundary"); return ok();
+      case "word_left": case "word_right": {
+        const words = Math.max(1, Math.min(99, parseInt(m.arg, 10) || 1));
+        for (let i = 0; i < words; i++) s.modify("move", name === "word_left" ? "backward" : "forward", "word");
+        return ok();
+      }
+      case "line_up": case "line_down": {
+        const lines = Math.max(1, Math.min(999, parseInt(m.arg, 10) || 1));
+        for (let i = 0; i < lines; i++) s.modify("move", name === "line_up" ? "backward" : "forward", "line");
+        return ok();
+      }
+      case "select_line": case "delete_line": {
+        const lines = name === "delete_line" ? Math.max(1, Math.min(99, parseInt(m.arg, 10) || 1)) : 1;
+        for (let i = 0; i < lines; i++) {
+          s.modify("move", "backward", "lineboundary");
+          s.modify("extend", "forward", "lineboundary");
+          if (name === "select_line") break;
+          if (!s.isCollapsed) run("delete");
+          run("forwardDelete"); // and the line break, so the lines below move up
+        }
+        return ok();
+      }
       case "para_end": return paragraphEdge(true);
       case "para_start": return paragraphEdge(false);
       case "doc_top": { const b = leafBlocks(); place(b.length ? b[0] : document.body, true); return ok(); }

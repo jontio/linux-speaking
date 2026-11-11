@@ -7,7 +7,7 @@ microphone ─► parec ─► pause detector ─► Whisper ─► command or d
                                            ▲                │
                              text before   │                ▼
                              the cursor    └──── the program in front
-                                                 (Writer, Thunderbird, Kate, KWrite)
+                                         (Writer, Thunderbird, VS Code, Kate, KWrite)
 tray icon ◄── off / asleep / awake / hearing / thinking
 ```
 
@@ -22,12 +22,14 @@ program in `dictation/`, with a Qt tray icon.
 | `formatting.py` | Fits a phrase into the text around the cursor: spaces, capitals, punctuation words |
 | `words.py` | Tells names from ordinary words, using the system's Hunspell dictionary |
 | `selecting.py` | Finds the words for "select ..." |
+| `coding.py` | The rules for dictating C and C++ source code |
 | `spelling.py` | Turns spoken letters into letters for "spell that" |
 | `settings.py` | Which commands are switched on, and the choice of speech model |
 | `targets.py` | Picks the program in front |
 | `client.py` | Talks to the LibreOffice extension |
 | `mailbridge.py` | Talks to the Thunderbird add-on |
 | `editor_target.py` | Drives Kate and KWrite |
+| `vscode_target.py` | Talks to the VS Code extension |
 | `tray.py` | The tray icon and its windows |
 
 ## Listening
@@ -77,10 +79,24 @@ How each is reached:
   on `127.0.0.1:47613` and receives its instructions as the reply. The engine refuses
   requests that come from web pages. Edits use the editor's own commands, so Thunderbird's
   undo works.
+- **Visual Studio Code:** an extension (`vscode/`) runs in each VS Code window and listens
+  on its own socket, `linux-speaking-vscode-<process id>.sock`, in the user's runtime
+  folder. The engine asks each window whether it is in front. Each phrase is one edit, so
+  one undo takes it back. Numbered choices are editor decorations. The extension is
+  packaged as a `.vsix` by `scripts/build-vsix.sh` and installed with
+  `code --install-extension`.
+  In C and C++ files it also reports what the editor's language server says is in scope at
+  the cursor, by running VS Code's own completion command. `coding.py` uses that to correct
+  misheard names and to tell a keyword from a number by position.
 - **Kate and KWrite:** there is no add-on. The engine uses the accessibility interface
   (AT-SPI), as a screen reader does. Qt only offers that interface when asked, so the
   installer adds `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` to the two programs' launchers. It
   is not switched on for the whole desktop.
+
+With the "other programs" setting on, the same code serves any program's focused text box,
+not only Kate's. That needs accessibility on for the whole desktop, so `accessibility.py`
+turns the desktop's switch on, and off again when the setting is unticked. Programs that
+have their own link are skipped, and so are password boxes.
 
 ### Adding another program
 
@@ -97,6 +113,8 @@ name is added to `APPS` and it is started with accessibility on.
 | `PYTHONPATH=. PYTHON=~/linux-speaking/venv/bin/python scripts/test-writer.sh scripts/engine_test.py` | The engine end to end, with synthesized speech | The above, an install, libespeak-ng |
 | `scripts/test-thunderbird.sh` | The add-on's editing code, in headless Firefox | Firefox |
 | `PYTHONPATH=. scripts/test-thunderbird-e2e.sh` | The whole add-on, in a throwaway Thunderbird profile | Thunderbird |
+| `PYTHONPATH=. scripts/test-vscode.sh` | The VS Code extension, in a separate VS Code window with its own settings, which shows briefly | VS Code, a desktop session |
+| `PYTHONPATH=. scripts/test-form.sh` | Any program's text boxes, using a small form window that shows briefly | PyQt6, a desktop session |
 | `PYTHONPATH=. scripts/test-editor.sh` | Kate's editor, using a scratch KWrite window that shows briefly | KWrite, a desktop session |
 
 `scripts/deploy.sh user@host` installs or updates another computer over ssh, which is

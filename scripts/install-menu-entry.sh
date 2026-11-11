@@ -13,7 +13,7 @@ cat > "$target/linux-speaking.desktop" <<ENTRY
 Type=Application
 Name=Linux Speaking
 GenericName=Voice Dictation
-Comment=Dictate into LibreOffice Writer, Thunderbird, Kate and KWrite
+Comment=Dictate into LibreOffice Writer, Thunderbird, Kate, KWrite and VS Code
 Exec=$dir/app/scripts/launch.sh
 Icon=$icon
 Terminal=false

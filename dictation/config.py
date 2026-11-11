@@ -60,3 +60,8 @@ SHOW_FILE = os.path.join(os.path.dirname(STATE_FILE), "show")
 # The meter turns red when the microphone signal gets this close to its limit (1.0),
 # where it starts to distort.
 CLIP_LEVEL = float(os.environ.get("LS_CLIP_LEVEL", "0.9"))
+# Dictation into Visual Studio Code, through its extension. LS_VSCODE=0 turns it off.
+VSCODE = os.environ.get("LS_VSCODE", "1") == "1"
+# While asleep, a phrase the model itself rates this likely to be noise is ignored, so
+# that hiss, bumps and distant voices can't be mistaken for "wake up".
+WAKE_NO_SPEECH = float(os.environ.get("LS_WAKE_NO_SPEECH", "0.5"))

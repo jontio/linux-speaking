@@ -117,6 +117,21 @@ if [ "${LS_SKIP_INTEGRATIONS:-0}" != 1 ]; then
   ./scripts/build-xpi.sh >/dev/null
   cp build/linux-speaking-thunderbird.xpi "$dir/linux-speaking-thunderbird.xpi"
 
+  say "Installing the Visual Studio Code extension"
+  ./scripts/build-vsix.sh >/dev/null
+  cp build/linux-speaking.vsix "$dir/linux-speaking.vsix"
+  found=0
+  for editor in code codium code-insiders; do
+    command -v "$editor" >/dev/null || continue
+    found=1
+    if "$editor" --install-extension "$dir/linux-speaking.vsix" --force >/dev/null 2>&1; then
+      echo "Installed in $editor. If it is open, restart it."
+    else
+      echo "Could not install in $editor. Try: $editor --install-extension $dir/linux-speaking.vsix"
+    fi
+  done
+  [ "$found" = 1 ] || echo "VS Code wasn't found. To add it later: code --install-extension $dir/linux-speaking.vsix"
+
   say "Letting Kate and KWrite be dictated into"
   ./scripts/enable-editor-accessibility.sh || true
 
@@ -143,7 +158,7 @@ your application menu.
 
   - Open LibreOffice Writer, say "wake up", and dictate. Say "go to sleep" to stop.
   - Right-click the tray icon for Settings and the microphone level meter.
-  - Kate and KWrite: close them and start them again from the application menu.
+  - Kate, KWrite and VS Code: close them and start them again.
 
 ONE STEP IS LEFT FOR YOU, and only if you use Thunderbird. Its add-on has to be added by
 hand, because Thunderbird doesn't let a program install one for you:

@@ -28,19 +28,32 @@ ITEMS = (
     Item("delete", "Delete that", "Editing"),
     Item("delete_words", "Delete last word  (or \"delete last 3 words\")", "Editing"),
     Item("spell", "Spell that  (opens a box to spell a word letter by letter)", "Editing"),
+    Item("tab", "Tab  (the Tab key)", "Editing"),
     Item("backspace", "Backspace  (or \"backspace 3\")", "Editing"),
     Item("new_paragraph", "New paragraph", "Line breaks", phrases=("new paragraph",)),
     Item("new_line", "New line", "Line breaks", phrases=("new line",)),
     Item("press_enter", "Press enter", "Line breaks"),
     Item("line_end", "Go to end of line", "Moving the cursor"),
     Item("line_start", "Go to start of line", "Moving the cursor"),
+    Item("word_left", "Move left 3 words  (or \"move back a word\")", "Moving the cursor"),
+    Item("word_right", "Move right 3 words  (or \"move forward a word\")", "Moving the cursor"),
     Item("para_end", "Go to end of paragraph", "Moving the cursor"),
     Item("para_start", "Go to start of paragraph", "Moving the cursor"),
     Item("doc_top", "Go to top", "Moving the cursor"),
     Item("doc_end", "Go to bottom", "Moving the cursor"),
+    Item("line_up", "Up 3 lines  (or \"up one line\")", "Lines"),
+    Item("line_down", "Down 3 lines  (or \"down one line\")", "Lines"),
+    Item("go_to_line", "Go to line 42  (VS Code, Kate)", "Lines"),
+    Item("select_line", "Select line", "Lines"),
+    Item("delete_line", "Delete line  (or \"delete 3 lines\")", "Lines"),
+    Item("duplicate_line", "Duplicate line  (VS Code)", "Lines"),
+    Item("indent", "Indent  (VS Code)", "Lines"),
+    Item("outdent", "Outdent  (VS Code)", "Lines"),
+    Item("comment_line", "Comment line, uncomment line  (VS Code)", "Lines"),
     Item("select", "Select <words>", "Selecting"),
     Item("choose_numbers", "Show numbers to choose from when several places match",
          "Selecting"),
+    Item("select_all", "Select all", "Selecting"),
     Item("select_last", "Select that", "Selecting"),
     Item("unselect", "Unselect that", "Selecting"),
     Item("cap", "Cap that", "Formatting"),
@@ -49,6 +62,10 @@ ITEMS = (
     Item("bold", "Bold that", "Formatting"),
     Item("italic", "Italicize that", "Formatting"),
     Item("underline", "Underline that", "Formatting"),
+    Item("other_apps", "Dictate into other programs' text boxes  (switches desktop "
+         "accessibility on)", "Other programs", default=False),
+    Item("vscode_cpp", "VS Code C/C++ coding commands  (in .c, .cpp, .h and .hpp files)",
+         "Programming"),
     Item("say:full stop", "Full stop  .", "Punctuation", phrases=("full stop",)),
     Item("say:period", "Period  .", "Punctuation", default=False, phrases=("period",)),
     Item("say:comma", "Comma  ,", "Punctuation", phrases=("comma",)),
@@ -65,7 +82,7 @@ ITEMS = (
          phrases=("open quote", "close quote")),
 )
 BY_KEY = {item.key: item for item in ITEMS}
-OPTIONS = frozenset({"choose_numbers"})  # settings that aren't commands
+OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps"})  # settings that aren't commands
 
 
 class Settings:

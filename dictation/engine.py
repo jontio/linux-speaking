@@ -13,15 +13,16 @@ import numpy as np
 
 from . import client, config
 from .commands import (
-    MOVES, Command, Dictation, choice, interpret, last_words_length, move_steps,
+    MOVES, Command, Dictation, choice, interpret, is_move, last_words_length, move_steps,
 )
 from .formatting import SPOKEN, fit
 from .mailbridge import MailBridge
 from .targets import Targets
+from .vscode_target import VSCodeTarget
 from .words import Lexicon
 from .settings import Settings
 from .segmenter import END, START, Segmenter, SegmenterConfig
-from . import spelling
+from . import accessibility, coding, spelling
 from .status import State, Status
 
 
@@ -93,6 +94,8 @@ class Transcriber:
 
     def __init__(self, dictation_model: str = ""):
         self._loaded = {}  # folder name -> model, so a model used for both is loaded once
+        self.not_speech = 0.0  # for the last phrase heard asleep: how likely it was noise
+        self.ignored = ""      # and what it was taken for, if it was ignored as noise
         self.wake_name = config.WAKE_MODEL
         self.dictation_name = ""
         self._model(self.wake_name)
@@ -118,14 +121,20 @@ class Transcriber:
         if not awake:
             if len(audio) > config.WAKE_MAX_SECONDS * config.RATE:
                 return ""  # too long to be "wake up": a video playing, or a conversation
-            # Nothing is filtered out here: a short "wake up" on a noisy microphone must
-            # not be thrown away as noise. The hint nudges close calls towards the phrase.
+            # Whisper's own filtering is off here, because it once threw away a real
+            # "wake up" on a noisy microphone. No hint towards the phrase is given either:
+            # with one, hiss and bumps were written down as "Wake up." What is kept is
+            # the model's own estimate of whether it heard speech at all.
             segments, _ = self._model(self.wake_name).transcribe(
                 audio, language="en", beam_size=config.BEAM,
                 condition_on_previous_text=False, without_timestamps=True,
-                no_speech_threshold=None, hotwords="Wake up.",
+                no_speech_threshold=None,
             )
-            return " ".join(s.text.strip() for s in segments).strip()
+            segments = list(segments)
+            text = " ".join(s.text.strip() for s in segments).strip()
+            self.not_speech = max((s.no_speech_prob for s in segments), default=1.0)
+            self.ignored = text if self.not_speech > config.WAKE_NO_SPEECH else ""
+            return "" if self.ignored else text
         segments, _ = self._model(self.dictation_name).transcribe(
             audio, language="en", beam_size=config.BEAM,
             condition_on_previous_text=False, without_timestamps=True,
@@ -162,10 +171,10 @@ class Engine:
         if config.EDITOR:
             try:
                 from .editor_target import EditorTarget
-                editor = EditorTarget()
+                editor = EditorTarget(lambda: self.settings.enabled("other_apps"))
             except Exception as e:  # the accessibility library isn't installed
                 log(f"dictation into Kate is off: {e}")
-        self.targets = Targets(mail, editor)
+        self.targets = Targets(mail, editor, VSCodeTarget() if config.VSCODE else None)
         self.lexicon = Lexicon.load_default()
         self.keep_final = os.environ.get("LS_KEEP_FINAL") == "1"
         self._transcriber = transcriber
@@ -174,7 +183,12 @@ class Engine:
         self._recorder = None
         self._lock = threading.Lock()
         self._choice_timer = None
+        self._explained_at = -60.0
+        self._names_at = 0.0
+        self._names_list = []
+        self._scope = {}
         self._running = True
+        self.apply_accessibility()
         threading.Thread(target=self._work, daemon=True).start()
 
     # ---- on / off -------------------------------------------------------
@@ -334,6 +348,18 @@ class Engine:
         self.status.ready = self._transcriber is not None
         self.on_change()
 
+    def setting_changed(self, key: str) -> None:
+        """Called when a tick box in Settings is changed."""
+        if key == "other_apps":
+            self.apply_accessibility()
+
+    def apply_accessibility(self) -> None:
+        """Other programs only show their text boxes while desktop accessibility is on."""
+        if config.EDITOR:
+            said = accessibility.apply(self.settings.enabled("other_apps"))
+            if said:
+                log(said)
+
     def set_model(self, model: str) -> None:
         """Choose the dictation model. It is loaded in the background."""
         self.settings.set_model(model)
@@ -360,16 +386,21 @@ class Engine:
             context = self.targets.request({"op": "context"})
             self.status.writer_ready = bool(context.get("ok"))
             self.status.target = self.targets.name
-            if config.USE_CONTEXT and context.get("ok"):
+            if self._coding(context) and coding.where(context.get("before", ""))[0] != "comment":
+                prompt = coding.prompt(self._names(), self._scope)
+            elif config.USE_CONTEXT and context.get("ok"):
                 prompt = context.get("before", "")[-config.CONTEXT_CHARS:]
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         text = self._transcriber.transcribe(normalise(audio), awake, prompt)
         if not awake and os.environ.get("LS_LOG_PHRASES") == "1":
             # Short phrases are logged in full, to show how "wake up" gets misheard.
-            short = len(text.split()) <= 3
+            heard = text or getattr(self._transcriber, "ignored", "")
+            note = " (ignored as noise)" if not text and heard else ""
+            likely = getattr(self._transcriber, "not_speech", 0.0)
             log(f"asleep, phrase of {len(audio) / config.RATE:.1f}s, peak {peak:.3f}, "
                 f"{self.status.voice_db} dB above background, "
-                + (f"heard {text!r}" if short else f"{len(text)} characters"))
+                + (f"heard {heard!r}" if len(heard.split()) <= 3 else f"{len(heard)} characters")
+                + f"{note}, {likely:.0%} likely not speech")
         self.handle_text(text, awake)
 
     def handle_text(self, text: str, awake: bool) -> None:
@@ -399,23 +430,33 @@ class Engine:
         if isinstance(action, Command):
             self.status.last_heard = text
             # "Press enter" is the Enter key: a new paragraph.
-            name = "new_paragraph" if action.name == "press_enter" else action.name
+            name = action.name
             reply = {"why": "unknown request"}
             if name == "delete_words":
                 reply = self._delete_words(int(action.arg))
-            elif name in MOVES:
-                steps = MOVES[name]
+            elif is_move(name):
+                before = after = "x"  # only the paragraph moves need the real text
                 if name in ("para_end", "para_start"):
                     context = self.targets.request({"op": "context"})
                     if context.get("ok"):
-                        steps = move_steps(name, context.get("before", ""),
-                                           context.get("after", ""))
-                reply = self.targets.request({"op": "move", "steps": steps})
+                        before, after = context.get("before", ""), context.get("after", "")
+                count = int(action.arg) if action.arg.isdigit() else 1
+                reply = self.targets.request(
+                    {"op": "move", "steps": move_steps(name, before, after, count)})
+                if name == "delete_line" and reply.get("ok"):
+                    # Where the line could only be selected, deleting it is a second step.
+                    reply = self.targets.request({"op": "command", "name": "delete"})
             if reply.get("why") == "unknown request":  # not a move, or an older extension
                 reply = self.targets.request({
                     "op": "command", "name": name, "arg": action.arg,
                     "nearest": not self.settings.enabled("choose_numbers"),
                 })
+            if name == "tab" and reply.get("why") == "unknown command":
+                # Where there is no Tab command, a tab character does the same job.
+                reply = self.targets.request({"op": "insert", "text": "\t"})
+            if name == "press_enter" and reply.get("why") == "unknown command":
+                # Where Enter isn't known as a command, it is a new paragraph.
+                reply = self.targets.request({"op": "command", "name": "new_paragraph"})
             if reply.get("choices", 0) > 1:
                 self._start_choosing(reply["choices"])
             self._note(reply)
@@ -466,6 +507,24 @@ class Engine:
             self.status.state = State.AWAKE
         self.on_change()
         return True
+
+    # ---- source code ----------------------------------------------------------------
+    def _coding(self, context: dict) -> bool:
+        """True if the cursor is in a C or C++ file and the coding commands are on."""
+        return (context.get("language") in coding.LANGUAGES
+                and self.settings.enabled("vscode_cpp") and not self.status.spelling)
+
+    def _names(self) -> list:
+        """The names in the file being edited, nearest the cursor first."""
+        now = time.monotonic()
+        if now - self._names_at > 2.0:
+            reply = self.targets.request({"op": "symbols"})
+            self._names_list = reply.get("names", []) if reply.get("ok") else []
+            # What the editor's C/C++ language server says is in scope at the cursor.
+            self._scope = {item["name"]: item["kind"] for item in reply.get("scope", [])
+                           if isinstance(item, dict) and "name" in item}
+            self._names_at = now
+        return self._names_list
 
     def _delete_words(self, count: int) -> dict:
         """Delete the last words before the cursor, using the backspace command."""
@@ -530,9 +589,20 @@ class Engine:
         context = self.targets.request({"op": "context"})
         if not context.get("ok"):
             return context
-        ins = fit(raw, context.get("before", ""), context.get("after", ""),
-                  self.lexicon, keep_final=self.keep_final, spoken_off=spoken_off)
+        before, after = context.get("before", ""), context.get("after", "")
+        place, comment = coding.where(before) if self._coding(context) and not exact else ("", "")
+        if place in ("code", "string"):
+            # Source code has its own rules, and knows the names already in the file.
+            ins = coding.fit_code(raw, before, after, self._names(), self._scope)
+        else:
+            # Prose, including a comment in a source file, which starts after its "//".
+            ins = fit(raw, comment if place == "comment" else before, after,
+                      self.lexicon, keep_final=self.keep_final, spoken_off=spoken_off)
         text = ins.text
+        if context.get("selected"):
+            # Spoken over a selection, the words take its place. The spacing around it
+            # was already right for what was there, so none is added.
+            text = text.strip(" ")
         if exact and any(c.isupper() for c in raw):
             at = text.lower().find(raw.lower())  # keep the capitals exactly as spelled
             if at >= 0:
@@ -554,6 +624,13 @@ class Engine:
         self.status.target = self.targets.name
         if not reply.get("ok") and reply.get("why"):
             self.status.last_heard += f"  ({reply['why']})"
+        if reply.get("why") in ("writer not running", "writer not focused", "no writer document"):
+            # Nothing was in front to type into. Say what each program answered, at most
+            # twice a minute, so the log shows why.
+            now = time.monotonic()
+            if now - self._explained_at > 30:
+                self._explained_at = now
+                log("nothing to type into. " + self.targets.describe())
 
 
 def saved_on() -> bool:

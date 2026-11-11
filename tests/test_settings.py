@@ -10,7 +10,7 @@ from dictation.settings import ITEMS, Settings, available_models, model_label
 class Defaults(unittest.TestCase):
     def test_everything_on_except_period(self):
         s = Settings()
-        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["say:period"])
+        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["other_apps", "say:period"])
         self.assertEqual(s.spoken_off(), ["period"])
         self.assertEqual(s.disabled_commands(), frozenset())
 
@@ -97,6 +97,62 @@ class Effects(unittest.TestCase):
     def test_spell_that(self):
         self.assertEqual(interpret("Spell that.", True), Command("spell"))
         self.assertEqual(interpret("Spell that.", True, frozenset({"spell"})), Dictation("Spell that."))
+
+    def test_move_by_words(self):
+        self.assertEqual(interpret("Move left three words.", True), Command("word_left", "3"))
+        self.assertEqual(interpret("Move right 2 words", True), Command("word_right", "2"))
+        self.assertEqual(interpret("Move left a word.", True), Command("word_left", "1"))
+        self.assertEqual(interpret("Move back one word.", True), Command("word_left", "1"))
+        self.assertEqual(interpret("Go forward four words.", True), Command("word_right", "4"))
+        self.assertEqual(interpret("Move right word", True), Command("word_right", "1"))
+        self.assertEqual(interpret("Move left three words quickly", True),
+                         Dictation("Move left three words quickly"))
+        self.assertEqual(interpret("Move left 3 words.", True, frozenset({"word_left"})),
+                         Dictation("Move left 3 words."))
+        self.assertEqual(move_steps("word_left", "x", "x", 3), [["text", "gotoPreviousWord", False]] * 3)
+        self.assertEqual(move_steps("word_right", "x", "x", 1), [["text", "gotoNextWord", False]])
+
+    def test_line_commands(self):
+        self.assertEqual(interpret("Up one line.", True), Command("line_up", "1"))
+        self.assertEqual(interpret("Down 3 lines", True), Command("line_down", "3"))
+        self.assertEqual(interpret("Go up two lines.", True), Command("line_up", "2"))
+        self.assertEqual(interpret("Move down a line", True), Command("line_down", "1"))
+        self.assertEqual(interpret("Delete line.", True), Command("delete_line", "1"))
+        self.assertEqual(interpret("Delete this line", True), Command("delete_line", "1"))
+        self.assertEqual(interpret("Delete three lines", True), Command("delete_line", "3"))
+        self.assertEqual(interpret("Select line.", True), Command("select_line"))
+        self.assertEqual(interpret("Go to line 42.", True), Command("go_to_line", "42"))
+        self.assertEqual(interpret("Go to line seven", True), Command("go_to_line", "7"))
+        self.assertEqual(interpret("Indent.", True), Command("indent"))
+        self.assertEqual(interpret("Comment line", True), Command("comment_line"))
+        self.assertEqual(interpret("Duplicate line", True), Command("duplicate_line"))
+        self.assertEqual(interpret("Delete line.", True, frozenset({"delete_line"})), Dictation("Delete line."))
+        self.assertEqual(interpret("up the line of battle", True), Dictation("up the line of battle"))
+        self.assertEqual(move_steps("line_up", "x", "x", 3), [["view", "goUp", 3, False]])
+        self.assertEqual(move_steps("delete_line", "x", "x")[1], ["view", "gotoEndOfLine", True])
+
+    def test_move_to_is_go_to(self):
+        self.assertEqual(interpret("Move to end of line.", True), Command("line_end"))
+        self.assertEqual(interpret("Move to the start of the line", True), Command("line_start"))
+        self.assertEqual(interpret("Move to start of paragraph", True), Command("para_start"))
+        self.assertEqual(interpret("Jump to top", True), Command("doc_top"))
+        self.assertEqual(interpret("Move to line 12", True), Command("go_to_line", "12"))
+        self.assertEqual(interpret("Move to the shops", True), Dictation("Move to the shops"))
+
+    def test_tab(self):
+        self.assertEqual(interpret("Tab.", True), Command("tab"))
+        self.assertEqual(interpret("Press tab", True), Command("tab"))
+        self.assertEqual(interpret("Shift tab", True), Command("outdent"))
+        self.assertEqual(interpret("Tab.", True, frozenset({"tab"})), Dictation("Tab."))
+        self.assertEqual(interpret("the tab is open", True), Dictation("the tab is open"))
+
+    def test_select_all(self):
+        self.assertEqual(interpret("Select all.", True), Command("select_all"))
+        self.assertEqual(interpret("Select everything", True), Command("select_all"))
+        self.assertEqual(interpret("Select all the cats", True), Command("select", "all the cats"))
+        self.assertEqual(interpret("Select all.", True, frozenset({"select_all"})), Dictation("Select all."))
+        self.assertEqual(move_steps("select_all", "x", "x"),
+                         [["view", "gotoStart", False], ["view", "gotoEnd", True]])
 
     def test_backspace(self):
         self.assertEqual(interpret("Backspace.", True), Command("backspace", "1"))

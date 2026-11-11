@@ -3,7 +3,7 @@
   "name": "Linux Speaking",
   "description": "Lets the Linux Speaking dictation engine type into the message you are writing.",
   "homepage_url": "https://github.com/jontio/linux-speaking",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "Jonti Olds",
   "applications": {
     "gecko": { "id": "linux-speaking@jontio.github.io", "strict_min_version": "115.0" }

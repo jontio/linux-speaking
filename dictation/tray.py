@@ -21,11 +21,11 @@ from .status import State
 
 LOADING_COLOUR = "#8e5bd0"
 COLOURS = {
-    State.OFF: "#8a8a8a",
-    State.ASLEEP: "#3b82c4",
-    State.AWAKE: "#2e9d4f",
-    State.HEARING: "#e0a020",
-    State.THINKING: "#e0a020",
+    State.OFF: "#d32f2f",       # red: the microphone is off and nothing will respond
+    State.ASLEEP: "#e0a020",    # orange: asleep, but "wake up" will wake it
+    State.AWAKE: "#2e9d4f",     # green: awake
+    State.HEARING: "#2e9d4f",   # still green while you talk; the level bar shows it hearing
+    State.THINKING: "#62b96f",  # a lighter green while it works out what you said
 }
 
 
@@ -224,7 +224,8 @@ class SettingsWindow(QWidget):
                 groups[item.group] = box
             tick = QCheckBox(item.label)
             tick.setChecked(engine.settings.enabled(item.key))
-            tick.toggled.connect(lambda on, key=item.key: engine.settings.set(key, on))
+            tick.toggled.connect(lambda on, key=item.key: (
+                engine.settings.set(key, on), engine.setting_changed(key)))
             groups[item.group].layout().addWidget(tick)
         layout.addStretch()
         scroll = QScrollArea()
@@ -308,7 +309,8 @@ class AboutWindow(QWidget):
             "<p>Voice dictation for Linux. Say <b>wake up</b> and talk; say <b>go to sleep</b> "
             "to stop. Your words are fitted to the text around the cursor, and commands "
             "such as <b>scratch that</b>, <b>select</b> and <b>spell that</b> edit by voice.</p>"
-            "<p>Works in LibreOffice Writer, Thunderbird messages, Kate and KWrite. "
+            "<p>Works in LibreOffice Writer, Thunderbird messages, Kate, KWrite and "
+            "Visual Studio Code. "
             "Everything runs on this computer: nothing you say is sent anywhere.</p>"
             f"<p><b>Speech model:</b> {model}<br>"
             f"<b>Typing into:</b> {target}<br>"
@@ -578,6 +580,10 @@ def main() -> int:
         os._exit(0)
 
     signal.signal(signal.SIGTERM, stop)
+    # For troubleshooting: "systemctl --user kill -s USR1 linux-speaking" writes to the log
+    # what each program's link answers when asked whether it is in front.
+    signal.signal(signal.SIGUSR1, lambda *_: tray.engine.run_soon(
+        lambda: print("in front? " + tray.engine.targets.describe(), flush=True)))
     code = app.exec()
     tray.engine.quit()
     tray.tray.hide()

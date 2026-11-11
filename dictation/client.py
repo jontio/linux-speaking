@@ -1,4 +1,4 @@
-"""Talking to the Writer extension over a local socket."""
+"""Talking to an extension over a local socket: one JSON line out, one back."""
 from __future__ import annotations
 
 import json
@@ -6,24 +6,35 @@ import os
 import socket
 
 
+def runtime_dir() -> str:
+    """The user's private runtime folder, where the sockets live."""
+    return os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+
+
 def socket_path() -> str:
-    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return os.environ.get("LINUX_SPEAKING_SOCKET") or os.path.join(base, "linux-speaking.sock")
+    """The LibreOffice Writer extension's socket."""
+    return os.environ.get("LINUX_SPEAKING_SOCKET") or os.path.join(
+        runtime_dir(), "linux-speaking.sock")
+
+
+def send(path: str, message: dict, timeout: float = 6.0) -> dict:
+    """Send one request to the socket at `path` and return the reply. Raises on failure."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        s.connect(path)
+        s.sendall((json.dumps(message) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    return json.loads(data.decode("utf-8"))
 
 
 def request(message: dict, timeout: float = 6.0) -> dict:
-    """Send one request and return the reply. Never raises."""
+    """Send one request to Writer and return the reply. Never raises."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(socket_path())
-            s.sendall((json.dumps(message) + "\n").encode("utf-8"))
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = s.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-        return json.loads(data.decode("utf-8"))
+        return send(socket_path(), message, timeout)
     except (OSError, ValueError) as e:
         return {"ok": False, "why": "writer not running", "error": str(e)}
