@@ -66,6 +66,8 @@ ITEMS = (
          "accessibility on)", "Other programs", default=False),
     Item("vscode_cpp", "VS Code C/C++ coding commands  (in .c, .cpp, .h and .hpp files)",
          "Programming"),
+    Item("numpad_plus", "Number pad + switches dictation between off and awake  (the key "
+         "then no longer types a plus)", "Keyboard"),
     Item("say:full stop", "Full stop  .", "Punctuation", phrases=("full stop",)),
     Item("say:period", "Period  .", "Punctuation", default=False, phrases=("period",)),
     Item("say:comma", "Comma  ,", "Punctuation", phrases=("comma",)),
@@ -82,7 +84,8 @@ ITEMS = (
          phrases=("open quote", "close quote")),
 )
 BY_KEY = {item.key: item for item in ITEMS}
-OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps"})  # settings that aren't commands
+OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "numpad_plus"})
+WINDOWS_ONLY = frozenset({"numpad_plus"})  # settings that aren't commands
 
 
 class Settings:

@@ -119,6 +119,9 @@ folder, a shortcut is added to the Start menu, and it starts when you sign in (s
 
 Things to know:
 
+- **The number pad's + key** switches dictation between off and awake, whichever program
+  is in front. While it does, the key no longer types a plus; untick it in Settings to get
+  the plus back.
 - **Choose your microphone** in Settings if the level meter doesn't move when you talk.
   Windows' default recording device isn't always the one you expect.
 - The tray icon may be tucked behind the little arrow by the clock. Drag it out to keep it
@@ -161,7 +164,7 @@ talk. Right-clicking it gives you the level meter, Settings and About.
 | tab | The Tab key |
 | delete last word, delete last 3 words | Removes words before the cursor |
 | delete that | Removes the selection |
-| select *words* | Selects those words near the cursor, with numbered choices if several match |
+| select *words* | Selects those words near the cursor, with numbered choices if several match. Say a number, or "cancel" |
 | select that / unselect that | Selects the last phrase / clears the selection |
 | select all | Selects the whole document |
 | spell that | Opens the spelling box |

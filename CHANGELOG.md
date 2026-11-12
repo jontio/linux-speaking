@@ -13,6 +13,13 @@
 - "My words" in Settings: names and unusual words that get misheard. They are given to
   the recogniser as a hint, and a second listen without the hint keeps an ordinary word
   ordinary.
+- On Windows, the number pad's + key switches dictation between off and awake, whichever
+  program is in front. A setting turns this off and gives the key back.
+- "Cancel" takes away the numbers shown for "select" without typing anything.
+- Text before the cursor that is one word over and over is no longer shown to the
+  recogniser, which used to carry on repeating it whatever was said.
+- On Windows, a passing error from Word no longer sends the next words to be typed in as
+  keystrokes, and the log says which program is being typed into and what an error was.
 - Clicking the tray icon when dictation is off turns it on awake, ready to talk, not
   asleep.
 

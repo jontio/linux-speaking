@@ -38,6 +38,16 @@ _SUFFIXES = (
 )
 
 
+def repetitive(text: str) -> bool:
+    """Whether `text` is mostly the same few words over and over.
+
+    Whisper, shown such text as what came before, carries on with it whatever is said:
+    after "say say say say" even "the weather is nice" is written down as "say say say".
+    """
+    words = re.findall(r"[\w'’]+", text.lower())
+    return len(words) >= 6 and len(set(words)) * 2 < len(words)
+
+
 def _stems(word: str):
     yield word
     for suffix, replacement in _SUFFIXES:

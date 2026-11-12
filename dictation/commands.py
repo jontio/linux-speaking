@@ -151,6 +151,14 @@ def choice(raw: str, limit: int) -> int | None:
     return n if n and n <= limit else None
 
 
+CANCEL = frozenset({"cancel", "cancel that", "cancel it", "never mind", "nevermind"})
+
+
+def is_cancel(raw: str) -> bool:
+    """Whether a phrase said while numbers are showing means "take them away"."""
+    return normalise(raw) in CANCEL
+
+
 def is_wake(phrase: str) -> bool:
     """True if a normalised phrase is "wake up", allowing for a slight mishearing.
 

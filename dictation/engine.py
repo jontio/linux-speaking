@@ -12,13 +12,14 @@ import numpy as np
 
 from . import client, config
 from .commands import (
-    MOVES, Command, Dictation, choice, interpret, is_move, last_words_length, move_steps,
+    MOVES, Command, Dictation, choice, interpret, is_cancel, is_move, last_words_length,
+    move_steps,
 )
 from .formatting import SPOKEN, fit
 from .mailbridge import MailBridge
 from .targets import Targets
 from .vscode_target import VSCodeTarget
-from .words import Lexicon
+from .words import Lexicon, repetitive
 from .settings import Settings
 from .segmenter import END, START, Segmenter, SegmenterConfig
 from . import accessibility, audio, coding, spelling, vocabulary
@@ -409,7 +410,7 @@ class Engine:
             self.on_change()
             context = self.targets.request({"op": "context"})
             self.status.writer_ready = bool(context.get("ok"))
-            self.status.target = self.targets.name
+            self._typing_into(self.targets.name)
             if self._coding(context) and coding.where(context.get("before", ""))[0] != "comment":
                 prompt = coding.prompt(self._names(), self._scope)
             else:
@@ -417,6 +418,8 @@ class Engine:
                     before = context.get("before", "")
                 if config.USE_CONTEXT:
                     prompt = before[-config.CONTEXT_CHARS:]
+                    if repetitive(prompt):
+                        prompt = ""  # Whisper would carry on repeating it
                 hint = vocabulary.hint(self.settings.words)
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         sound = normalise(audio)
@@ -497,13 +500,13 @@ class Engine:
             if reply.get("choices", 0) > 1:
                 self._start_choosing(reply["choices"])
             self._note(reply)
-            log(f"command {action.name}: {'ok' if reply.get('ok') else reply.get('why')}")
+            log(f"command {action.name}: {outcome(reply)}")
         elif isinstance(action, Dictation):
             self.status.last_heard = text
             reply = self._dictate(action.text)
             self._note(reply)
             log(f"dictation, {len(action.text)} characters: "
-                f"{'ok' if reply.get('ok') else reply.get('why')}")
+                f"{outcome(reply)}")
         if self.status.state in (State.THINKING, State.HEARING):
             self.status.state = State.AWAKE
         self.on_change()
@@ -511,7 +514,7 @@ class Engine:
     # ---- choosing between numbered matches ----------------------------------
     def _start_choosing(self, count: int) -> None:
         self.status.choosing = count
-        self.status.last_heard += f"  (say a number, 1 to {count})"
+        self.status.last_heard += f"  (say a number, 1 to {count}, or \"cancel\")"
         self._choice_timer = threading.Timer(config.CHOICE_SECONDS, self._stop_choosing)
         self._choice_timer.daemon = True
         self._choice_timer.start()
@@ -531,7 +534,14 @@ class Engine:
         n = choice(text, self.status.choosing)
         if n is None:
             self._stop_choosing()  # anything else cancels, then is handled as usual
-            return False
+            if not is_cancel(text):
+                return False
+            self.status.last_heard = "cancel"  # "cancel" itself is not typed
+            log("command cancel: ok")
+            if self.status.state in (State.THINKING, State.HEARING):
+                self.status.state = State.AWAKE
+            self.on_change()
+            return True
         if self._choice_timer is not None:
             self._choice_timer.cancel()
             self._choice_timer = None
@@ -539,7 +549,7 @@ class Engine:
         self.status.last_heard = f"choose {n}"
         reply = self.targets.request({"op": "command", "name": "choose", "arg": str(n)})
         self._note(reply)
-        log(f"command choose: {'ok' if reply.get('ok') else reply.get('why')}")
+        log(f"command choose: {outcome(reply)}")
         if self.status.state in (State.THINKING, State.HEARING):
             self.status.state = State.AWAKE
         self.on_change()
@@ -611,7 +621,7 @@ class Engine:
             reply = self._dictate(word, exact=True)
             self._note(reply)
             log(f"spelled word, {len(word)} characters: "
-                f"{'ok' if reply.get('ok') else reply.get('why')}")
+                f"{outcome(reply)}")
         else:
             log("spelling cancelled")
         self._back_to_awake()
@@ -652,13 +662,18 @@ class Engine:
             reply = self.targets.request({"op": "dictate", "text": raw, "spoken_off": spoken_off})
         return reply
 
+    def _typing_into(self, name: str) -> None:
+        if name != self.status.target:
+            log(f"typing into {name or 'nothing'}")
+        self.status.target = name
+
     def _note(self, reply: dict) -> None:
         self.status.writer_ready = bool(reply.get("ok")) or reply.get("why") not in (
             "writer not running", "writer not focused", "no writer document",
             "mail not running", "mail not focused", "mail not answering",
             "editor not focused",
         )
-        self.status.target = self.targets.name
+        self._typing_into(self.targets.name)
         if not reply.get("ok") and reply.get("why"):
             self.status.last_heard += f"  ({reply['why']})"
         if reply.get("why") in ("writer not running", "writer not focused", "no writer document"):
@@ -668,6 +683,13 @@ class Engine:
             if now - self._explained_at > 30:
                 self._explained_at = now
                 log("nothing to type into. " + self.targets.describe())
+
+
+def outcome(reply: dict) -> str:
+    """A reply in a word or two for the log, with the program's own error if it gave one."""
+    if reply.get("ok"):
+        return "ok"
+    return f"{reply.get('why')}" + (f": {reply['error']}" if reply.get("error") else "")
 
 
 def saved_on() -> bool:
