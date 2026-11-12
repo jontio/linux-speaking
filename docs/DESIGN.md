@@ -23,6 +23,7 @@ program in `dictation/`, with a Qt tray icon.
 | `words.py` | Tells names from ordinary words, using the system's Hunspell dictionary |
 | `selecting.py` | Finds the words for "select ..." |
 | `coding.py` | The rules for dictating C and C++ source code |
+| `vocabulary.py` | The person's own words: a hint for Whisper, and a second hearing to check it |
 | `spelling.py` | Turns spoken letters into letters for "spell that" |
 | `settings.py` | Which commands are switched on, and the choice of speech model |
 | `targets.py` | Picks the program in front |

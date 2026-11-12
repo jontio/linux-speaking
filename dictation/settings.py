@@ -87,11 +87,12 @@ OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps"})  # settings 
 
 class Settings:
     def __init__(self, states: dict | None = None, path: str | None = None, model: str = "",
-                 microphone: str = ""):
+                 microphone: str = "", words=()):
         self.states = dict(states or {})
         self.path = path
         self.model = model  # the chosen speech model's folder name, or "" for the default
         self.microphone = microphone  # Windows: the recording device's name, or "" for the default
+        self.words = tuple(words)  # the person's own names and terms: see vocabulary.py
 
     @classmethod
     def load(cls, path: str = PATH) -> "Settings":
@@ -100,9 +101,12 @@ class Settings:
                 saved = json.load(f)
             states, model = saved.get("states", {}), str(saved.get("model", ""))
             microphone = str(saved.get("microphone", ""))
+            words = saved.get("words", [])
+            words = [str(w) for w in words] if isinstance(words, list) else []
         except (OSError, ValueError, AttributeError):
-            states, model, microphone = {}, "", ""
-        return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model, microphone)
+            states, model, microphone, words = {}, "", "", []
+        return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model,
+                   microphone, words)
 
     def save(self) -> None:
         if not self.path:
@@ -112,6 +116,8 @@ class Settings:
             saved = {"states": self.states, "model": self.model}
             if self.microphone:
                 saved["microphone"] = self.microphone
+            if self.words:
+                saved["words"] = list(self.words)
             json.dump(saved, f, indent=1, sort_keys=True)
 
     def enabled(self, key: str) -> bool:
@@ -127,6 +133,10 @@ class Settings:
 
     def set_microphone(self, microphone: str) -> None:
         self.microphone = microphone
+        self.save()
+
+    def set_words(self, words) -> None:
+        self.words = tuple(words)
         self.save()
 
     def disabled_commands(self) -> frozenset:

@@ -21,7 +21,7 @@ from .vscode_target import VSCodeTarget
 from .words import Lexicon
 from .settings import Settings
 from .segmenter import END, START, Segmenter, SegmenterConfig
-from . import accessibility, audio, coding, spelling
+from . import accessibility, audio, coding, spelling, vocabulary
 from .status import State, Status
 
 
@@ -384,6 +384,13 @@ class Engine:
             self.turn_off(remember=False)
             self.turn_on(awake=awake)
 
+    def set_words(self, text: str) -> None:
+        """Set the person's own words, from what was typed into Settings."""
+        words = vocabulary.parse(text)
+        if words != self.settings.words:
+            self.settings.set_words(words)
+            log(f"own words changed: {len(words)}")
+
     def run_soon(self, action) -> None:
         """Run something on the worker, after anything already heard. For the tray's buttons."""
         self._phrases.put(("call", action))
@@ -392,7 +399,7 @@ class Engine:
         if self._transcriber is None:
             self._transcriber = Transcriber(self.settings.model)
         awake = self.status.awake
-        prompt = ""
+        prompt = hint = before = ""
         if awake and self.status.spelling:
             self.status.state = State.THINKING
             self.on_change()
@@ -405,10 +412,23 @@ class Engine:
             self.status.target = self.targets.name
             if self._coding(context) and coding.where(context.get("before", ""))[0] != "comment":
                 prompt = coding.prompt(self._names(), self._scope)
-            elif config.USE_CONTEXT and context.get("ok"):
-                prompt = context.get("before", "")[-config.CONTEXT_CHARS:]
+            else:
+                if context.get("ok"):
+                    before = context.get("before", "")
+                if config.USE_CONTEXT:
+                    prompt = before[-config.CONTEXT_CHARS:]
+                hint = vocabulary.hint(self.settings.words)
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
-        text = self._transcriber.transcribe(normalise(audio), awake, prompt)
+        sound = normalise(audio)
+        text = self._transcriber.transcribe(sound, awake, hint + prompt)
+        if hint and vocabulary.mentions(text, self.settings.words):
+            # The hint is strong enough to turn an ordinary word into one of the person's
+            # own. Hear it again without, and keep their word only where it fits.
+            plain = self._transcriber.transcribe(sound, awake, prompt)
+            settled = vocabulary.settle(text, plain, before, self.settings.words, self.lexicon)
+            log("own word heard: " + ("kept" if vocabulary.mentions(
+                settled, self.settings.words) else "an ordinary word after all"))
+            text = settled
         if not awake and os.environ.get("LS_LOG_PHRASES") == "1":
             # Short phrases are logged in full, to show how "wake up" gets misheard.
             heard = text or getattr(self._transcriber, "ignored", "")
