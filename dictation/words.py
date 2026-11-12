@@ -74,6 +74,15 @@ class Lexicon:
                 return cls.from_hunspell(path)
         return cls()
 
+    @property
+    def has_dictionary(self) -> bool:
+        return bool(self.lower)
+
+    def ordinary(self, word: str) -> bool:
+        """Whether `word` is an everyday word, as far as is known."""
+        low = word.lower().replace("’", "'")
+        return low in COMMON or any(s in self.lower for s in _stems(low))
+
     def decapitalise(self, token: str) -> str:
         """Lower-case the first letter of `token` unless it looks like a name."""
         m = _WORD.match(token)
@@ -89,6 +98,6 @@ class Lexicon:
             return token
         if any(c.isupper() for c in core[1:]):  # McDonald, LibreOffice
             return token
-        if low in COMMON or any(s in self.lower for s in _stems(low)):
+        if self.ordinary(low):
             return lead + core[0].lower() + core[1:] + rest
         return token

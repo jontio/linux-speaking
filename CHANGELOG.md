@@ -10,6 +10,9 @@
   such as a chat box, reading what is around the cursor through UI Automation.
 - The Visual Studio Code extension is packaged by a Python script, the same on Linux and
   Windows.
+- "My words" in Settings: names and unusual words that get misheard. They are given to
+  the recogniser as a hint, and a second listen without the hint keeps an ordinary word
+  ordinary.
 - Clicking the tray icon when dictation is off turns it on awake, ready to talk, not
   asleep.
 

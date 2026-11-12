@@ -10,8 +10,8 @@ import sys
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QGroupBox, QHBoxLayout, QLabel, QMenu, QPushButton,
-    QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QGroupBox, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
+    QPushButton, QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME, HOMEPAGE, __version__, audio, config
@@ -262,6 +262,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(self.model_box())
         if audio.microphones():
             layout.addWidget(self.microphone_box())
+        layout.addWidget(self.words_box())
         groups = {}
         for item in ITEMS:
             if item.group not in groups:
@@ -313,6 +314,36 @@ class SettingsWindow(QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
         return box
+
+    def words_box(self) -> QGroupBox:
+        """A list of the person's own names and terms."""
+        box = QGroupBox("My words")
+        layout = QVBoxLayout(box)
+        note = QLabel("Names and unusual words that get misheard, one to a line, spelled "
+                      "the way you want them typed. They are used where they fit: a name "
+                      "after \"Cheers,\" but still the ordinary word in an ordinary "
+                      "sentence. Keep the list short.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.words = QPlainTextEdit()
+        self.words.setPlainText("\n".join(self.engine.settings.words))
+        self.words.setTabChangesFocus(True)
+        self.words.setFixedHeight(self.words.fontMetrics().lineSpacing() * 5 + 16)
+        layout.addWidget(self.words)
+        self.words_timer = QTimer(self)  # saved a moment after the typing stops
+        self.words_timer.setSingleShot(True)
+        self.words_timer.setInterval(700)
+        self.words_timer.timeout.connect(self.save_words)
+        self.words.textChanged.connect(self.words_timer.start)
+        return box
+
+    def save_words(self) -> None:
+        self.words_timer.stop()
+        self.engine.set_words(self.words.toPlainText())
+
+    def hideEvent(self, event) -> None:
+        self.save_words()
+        super().hideEvent(event)
 
     def microphone_box(self) -> QGroupBox:
         """A chooser for the recording device, where the desktop has no good one itself."""

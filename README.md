@@ -301,6 +301,22 @@ the default. Bigger models make fewer mistakes but take longer after each phrase
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) model placed in
 `~/linux-speaking/models/` appears in the list.
 
+### Your own words
+
+Names and unusual words are often misheard: "Jonti" comes out as "Jaunty" or "John T".
+List such words under **My words** in Settings, one to a line, spelled the way you want
+them typed.
+
+They are used where they fit. "Cheers, Jonti" gets the name, and "a jaunty little tune"
+still gets the ordinary word. To tell, a phrase that comes out with one of your words in
+it is listened to a second time without the list, and the two are compared. Your word
+stays if the second hearing wrote a name there or a word it didn't know, if a greeting or
+sign-off comes just before, or if you said the word by itself. Such phrases take about
+twice as long to appear. Keep the list short: a few dozen words at most.
+
+At the very start of a sentence the two can't be told apart by capitals, so the system's
+dictionary decides. Where there is none, as on Windows, your word wins there.
+
 ## If something isn't working
 
 - **"Wake up" is ignored.** Open the level meter from the tray icon and speak. The bar
