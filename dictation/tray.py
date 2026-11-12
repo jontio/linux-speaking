@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 
 from . import APP_NAME, HOMEPAGE, __version__, audio, config
 from .engine import Engine, read_number, saved_on, write_text
-from .settings import ITEMS, available_models
+from .settings import ITEMS, WINDOWS_ONLY, available_models
 from .status import State
 
 LOADING_COLOUR = "#8e5bd0"
@@ -108,6 +108,7 @@ class Bridge(QObject):
     level = pyqtSignal()
     event = pyqtSignal(str)
     numbers = pyqtSignal(list)  # numbered matches to show over another program's window
+    hotkey = pyqtSignal()       # the key that switches dictation off and on was pressed
 
 
 class Numbers:
@@ -239,6 +240,7 @@ class SettingsWindow(QWidget):
     def __init__(self, engine: Engine):
         super().__init__()
         self.engine = engine
+        self.on_setting = lambda key: None  # the tray's own reaction to a changed tick box
         self.setWindowTitle("Dictation settings")
         outer = QVBoxLayout(self)
         note = QLabel(
@@ -265,6 +267,8 @@ class SettingsWindow(QWidget):
         layout.addWidget(self.words_box())
         groups = {}
         for item in ITEMS:
+            if item.key in WINDOWS_ONLY and not config.WINDOWS:
+                continue
             if item.group not in groups:
                 box = QGroupBox(item.group)
                 box.setLayout(QVBoxLayout())
@@ -277,7 +281,8 @@ class SettingsWindow(QWidget):
             tick = QCheckBox(label)
             tick.setChecked(engine.settings.enabled(item.key))
             tick.toggled.connect(lambda on, key=item.key: (
-                engine.settings.set(key, on), engine.setting_changed(key)))
+                engine.settings.set(key, on), engine.setting_changed(key),
+                self.on_setting(key)))
             groups[item.group].layout().addWidget(tick)
         layout.addStretch()
         scroll = QScrollArea()
@@ -537,6 +542,13 @@ class Tray:
             self.engine.targets.office.show_numbers = self.bridge.numbers.emit
         self.meter = MeterWindow(self.engine)
         self.settings_window = SettingsWindow(self.engine)
+        self.settings_window.on_setting = self.on_setting
+        self.hotkey = None
+        if config.WINDOWS:
+            from .hotkey import Hotkey
+            self.bridge.hotkey.connect(self.switch)
+            self.hotkey = Hotkey(self.bridge.hotkey.emit)  # pressed on its thread, acted on here
+            self.on_setting("numpad_plus")
         self.spell_window = SpellWindow(self.engine)
         self.about_window = AboutWindow(self.engine)
         self.updating = False
@@ -656,12 +668,24 @@ class Tray:
     def on_click(self, reason) -> None:
         """A click switches off, or from off straight to awake: someone who clicks the icon
         wants to talk now, not to say "wake up" first."""
-        if reason != QSystemTrayIcon.ActivationReason.Trigger:
-            return
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.switch()
+
+    def switch(self) -> None:
+        """Off, or from off straight to awake. For a click on the icon and the hotkey."""
         if self.engine.status.state is State.OFF:
             self.engine.wake()
         else:
             self.engine.turn_off()
+
+    def on_setting(self, key: str) -> None:
+        if key != "numpad_plus" or self.hotkey is None:
+            return
+        if not self.engine.settings.enabled(key):
+            self.hotkey.stop()
+        elif not self.hotkey.start():
+            print("the number pad + key could not be taken: another program has it",
+                  flush=True)
 
     def on_quit(self) -> None:
         shown = self.meter.isVisible()

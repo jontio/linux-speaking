@@ -140,27 +140,47 @@ class WordTarget:
                     time.sleep(0.2)       # Word is in the middle of something: try again
                     continue
                 self._outlook = None
-                return {"ok": False, "why": "error", "error": _describe(e)}
+                return self._failed(message, _describe(e))
             except Exception as e:
-                return {"ok": False, "why": "error", "error": str(e)}
+                return self._failed(message, str(e))
         return {"ok": False, "why": "word not answering"}
 
+    def _failed(self, message: dict, error: str) -> dict:
+        """The reply when Word gave an error. Asked "are you in front?", the answer is
+        still yes if its editing area has the keyboard: otherwise a passing error would
+        send the next words to whatever is asked after Word, typed in as keystrokes."""
+        name = self._editing_area()[0] if message.get("op") == "status" else None
+        if name is not None:
+            self.name = name
+            return {"ok": True, "ready": True, "error": error}
+        return {"ok": False, "why": "error", "error": error}
+
     # ---- finding the document -------------------------------------------------------
+    def _editing_area(self) -> tuple:
+        """(program name, window handle) if Word's or Outlook's editing area has the
+        keyboard, else (None, None). Asks Windows only, not the program."""
+        from . import winapi
+        if TEST_WINDOW:
+            return "Word", TEST_WINDOW
+        program, kind, handle = winapi.focused()
+        name = PROGRAMS.get(program)
+        return (name, handle) if name is not None and kind == EDITOR_CLASS else (None, None)
+
     def _front(self):
         """The Word or Outlook document that has the keyboard, or None."""
         from . import winapi
-        if TEST_WINDOW:
-            program, kind, handle = "winword.exe", EDITOR_CLASS, TEST_WINDOW
-        else:
-            program, kind, handle = winapi.focused()
-        name = PROGRAMS.get(program)
-        if name is None or kind != EDITOR_CLASS:
+        name, handle = self._editing_area()
+        if name is None:
             return None
-        try:
-            window = winapi.native_object(handle)
-            front = Front(name, window, handle)
-        except OSError:
-            return None
+        for attempt in range(3):
+            try:
+                window = winapi.native_object(handle)
+                front = Front(name, window, handle)
+                break
+            except OSError:
+                if attempt == 2:
+                    return None
+                time.sleep(0.15)          # Word was busy; it usually answers the next time
         if front.selection is None:
             return None                   # a document opened for reading only
         if name == "Outlook" and not self._composing():
