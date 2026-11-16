@@ -67,7 +67,7 @@ fi
 say "Setting up Python packages (this downloads a few hundred megabytes)"
 # System packages stay visible, so the distribution's PyQt6 and numpy are used.
 [ -x "$dir/venv/bin/python" ] || python3 -m venv --system-site-packages "$dir/venv"
-"$dir/venv/bin/pip" install --quiet --upgrade faster-whisper
+"$dir/venv/bin/pip" install --quiet --upgrade faster-whisper sherpa-onnx
 
 if [ "${LS_SKIP_MODELS:-0}" != 1 ]; then
   say "Downloading the speech models (about 650 MB, once)"
@@ -131,6 +131,9 @@ if [ "${LS_SKIP_INTEGRATIONS:-0}" != 1 ]; then
     fi
   done
   [ "$found" = 1 ] || echo "VS Code wasn't found. To add it later: code --install-extension $dir/linux-speaking.vsix"
+
+  say "Letting VS Code's panels be dictated into"
+  (cd "$dir/app" && "$dir/venv/bin/python" -m dictation.vscode_args) || true
 
   say "Letting Kate and KWrite be dictated into"
   ./scripts/enable-editor-accessibility.sh || true

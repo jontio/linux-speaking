@@ -76,6 +76,32 @@ _LITERAL_RE = re.compile(
 )
 
 
+# "Hello, Bob": the recogniser puts a comma between a greeting and the name of the person
+# greeted. It is what the grammar books say, and not what most people write. The comma is
+# only taken out before a name or a word that stands for one, so "Hello, how are you"
+# keeps its comma, and only where the greeting starts the phrase or a sentence, so "I saw
+# her this morning, Bob" keeps its too.
+_GREETING_COMMA = re.compile(
+    r"(^|[.!?…]\s+)"
+    r"(hello|hi|hiya|hey|howdy|good\s+(?:morning|afternoon|evening|day)|morning|afternoon|evening)"
+    r"\s*,\s+"
+    r"(?=(?:everyone|everybody|all|both|there|team|folks|guys)\b|(?!I\b|I')[A-Z])",
+    re.IGNORECASE,
+)
+_ADDRESSED = re.compile(r"(?:everyone|everybody|all|both|there|team|folks|guys)\b", re.IGNORECASE)
+
+
+def without_greeting_comma(text: str) -> str:
+    """`text` without the comma the recogniser puts after "Hello" and the like."""
+    def join(m: re.Match) -> str:
+        rest = text[m.end():]
+        # The pattern ignores case, for "hello" and "Hello" alike. A name has a capital.
+        if not (rest[:1].isupper() or _ADDRESSED.match(rest)):
+            return m.group(0)
+        return m.group(1) + m.group(2) + " "
+    return _GREETING_COMMA.sub(join, text)
+
+
 def _is_sym(token: str) -> bool:
     return len(token) == 1 and _SYM_BASE <= ord(token) < _SYM_BASE + len(_SYMBOLS)
 
@@ -141,6 +167,7 @@ def fit(
     lexicon: Lexicon | None = None,
     keep_final: bool = False,
     spoken_off=None,
+    greeting_comma: bool = True,
 ) -> Insertion:
     """Fit one dictated phrase from Whisper between `before` and `after`.
 
@@ -149,6 +176,9 @@ def fit(
     spoke. It is always dropped when inserting into the middle of a sentence.
 
     `spoken_off` lists spoken punctuation phrases to leave as ordinary words.
+
+    `greeting_comma` off takes out the recogniser's comma in "Hello, Bob". A comma that
+    was said, and came through as the word, is put in all the same.
     """
     off = set(DEFAULT_OFF if spoken_off is None else spoken_off)
     lexicon = lexicon or Lexicon()
@@ -158,6 +188,9 @@ def fit(
     mid_sentence = bool(after_text) and after_text[0] not in BREAKS + "\n\r"
     if not keep_final or mid_sentence:
         text = re.sub(r"[.!?]+$", "", text)
+
+    if not greeting_comma:
+        text = without_greeting_comma(text)
 
     text = _LITERAL_RE.sub(
         lambda m: _PROTECT + m.group(1).replace(" ", _PROTECT_SPACE) + _PROTECT,

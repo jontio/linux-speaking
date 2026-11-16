@@ -10,9 +10,9 @@ from dictation.settings import ITEMS, Settings, available_models, model_label
 class Defaults(unittest.TestCase):
     def test_everything_on_except_period(self):
         s = Settings()
-        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["other_apps", "say:period"])
+        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["quick_listening", "second_opinions", "enter", "other_apps", "say:period"])
         self.assertEqual(s.spoken_off(), ["period"])
-        self.assertEqual(s.disabled_commands(), frozenset())
+        self.assertEqual(s.disabled_commands(), frozenset({"enter"}))  # off until asked for
 
     def test_keys_are_unique(self):
         self.assertEqual(len({i.key for i in ITEMS}), len(ITEMS))
@@ -27,7 +27,7 @@ class SaveAndLoad(unittest.TestCase):
         s.set("say:full stop", False)
         again = Settings.load(path)
         self.assertFalse(again.enabled("scratch"))
-        self.assertEqual(again.disabled_commands(), frozenset({"scratch"}))
+        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter"}))
         self.assertEqual(again.spoken_off(), ["full stop"])
 
     def test_bad_file_gives_defaults(self):

@@ -8,6 +8,7 @@ right for where the cursor is. Edit by voice with commands like **"scratch that"
 
 It runs entirely on your own computer, using [Whisper](https://github.com/openai/whisper)
 for speech recognition. Nothing you say is sent anywhere, and no graphics card is needed.
+(If you have a second, faster computer, you can choose to have it do the recognising.)
 
 [![Watch the demo: writing C in VS Code by voice](docs/images/demo.png)](https://youtu.be/RrhKpiO7YL8)
 
@@ -162,10 +163,12 @@ talk. Right-clicking it gives you the level meter, Settings and About.
 | undo that | Undoes the last change |
 | backspace, backspace 3 | Removes characters before the cursor |
 | tab | The Tab key |
+| space, space 3 | The space bar, once or several times |
+| enter | The Enter key, the same as "press enter". Off until ticked in Settings |
 | delete last word, delete last 3 words | Removes words before the cursor |
 | delete that | Removes the selection |
-| select *words* | Selects those words near the cursor, with numbered choices if several match. Say a number, or "cancel" |
-| select that / unselect that | Selects the last phrase / clears the selection |
+| select *words* | Selects those words near the cursor, with numbered choices if several match. Say a number, or "cancel". Words that sound the same are found too: "select two" finds "2", "to" and "too" |
+| select that, correct that / unselect that | Highlights the last phrase, so what you say next replaces it / clears the selection |
 | select all | Selects the whole document |
 | spell that | Opens the spelling box |
 | new paragraph, new line, press enter | Breaks |
@@ -183,6 +186,18 @@ talk. Right-clicking it gives you the level meter, Settings and About.
 Punctuation words, said while dictating: comma, full stop, period (off by default),
 question mark, exclamation mark, colon, semicolon, hyphen, ellipsis, open and close
 bracket, open and close quote. Say "literal comma" to type the word itself.
+
+The recogniser adds commas of its own inside a phrase, and they are kept, with one
+exception: the comma it puts after a greeting, as in "Hello, Bob", is left out, giving
+"Hello Bob". "Hello, how are you" and "Cheers, Bob" keep theirs. Untick **No comma after
+Hello or Hi** in Settings to have it back.
+
+Only punctuation you say is typed at the end of a phrase: the recogniser's own full stop
+or question mark there is dropped, because it adds one after every phrase. If you pause
+before saying "question mark", the recogniser sometimes writes the sign and not the words,
+which would then be dropped too. So when a phrase ends with a pause and a few last words,
+and no punctuation word came out, those last words are listened to once more by
+themselves. That takes well under a second.
 
 In the spelling box, say letters one at a time or several together. Letter names and the
 radio alphabet both work. "Capital J" gives a capital. "Space", "hyphen", "double L",
@@ -210,9 +225,53 @@ and commands as in Kate. It works with Qt and GTK programs. It uses the desktop'
 accessibility interface, the one screen readers use, and the setting switches that on for
 your session (and back off again when you untick it).
 
-It does not work in terminals, in Electron programs such as Slack, or in Firefox. Password
-boxes are always refused. A one-line box turns "new line" into a space. As in Kate,
-"select" takes the nearest match.
+Password boxes are always refused. A one-line box turns "new line" into a space. As in
+Kate, "select" takes the nearest match. It does not work in terminal programs such as
+Konsole, or in Firefox.
+
+### VS Code's panels, and other programs built from a web browser
+
+The same setting covers the text boxes that Qt and GTK don't draw: the chat box of an
+assistant in VS Code, VS Code's terminal, and the boxes of programs built from a web
+browser. (Files open in VS Code's editor go through its own extension, as before.)
+
+These programs let their text boxes be read through the accessibility interface, but not
+written. So Linux Speaking reads what is around the cursor there, and types the words as
+key presses. The grey hint in an empty box ("Type a message") is not taken for text: the
+first words get their capital and no space in front.
+
+Two things have to be set up, once each:
+
+1. **The program has to describe its text boxes**, which it only does if asked when it
+   starts. For VS Code that is one line in `~/.vscode/argv.json`:
+
+   ```json
+   "force-renderer-accessibility": true
+   ```
+
+   The installer adds it if VS Code is there (in VS Code: **Preferences: Configure Runtime
+   Arguments** opens the file). Restart VS Code afterwards. Nothing else about VS Code
+   changes, and it goes on updating as usual. If VS Code asks whether you are using a
+   screen reader, say no. Chrome and its relatives take the same switch on their command
+   line, `--force-renderer-accessibility`.
+
+2. **The desktop has to allow Linux Speaking to press keys.** On a Wayland desktop no
+   program may type into another without leave. The first time you dictate into such a
+   box, the desktop asks whether Linux Speaking may control the keyboard. Allow it, and
+   let it be remembered. Your first phrase waits for the answer and is then typed. Only
+   the keyboard is asked for: nothing is seen of the screen. To take the leave back,
+   delete `~/.local/state/linux-speaking/keys-token` and the desktop will ask again.
+
+What to know:
+
+- It has been tried with VS Code on KDE Plasma (Wayland). Other programs built from a
+  browser should behave the same once started with the switch, but haven't been tried.
+- A character the keyboard hasn't got is typed plain: "café" as "cafe", curly quotes as
+  straight ones, a long dash as a hyphen.
+- In a chat box "new line" is Shift+Enter, and "press enter" sends the message, as the
+  Enter key does there.
+- "Scratch that" takes back the last phrase only while it is still what is just before
+  the cursor.
 
 ## Programming in C and C++ with VS Code
 
@@ -300,9 +359,81 @@ The Settings window lets you untick any command or punctuation word. Unticked, t
 are typed as ordinary text.
 
 It also lets you choose the speech model. The installer provides Base and Small. Small is
-the default. Bigger models make fewer mistakes but take longer after each phrase. Any
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) model placed in
-`~/linux-speaking/models/` appears in the list.
+the default. Bigger models make fewer mistakes but take longer after each phrase.
+
+**Quicker recognition** is a tick box under "Speed". Whisper works through half a minute
+of sound however short the phrase, and that is most of the wait. Ticked, it is given only
+as much as the phrase needs, which is three or four times quicker with the same words. Now
+and then Whisper loses its place when treated this way and writes a phrase over and over;
+that is spotted, and the phrase is done again the usual way.
+
+**Parakeet** is a different recogniser that can be chosen like a model. It is quicker
+again and about as accurate as Whisper's Medium, and English only. It can't be shown the
+text before the cursor, and it finds your own words by their sound once it has written
+them down, not by being told to expect them. "Wake up", spelling and source code are
+still done by Whisper. It is NVIDIA's Parakeet TDT 0.6b v2, licensed CC BY 4.0, run by
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+
+**Test them on my voice** finds out which model suits you. The window has a tab for each
+step. On the first you read a passage aloud once. Half of it is ordinary sentences, which
+a good recogniser gets right every time. The other half is made of words one vowel away
+from another word ("pen" and "pin", "better" and "beta"), which is where recognisers
+differ and where an accent shows. On the second tab you tick the recognisers to try:
+every one installed, to begin with. Each then hears that one recording, cut into phrases
+at your pauses as dictation would cut it, and the third tab shows how many words each got
+wrong and how long it took for a phrase, with the best trade-off pointed out. A word that
+every recogniser wrote the same wrong way was most likely read differently from the text,
+so it is listed but not counted against any of them. Click a row to see the words it got
+wrong. The recording is kept on your computer, so the test can be run again after
+anything changes.
+
+With Parakeet, Small and Medium all installed, the list also offers the three working
+together: **Parakeet, checked by Small and Medium**. Each of them gets some words wrong
+that the others get right. Parakeet and Small both hear the phrase; where they wrote the
+same, that stands, and where they differ Medium is asked and the two that agree win.
+
+To dictate that way, tick **Second opinions** in Settings. It is a trial. Each phrase is
+heard by your chosen model first, then by Small, and by Medium only if those two differ,
+so most phrases take a little longer and some a good deal longer. The others listen
+wherever the first did: on the other computer if recognition is done there and it has
+the models, else on this one. Punctuation you say aloud and your own words are never
+changed by a second opinion. Spelling, source code and "wake up" are left as they were.
+
+**Install or remove models** under the chooser lists the others, from Tiny (78 MB) to
+Large (3.1 GB), with a button to download or remove each. A download is checked before
+the model is offered, carries on if you close the window, and picks up where it stopped
+if the connection drops. The model in use and the one that listens for "wake up" can't be
+removed. Models come from [Hugging Face](https://huggingface.co); only the download
+itself goes over the internet.
+
+Any other [faster-whisper](https://github.com/SYSTRAN/faster-whisper) model placed in
+`~/linux-speaking/models/` appears in the list too.
+
+### Using another computer for the recognition
+
+Recognising speech is the slow part, and a faster computer on the same network can do it.
+Both computers need Linux Speaking installed.
+
+1. On the faster computer, open Settings and tick **Let other computers use this one for
+   speech recognition**. It shows an address and a key.
+2. On the other one, tick **Use another computer for speech recognition**, type in that
+   address and key, and press **Connect**. Choose which of the faster computer's models to
+   use, or leave it to pick the same one as here.
+
+From then on each phrase is sent there and the words come back. If that computer is off or
+out of reach, this one does the work itself and tries the other again after a short while.
+The tray icon's tooltip says where the recognising is being done.
+
+Things to know:
+
+- **"Wake up" is still listened for on this computer**, so nothing is sent while dictation
+  is asleep. A tick box sends that too, which wakes it sooner on a slow computer.
+- **Only computers with the key can use the recogniser.** The key itself is never sent.
+- **The sound and the words are not encrypted on the way.** Use it on your own network, or
+  over a VPN that encrypts, and not across the open internet.
+- The faster computer listens on port 47614. Its firewall has to let that through. Set
+  `LS_SHARE_ADDRESS` to one of its addresses to answer only there, and `LS_SHARE_PORT` for
+  another port.
 
 ### Your own words
 

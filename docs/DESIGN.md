@@ -24,13 +24,22 @@ program in `dictation/`, with a Qt tray icon.
 | `selecting.py` | Finds the words for "select ..." |
 | `coding.py` | The rules for dictating C and C++ source code |
 | `hotkey.py` | Windows: the number pad + key that switches dictation off and on |
+| `endings.py` | Recovers "question mark" said after a pause, when Whisper wrote the sign instead |
 | `vocabulary.py` | The person's own words: a hint for Whisper, and a second hearing to check it |
 | `spelling.py` | Turns spoken letters into letters for "spell that" |
 | `settings.py` | Which commands are switched on, and the choice of speech model |
+| `voicetest.py` | Trying every recogniser on a recording of your own voice, and scoring each |
+| `opinions.py` | One phrase as two recognisers heard it, with a third settling where they differ |
+| `quick.py` | Giving Whisper only as much sound as a phrase needs, with a safety net |
+| `remote.py` | Another computer doing the recognising: the server that shares it, the client, and the fallback |
+| `models.py` | The speech models that can be had: downloading one, checking it, removing one |
 | `targets.py` | Picks the program in front |
 | `client.py` | Talks to the LibreOffice extension |
 | `mailbridge.py` | Talks to the Thunderbird add-on |
 | `editor_target.py` | Drives Kate and KWrite |
+| `web_target.py` | Linux: text boxes that can be read but not written through the accessibility interface (VS Code's panels, web pages), typed into |
+| `portal_keys.py` | Linux: pressing keys with the desktop's leave, through its remote-desktop portal |
+| `vscode_args.py` | Linux: the start-up switch that makes VS Code describe its panels' text boxes |
 | `vscode_target.py` | Talks to the VS Code extension |
 | `tray.py` | The tray icon and its windows |
 
@@ -100,6 +109,36 @@ not only Kate's. That needs accessibility on for the whole desktop, so `accessib
 turns the desktop's switch on, and off again when the setting is unticked. Programs that
 have their own link are skipped, and so are password boxes.
 
+### VS Code's panels and web pages, on Linux
+
+Kate's kind of text box can be read and written through AT-SPI. A text box drawn by
+Chromium, which is what VS Code's panels and every browser-built program have, can only be
+read: there is a Text interface and no EditableText. `web_target.py` handles those. It
+finds the focused box that has the one interface and not the other, reads its text,
+cursor and selection, and types.
+
+- **Reading.** The box's own text is the whole of what was typed, with line breaks, and
+  the cursor is a place in it. A hint shown while the box is empty is made by the page out
+  of decoration (a `::before`), which AT-SPI gives as a thing inside the box, standing in
+  the text as one object character and tagged `::before`. Those are taken out, so an empty
+  box reads as empty. Nothing has to be guessed from where the cursor is drawn, as it has
+  to be on Windows.
+- **Typing.** A Wayland desktop lets no program press keys in another without the
+  person's leave. `portal_keys.py` asks through the desktop's remote-desktop portal, for
+  the keyboard only, and keeps the token the desktop hands back so that it is asked once.
+  Keys are sent by what they type (keysyms), and the desktop finds the key and whether
+  Shift is needed. A character the keyboard hasn't got is not typed at all by the
+  desktop, so `typable()` makes text plain first: what is remembered as typed, for
+  "scratch that", is then what really went in.
+- **The program has to be asked to describe itself.** Chromium keeps its accessibility
+  tree off unless started with `force-renderer-accessibility`. VS Code reads that from
+  `argv.json`, which `vscode_args.py` edits for the installer.
+
+Everything that decides what to type, and the commands, is `keys_target.py`'s, which the
+Windows target for other programs' text boxes also is: `WebBoxTarget` only replaces how a
+box is found and read, and how keys are pressed. `targets.py` asks it last, so a file open
+in VS Code's editor still goes through VS Code's own extension.
+
 ### Word and Outlook, on Windows
 
 `word_target.py` runs in the engine and speaks to Word through COM, Word's automation
@@ -120,6 +159,49 @@ a request that isn't answered in time simply fails.
 Word has nowhere to draw numbers over matches, so for "select" the target asks Word where
 each match is on screen and the tray shows a small label there. The labels follow the text
 if it scrolls and go when another window comes to the front.
+
+### Other programs' text boxes, on Windows
+
+`keys_target.py` reads what is around the cursor through UI Automation and puts the
+words in one of three ways, by what the program in front is:
+
+- A browser, or a program built from one, is sent each character as itself, in a burst.
+- One of Windows' own edit boxes, plain or rich, is read and written by messages to the
+  box itself, with the accessibility interface kept out of it. Its text and where the
+  cursor is are asked for (`WM_GETTEXT`, `EM_GETSEL`), and the words are handed over whole
+  (`EM_REPLACESEL`): no keys are pressed, they take the place of anything selected, and
+  Undo takes them back in one step. Notepad's text area is such a box. Windows 11's Notepad
+  can't be typed into quickly: sent a burst of characters it writes the last one of the
+  burst for each of them, and sent key presses as fast it drops some near the start.
+  The hand-over is followed by a Shift key message. Notepad takes its text cursor off the
+  screen a few seconds after text arrives with no key pressed, and puts it back at the
+  next key; watched ten times a second, the cursor went within 1.5 to 5.5 seconds
+  without that message and stayed with it. Reading it through the accessibility
+  interface made the cursor go as well, which is why the box is asked by message.
+- The editing area of Notepad++ (Scintilla) offers nothing through the accessibility
+  interface, but answers the same messages for its text and its selection, counting in
+  bytes. It is read that way and typed into with key presses.
+- Anything else is sent presses of the keys that make the characters, with Shift where a
+  key needs it, one character at a time at about a hundred a second. Only a character the
+  keyboard hasn't got is sent as itself.
+
+Commands such as "scratch that" are key presses everywhere.
+
+Two things about web pages, and programs built from them, shape how it reads:
+
+- What has the keyboard can be the whole page, with the text box somewhere inside it, and
+  reading on from the cursor runs out of the box into the page. So the box is looked for
+  from the cursor outwards, and only its own text is read. A cursor at the end of the box
+  can count as beyond it, so "nothing after the cursor" is settled by comparing the two,
+  not by cutting the range back.
+- An empty box's hint ("Type a message") is given as if it were the box's text. Read as
+  text before the cursor, it would earn the first words a space and cost them their
+  capital. A plain input box says it holds nothing, and that settles it. A chat box often
+  gives the hint as what it holds too. There the hint is told by where it is drawn: typed
+  text ends at the cursor, and a hint starts at the cursor and runs on to the right. The
+  cursor's place is asked of the window (its caret object), because the text reader can
+  put the cursor at the far end of the hint, where typed text would put it. Any text to
+  the left of the cursor on its line means the box has been typed in.
 
 On Windows the engine reads the microphone with `sounddevice` instead of `parec`, and
 talks to the VS Code extension over a named pipe instead of a socket file (`pipe.py`).

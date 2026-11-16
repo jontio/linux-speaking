@@ -5,6 +5,40 @@ import os
 
 WINDOWS = os.name == "nt"
 
+
+def cores() -> int:
+    """How many processor cores this computer has, counting a core that runs two threads
+    once. Whisper goes no faster, and on a small processor slower, with a thread for each
+    of those two."""
+    try:
+        if WINDOWS:
+            import ctypes
+
+            class Info(ctypes.Structure):
+                _fields_ = [("mask", ctypes.c_size_t), ("relationship", ctypes.c_int),
+                            ("rest", ctypes.c_ubyte * 16)]
+
+            size = ctypes.c_ulong(0)
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetLogicalProcessorInformation(None, ctypes.byref(size))
+            entries = (Info * (size.value // ctypes.sizeof(Info)))()
+            if not kernel32.GetLogicalProcessorInformation(entries, ctypes.byref(size)):
+                raise OSError("no processor information")
+            found = sum(1 for entry in entries if entry.relationship == 0)  # 0: a core
+        else:
+            together = set()
+            base = "/sys/devices/system/cpu"
+            for name in os.listdir(base):
+                if name.startswith("cpu") and name[3:].isdigit():
+                    with open(os.path.join(base, name, "topology", "thread_siblings_list")) as f:
+                        together.add(f.read().strip())
+            found = len(together)
+        if found > 0:
+            return found
+    except Exception:
+        pass
+    return os.cpu_count() or 4
+
 # Where things are installed. The installer puts the speech models in "models" here.
 INSTALL_DIR = os.path.normpath(os.path.expanduser(
     os.environ.get("LS_INSTALL_DIR", "~/linux-speaking")))
@@ -19,7 +53,7 @@ else:  # models already downloaded by the Speech Note app
 MODEL_DIR = os.environ.get("LS_MODEL_DIR", _DIR)
 ASLEEP_MODEL = os.environ.get("LS_ASLEEP_MODEL", _ASLEEP)
 AWAKE_MODEL = os.environ.get("LS_AWAKE_MODEL", _AWAKE)
-THREADS = int(os.environ.get("LS_THREADS", "8"))
+THREADS = int(os.environ.get("LS_THREADS", "0")) or min(8, cores())
 BEAM = int(os.environ.get("LS_BEAM", "5"))
 # Give Whisper the text before the cursor, so it carries on in the same style.
 USE_CONTEXT = os.environ.get("LS_USE_CONTEXT", "1") == "1"
@@ -56,12 +90,21 @@ PENDING_EXTENSION = os.path.expanduser(
 CHOICE_SECONDS = float(os.environ.get("LS_CHOICE_SECONDS", "20"))
 # The Thunderbird add-on connects to this port on this computer. LS_MAIL=0 turns it off.
 MAIL_PORT = int(os.environ.get("LS_MAIL_PORT", "47613"))
+# Sharing this computer's recogniser with others: the port, and the one address of this
+# computer to answer on ("" answers on all of them).
+DEFAULT_SHARE_PORT = 47614
+SHARE_PORT = int(os.environ.get("LS_SHARE_PORT", str(DEFAULT_SHARE_PORT)))
+SHARE_ADDRESS = os.environ.get("LS_SHARE_ADDRESS", "")
 MAIL = os.environ.get("LS_MAIL", "0" if WINDOWS else "1") == "1"
 # Dictation into Kate and KWrite, through the accessibility interface. LS_EDITOR=0 turns it off.
 EDITOR = os.environ.get("LS_EDITOR", "0" if WINDOWS else "1") == "1"
 # On Windows, typing into any other text box, when the "other programs" setting is on.
 # LS_OTHER=0 turns it off altogether.
 OTHER = os.environ.get("LS_OTHER", "1" if WINDOWS else "0") == "1"
+# On Linux, the text boxes of a web browser and of programs built from one, such as VS
+# Code's panels: read through the accessibility interface and typed into with key presses
+# the desktop has allowed. Behind the same setting. LS_WEB=0 turns it off altogether.
+WEB = os.environ.get("LS_WEB", "0" if WINDOWS else "1") == "1"
 # Dictation into Microsoft Word and Outlook, on Windows. LS_OFFICE=0 turns it off.
 OFFICE = os.environ.get("LS_OFFICE", "1" if WINDOWS else "0") == "1"
 # "Wake up" is listened for with the wake model, on short phrases only: longer sound,

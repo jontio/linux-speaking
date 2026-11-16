@@ -34,6 +34,40 @@ class ExamplesFromTheChat(unittest.TestCase):
         self.assertEqual(run("Hello", "Comma."), "Hello,")
 
 
+class GreetingComma(unittest.TestCase):
+    """The recogniser writes "Hello, Bob". With the setting, the comma is left out."""
+
+    def typed(self, raw, **kw):
+        return fit(raw, "", "", LEX, spoken_off=(), greeting_comma=False, **kw).text
+
+    def test_before_a_name(self):
+        self.assertEqual(self.typed("Hello, Bob."), "Hello Bob")
+        self.assertEqual(self.typed("Hi, Sam, thanks for the notes."), "Hi Sam, thanks for the notes")
+        self.assertEqual(self.typed("Good morning, Bob!"), "Good morning Bob")
+        self.assertEqual(self.typed("Thanks. Hey, Jonti, are you there?"), "Thanks. Hey Jonti, are you there")
+
+    def test_before_a_word_that_stands_for_people(self):
+        self.assertEqual(self.typed("Morning, everyone."), "Morning everyone")
+        self.assertEqual(self.typed("Hi, there."), "Hi there")
+
+    def test_a_comma_that_belongs_is_kept(self):
+        self.assertEqual(self.typed("Hello, how are you?"), "Hello, how are you")
+        self.assertEqual(self.typed("Hello, I am here."), "Hello, I am here")
+        self.assertEqual(self.typed("Hello, I'm Bob."), "Hello, I'm Bob")
+        self.assertEqual(self.typed("I saw her this morning, Bob."), "I saw her this morning, Bob")
+
+    def test_sign_offs_keep_theirs(self):
+        self.assertEqual(self.typed("Cheers, Jonti"), "Cheers, Jonti")
+        self.assertEqual(self.typed("Thanks, Bob."), "Thanks, Bob")
+
+    def test_a_comma_that_was_said_is_typed(self):
+        self.assertEqual(self.typed("Hello Bob comma"), "Hello Bob,")
+        self.assertEqual(self.typed("Hello comma Bob"), "Hello, Bob")
+
+    def test_left_alone_unless_asked(self):
+        self.assertEqual(fit("Hello, Bob.", "", "", LEX).text, "Hello, Bob")
+
+
 class Capitals(unittest.TestCase):
     def test_start_of_paragraph(self):
         self.assertEqual(run("", "hello there"), "Hello there")

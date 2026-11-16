@@ -44,7 +44,7 @@ $py = "$dir\venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { & $python[0] $python[1..9] -m venv "$dir\venv" }
 if ($env:LS_SKIP_PACKAGES -ne "1") {
     Say "Installing the Python packages (the first time, this downloads about 200 MB)"
-    & $py -m pip install --quiet --disable-pip-version-check --upgrade faster-whisper numpy PyQt6 sounddevice pywin32 comtypes
+    & $py -m pip install --quiet --disable-pip-version-check --upgrade faster-whisper sherpa-onnx numpy PyQt6 sounddevice pywin32 comtypes
     if ($LASTEXITCODE -ne 0) { throw "pip could not install the packages" }
 }
 
@@ -71,6 +71,20 @@ Say "Adding Linux Speaking to the Start menu"
 $env:LS_INSTALL_DIR = $dir
 Push-Location "$dir\app"
 & $py -m dictation.tray --write-icon "$dir\linux-speaking.ico"
+
+# Windows has no dictionary of its own that the program can read. It uses one to tell a
+# name from an ordinary word, so that "Feeling" in the middle of a sentence loses its capital.
+New-Item -ItemType Directory -Force -Path "$dir\dictionaries" | Out-Null
+foreach ($name in "en_GB.dic", "en_US.dic") {
+    if (-not (Test-Path "$dir\dictionaries\$name")) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -OutFile "$dir\dictionaries\$name" `
+                "https://raw.githubusercontent.com/LibreOffice/dictionaries/master/en/$name"
+        } catch {
+            Write-Host "Could not fetch the $name dictionary. Capitals in the middle of a sentence will be less well judged."
+        }
+    }
+}
 Pop-Location
 $shell = New-Object -ComObject WScript.Shell
 $programs = [Environment]::GetFolderPath("Programs")

@@ -136,6 +136,42 @@ class Settle(unittest.TestCase):
         self.assertEqual(settle("Then Jonti walked", "Then I walked"), "Then I walked")
 
 
+class BySound(unittest.TestCase):
+    """For a recogniser that can't be given the words as a hint."""
+
+    def fix(self, text, before="", lexicon=DICTIONARY):
+        return vocabulary.by_sound(text, before, WORDS, lexicon)
+
+    def test_sounds_alike(self):
+        key = vocabulary.sound_key
+        self.assertEqual({key(w) for w in ("Jonti", "jaunty", "John T", "Johnty", "Jonty")}, {key("Jonti")})
+        self.assertEqual(key("thunder bird"), key("Thunderbird"))
+        self.assertNotEqual(key("giant"), key("Jonti"))
+        self.assertNotEqual(key("hunting"), key("Jonti"))
+
+    def test_put_in_where_a_name_fits(self):
+        self.assertEqual(self.fix("Cheers, Jaunty."), "Cheers, Jonti.")
+        self.assertEqual(self.fix("Cheers comma new line John T."), "Cheers comma new line Jonti.")
+        self.assertEqual(self.fix("Hi Jonty, how are you?"), "Hi Jonti, how are you?")
+        self.assertEqual(self.fix("I spoke to Johnty about it."), "I spoke to Jonti about it.")
+        self.assertEqual(self.fix("Jaunty", before="Cheers,\n"), "Jonti")
+
+    def test_an_ordinary_word_in_a_sentence_is_left(self):
+        self.assertEqual(self.fix("It was a jaunty little tune."), "It was a jaunty little tune.")
+        knows_jaunt = Lexicon(lower={"jaunt", "went", "today"})
+        self.assertEqual(self.fix("We went for a jaunt today", lexicon=knows_jaunt),
+                         "We went for a jaunt today")
+
+    def test_already_right_or_nothing_like_it(self):
+        self.assertEqual(self.fix("Jonti is here"), "Jonti is here")
+        self.assertEqual(self.fix("Thanks for the notes."), "Thanks for the notes.")
+        self.assertEqual(self.fix(""), "")
+        self.assertEqual(vocabulary.by_sound("Cheers, Jaunty.", "", (), DICTIONARY), "Cheers, Jaunty.")
+
+    def test_very_short_words_are_not_matched_by_sound(self):
+        self.assertEqual(vocabulary.by_sound("Go to the bay", "", ("Bo",), DICTIONARY), "Go to the bay")
+
+
 class Saved(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as folder:

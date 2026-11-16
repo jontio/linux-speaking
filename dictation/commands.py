@@ -35,6 +35,7 @@ COMMANDS = {
     "new paragraph": "new_paragraph",
     "new line": "new_line",
     "press enter": "press_enter",
+    "enter": "enter",  # the word by itself: its own setting, off unless asked for
     "go to end of line": "line_end",
     "go to the end of the line": "line_end",
     "go to start of line": "line_start",
@@ -54,6 +55,7 @@ COMMANDS = {
     "select all text": "select_all",
     "select the whole document": "select_all",
     "select that": "select_last",
+    "correct that": "select_last",  # Dragon's name for it: what is said next takes its place
     "unselect that": "unselect",
     "cap that": "cap",
     "all caps that": "all_caps",
@@ -89,6 +91,9 @@ NUMBERS = {w: i for i, w in enumerate(
 NUMBERS.update({"to": 2, "too": 2, "for": 4, "won": 1})  # how Whisper may hear numbers
 _CHOICE = re.compile(r"(?:choose |number |pick |select |option )?(\w+)")
 _BACKSPACE = re.compile(r"back ?space(?: (\w+))?(?: times?)?")
+# "space", "space bar", "press space", "space 3". Not "space station": that is dictation.
+_SPACE = re.compile(r"(?:press )?space ?(?:bar)?(?: (\w+))?(?: times?)?")
+MAX_SPACES = 20
 
 
 _DELETE_WORDS = re.compile(r"delete (?:the )?(?:last|previous) (?:(\w+) )?words?")
@@ -194,6 +199,12 @@ def interpret(raw: str, awake: bool, disabled=frozenset()) -> Command | Dictatio
     m = _BACKSPACE.fullmatch(phrase)
     if m and "backspace" not in disabled and _count(m.group(1)):
         return Command("backspace", str(_count(m.group(1))))
+    m = _SPACE.fullmatch(phrase)
+    # "Space for" and "space to" are the start of a sentence, not a count, though the
+    # same words are taken for numbers after "backspace".
+    if (m and "space" not in disabled and _count(m.group(1))
+            and m.group(1) not in ("to", "too", "for", "won", "a")):
+        return Command("space", str(min(MAX_SPACES, _count(m.group(1)))))
     m = _DELETE_WORDS.fullmatch(phrase)
     if m and "delete_words" not in disabled and _count(m.group(1)):
         return Command("delete_words", str(_count(m.group(1))))

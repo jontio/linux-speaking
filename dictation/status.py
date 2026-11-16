@@ -28,6 +28,7 @@ class Status:
     choosing: int = 0  # how many numbered matches are waiting for a choice
     update_waiting: bool = False  # an extension update needs LibreOffice closed
     voice_db: int = 0  # the last phrase's loudest point, in dB above the background
+    listening_on: str = ""  # where the recognising is done, if another computer is set up
 
     @property
     def awake(self) -> bool:
@@ -43,6 +44,8 @@ class Status:
             lines.append("No program to type into is in front")
         elif self.state is not State.OFF and self.target:
             lines.append(f"Typing into {self.target}")
+        if self.listening_on and self.state is not State.OFF:
+            lines.append(f"Recognising on {self.listening_on}")
         if self.loud and self.state is not State.OFF:
             lines.append("Microphone too loud: turn it down")
         if self.update_waiting:

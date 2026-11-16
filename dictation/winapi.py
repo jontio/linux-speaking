@@ -65,6 +65,107 @@ def focused() -> tuple:
     return program, name.value, info.hwndFocus
 
 
+# ---- Windows' own edit boxes, asked and told by message -----------------------------
+# These are messages Windows itself carries the text across for, so the box can belong
+# to another program. Nothing here presses a key or uses the accessibility interface.
+WM_GETTEXT, WM_GETTEXTLENGTH = 0x000D, 0x000E
+EM_GETSEL, EM_SETSEL, EM_SCROLLCARET, EM_REPLACESEL, EM_GETPASSWORDCHAR = 0x00B0, 0x00B1, 0x00B7, 0x00C2, 0x00D2
+GWL_STYLE, ES_PASSWORD, ES_READONLY, SMTO_ABORTIFHUNG = -16, 0x0020, 0x0800, 0x0002
+
+user32.SendMessageTimeoutW.argtypes = [
+    wintypes.HWND, wintypes.UINT, ctypes.c_size_t, ctypes.c_size_t, wintypes.UINT,
+    wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+user32.SendMessageTimeoutW.restype = ctypes.c_size_t
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+
+
+def _ask(window, message: int, first: int = 0, second: int = 0, timeout_ms: int = 1500):
+    """A window's answer to a message, or None if it gave none in time."""
+    result = ctypes.c_size_t()
+    if not user32.SendMessageTimeoutW(window, message, first, second, SMTO_ABORTIFHUNG,
+                                      timeout_ms, ctypes.byref(result)):
+        return None
+    return result.value
+
+
+def window_process(window) -> int:
+    """The number of the process a window belongs to, or 0."""
+    process = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(process))
+    return process.value
+
+
+SCI_GETREADONLY = 2140
+
+
+def edit_refuses(window, scintilla: bool = False) -> str:
+    """Why an edit box is not to be typed into: "password", "read only", or "" if it may
+    be. `scintilla` is for the editing area of Notepad++ and its like, which has its own
+    way of saying it is read only."""
+    if scintilla:
+        return "read only" if _ask(window, SCI_GETREADONLY) else ""
+    style = user32.GetWindowLongW(window, GWL_STYLE)
+    if style & ES_PASSWORD or _ask(window, EM_GETPASSWORDCHAR):
+        return "password"
+    return "read only" if style & ES_READONLY else ""
+
+
+def edit_text(window, most: int):
+    """(all the text of an edit box, where its selection starts, where it ends), or None
+    if it holds more than `most` characters or doesn't answer.
+
+    The places count characters as the box itself counts them, which is how the text is
+    given back: a rich edit box counts a line break as one character, a plain one as two.
+    """
+    length = _ask(window, WM_GETTEXTLENGTH)
+    if length is None or length > most:
+        return None
+    buffer = ctypes.create_unicode_buffer(length + 2)
+    if _ask(window, WM_GETTEXT, length + 1, ctypes.addressof(buffer)) is None:
+        return None
+    first, last = wintypes.DWORD(), wintypes.DWORD()
+    if _ask(window, EM_GETSEL, ctypes.addressof(first), ctypes.addressof(last)) is None:
+        return None
+    return buffer.value, first.value, last.value
+
+
+def select_in_edit(window, first: int, last: int) -> bool:
+    """Select from `first` to `last` in an edit box, and bring that into view."""
+    if _ask(window, EM_SETSEL, first, last) is None:
+        return False
+    _ask(window, EM_SCROLLCARET)
+    return True
+
+
+def replace_selection(window, text: str, timeout_ms: int = 2000) -> bool:
+    """Put `text` in place of what is selected in an edit box, or at its cursor if nothing
+    is: the whole of it at once, as one step that Undo takes back. No keys are pressed.
+    False if the window didn't take it in time.
+    """
+    buffer = ctypes.create_unicode_buffer(text)
+    if _ask(window, EM_REPLACESEL, 1, ctypes.addressof(buffer), timeout_ms) is None:
+        return False
+    _ask(window, EM_SCROLLCARET, 0, 0, timeout_ms)
+    return True
+
+
+WM_KEYDOWN, WM_KEYUP, VK_SHIFT = 0x0100, 0x0101, 0x10
+
+
+def tap_shift(window) -> None:
+    """Tell a window that Shift was pressed and let go, as two messages put in its queue.
+    Nothing is typed and no key is held: the keyboard itself isn't touched.
+
+    For after replace_selection(). Windows 11's Notepad takes its text cursor off the
+    screen a few seconds after text arrives with no key pressed, and puts it back at the
+    next key. A key that does nothing is enough.
+    """
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW(window, WM_KEYDOWN, VK_SHIFT, 0x002A0001)
+    user32.PostMessageW(window, WM_KEYUP, VK_SHIFT, 0xC02A0001 - (1 << 32))
+
+
 def child_of_class(top, kind: str):
     """The first window inside `top` whose class is `kind`, or None. For tests."""
     found = []

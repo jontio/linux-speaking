@@ -23,16 +23,25 @@ class Item:
 
 
 ITEMS = (
+    Item("quick_listening", "Quicker recognition: listen to only as much sound as the phrase "
+         "needs  (a phrase that goes wrong is done again the usual way)", "Speed",
+         default=False),
+    Item("second_opinions", "Second opinions: each phrase is also heard by Small, and by Medium "
+         "where the two differ  (a trial: a little more accurate, slower)", "Speed",
+         default=False),
     Item("scratch", "Scratch that", "Editing"),
     Item("undo", "Undo that", "Editing"),
     Item("delete", "Delete that", "Editing"),
     Item("delete_words", "Delete last word  (or \"delete last 3 words\")", "Editing"),
     Item("spell", "Spell that  (opens a box to spell a word letter by letter)", "Editing"),
     Item("tab", "Tab  (the Tab key)", "Editing"),
+    Item("space", "Space  (the space bar; or \"space 3\")", "Editing"),
     Item("backspace", "Backspace  (or \"backspace 3\")", "Editing"),
     Item("new_paragraph", "New paragraph", "Line breaks", phrases=("new paragraph",)),
     Item("new_line", "New line", "Line breaks", phrases=("new line",)),
     Item("press_enter", "Press enter", "Line breaks"),
+    Item("enter", "Enter  (the one word, said by itself, presses Enter)", "Line breaks",
+         default=False),
     Item("line_end", "Go to end of line", "Moving the cursor"),
     Item("line_start", "Go to start of line", "Moving the cursor"),
     Item("word_left", "Move left 3 words  (or \"move back a word\")", "Moving the cursor"),
@@ -54,7 +63,7 @@ ITEMS = (
     Item("choose_numbers", "Show numbers to choose from when several places match",
          "Selecting"),
     Item("select_all", "Select all", "Selecting"),
-    Item("select_last", "Select that", "Selecting"),
+    Item("select_last", "Select that  (or \"correct that\")", "Selecting"),
     Item("unselect", "Unselect that", "Selecting"),
     Item("cap", "Cap that", "Formatting"),
     Item("all_caps", "All caps that", "Formatting"),
@@ -68,6 +77,8 @@ ITEMS = (
          "Programming"),
     Item("numpad_plus", "Number pad + switches dictation between off and awake  (the key "
          "then no longer types a plus)", "Keyboard"),
+    Item("no_greeting_comma", "No comma after Hello or Hi  (\"Hello Bob\", not "
+         "\"Hello, Bob\")", "Punctuation"),
     Item("say:full stop", "Full stop  .", "Punctuation", phrases=("full stop",)),
     Item("say:period", "Period  .", "Punctuation", default=False, phrases=("period",)),
     Item("say:comma", "Comma  ,", "Punctuation", phrases=("comma",)),
@@ -84,18 +95,37 @@ ITEMS = (
          phrases=("open quote", "close quote")),
 )
 BY_KEY = {item.key: item for item in ITEMS}
-OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "numpad_plus"})
+OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "numpad_plus",
+                     "quick_listening", "second_opinions", "no_greeting_comma"})
 WINDOWS_ONLY = frozenset({"numpad_plus"})  # settings that aren't commands
+
+
+def _remote(saved) -> dict:
+    """The other computer that does the listening, with anything missing filled in."""
+    saved = saved if isinstance(saved, dict) else {}
+    return {"on": bool(saved.get("on", False)), "address": str(saved.get("address", "")).strip(),
+            "key": str(saved.get("key", "")).strip(), "model": str(saved.get("model", "")),
+            "wake": bool(saved.get("wake", False))}
+
+
+def _share(saved) -> dict:
+    """Whether other computers may use this one's recogniser, and the key they need."""
+    saved = saved if isinstance(saved, dict) else {}
+    return {"on": bool(saved.get("on", False)), "key": str(saved.get("key", "")).strip()}
 
 
 class Settings:
     def __init__(self, states: dict | None = None, path: str | None = None, model: str = "",
-                 microphone: str = "", words=()):
+                 microphone: str = "", words=(), remote=None, share=None):
         self.states = dict(states or {})
         self.path = path
         self.model = model  # the chosen speech model's folder name, or "" for the default
         self.microphone = microphone  # Windows: the recording device's name, or "" for the default
         self.words = tuple(words)  # the person's own names and terms: see vocabulary.py
+        # Another computer that does the listening, and letting others use this one: see
+        # remote.py. Each is a dict; an empty one means it has never been set up.
+        self.remote = _remote(remote)
+        self.share = _share(share)
 
     @classmethod
     def load(cls, path: str = PATH) -> "Settings":
@@ -106,10 +136,11 @@ class Settings:
             microphone = str(saved.get("microphone", ""))
             words = saved.get("words", [])
             words = [str(w) for w in words] if isinstance(words, list) else []
+            remote, share = saved.get("remote"), saved.get("share")
         except (OSError, ValueError, AttributeError):
-            states, model, microphone, words = {}, "", "", []
+            states, model, microphone, words, remote, share = {}, "", "", [], None, None
         return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model,
-                   microphone, words)
+                   microphone, words, remote, share)
 
     def save(self) -> None:
         if not self.path:
@@ -121,6 +152,10 @@ class Settings:
                 saved["microphone"] = self.microphone
             if self.words:
                 saved["words"] = list(self.words)
+            if self.remote["address"] or self.remote["key"]:
+                saved["remote"] = self.remote
+            if self.share["key"]:
+                saved["share"] = self.share
             json.dump(saved, f, indent=1, sort_keys=True)
 
     def enabled(self, key: str) -> bool:
@@ -142,6 +177,14 @@ class Settings:
         self.words = tuple(words)
         self.save()
 
+    def set_remote(self, **changes) -> None:
+        self.remote = _remote({**self.remote, **changes})
+        self.save()
+
+    def set_share(self, **changes) -> None:
+        self.share = _share({**self.share, **changes})
+        self.save()
+
     def disabled_commands(self) -> frozenset:
         """Names of commands that are switched off."""
         return frozenset(
@@ -156,11 +199,15 @@ class Settings:
 
 # ---- speech models -----------------------------------------------------------------
 _SIZES = (  # (text in the folder name, order, description), most specific first
-    ("distil_large", 5, "Distil large: most accurate, slow"),
-    ("distil-large", 5, "Distil large: most accurate, slow"),
+    ("distil_large", 7, "Distil large: most accurate, slow"),
+    ("distil-large", 7, "Distil large: most accurate, slow"),
+    ("distil_medium", 5, "Distil medium: quicker than Medium"),
+    ("distil-medium", 5, "Distil medium: quicker than Medium"),
     ("distil_small", 3, "Distil small: about as quick as Small"),
     ("distil-small", 3, "Distil small: about as quick as Small"),
-    ("large", 7, "Large: most accurate, very slow"),
+    ("parakeet", 10, "Parakeet: quick and accurate, not Whisper"),
+    ("turbo", 8, "Large turbo: quicker than Large"),
+    ("large", 9, "Large: most accurate, very slow"),
     ("medium", 6, "Medium: accurate, slow"),
     ("small", 4, "Small: recommended"),
     ("base", 2, "Base: quicker, less accurate"),
@@ -175,14 +222,17 @@ def model_label(name: str) -> tuple[int, str]:
         if key in low:
             extra = ", many languages" if "multilang" in low else ""
             return order, f"{label}{extra}  ({name})"
-    return 9, name
+    return 99, name
 
 
 def available_models(model_dir: str) -> list:
     """(folder name, description) for each speech model in `model_dir`, smallest first."""
     try:
         names = [n for n in os.listdir(model_dir)
-                 if os.path.exists(os.path.join(model_dir, n, "model.bin"))]
+                 if (os.path.exists(os.path.join(model_dir, n, "model.bin"))
+                     or (os.path.exists(os.path.join(model_dir, n, "encoder.int8.onnx"))
+                         and os.path.exists(os.path.join(model_dir, n, "tokens.txt"))))
+                 and not n.endswith(".part")]  # one still being fetched: see models.py
     except OSError:
         names = []
     return [(n, model_label(n)[1]) for n in sorted(names, key=lambda n: (model_label(n)[0], n))]

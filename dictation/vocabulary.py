@@ -60,6 +60,49 @@ def mentions(text: str, words) -> bool:
     return any(_marks([_key(token) for token in text.split()], words))
 
 
+def sound_key(text: str) -> str:
+    """Roughly how `text` sounds, so that "Jonti", "jaunty" and "John T" come out alike."""
+    s = re.sub(r"[^a-z]", "", text.lower())
+    s = s.replace("ph", "f").replace("ck", "k").replace("gh", "")
+    s = re.sub(r"[cq]", "k", s).replace("x", "ks").replace("z", "s").replace("h", "")
+    s = re.sub(r"[aeiouyw]+", "a", s)
+    s = re.sub(r"(.)\1+", r"\1", s)
+    return s.rstrip("a") if len(s) > 2 else s
+
+
+def by_sound(text: str, before: str, words, lexicon: Lexicon | None = None) -> str:
+    """`text` with a listed word put in where something that sounds like it was written
+    and a name fits there. For a recogniser that can't be given the words as a hint.
+
+    The places are found by sound; whether the word goes in is decided by the same rules
+    as for two hearings, with `text` as the plain one.
+    """
+    keys = {}
+    for word in words:
+        key = sound_key(word)
+        if len(key) >= 3:
+            keys.setdefault(key, word)
+    tokens = text.split()
+    if not keys or not tokens:
+        return text
+    out, at, found = [], 0, False
+    while at < len(tokens):
+        for count in (1, 2):  # one word if it will do, else two: "John T"
+            piece = tokens[at:at + count]
+            joined = len(piece) == count and (count == 1 or piece[0][-1:].isalnum())
+            word = keys.get(sound_key(" ".join(piece))) if joined else None
+            if word and _key(" ".join(piece)) != _key(word):
+                tail = re.search(r"[^\w']*$", piece[-1]).group()  # the comma after it stays
+                out.append(word + tail)
+                at += count
+                found = True
+                break
+        else:
+            out.append(tokens[at])
+            at += 1
+    return settle(" ".join(out), text, before, words, lexicon) if found else text
+
+
 def settle(hinted: str, plain: str, before: str, words, lexicon: Lexicon | None = None) -> str:
     """One phrase from two hearings of it: `hinted` with the words given, `plain` without.
 

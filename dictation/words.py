@@ -63,25 +63,40 @@ class Lexicon:
         self.capitalised = set(capitalised)
 
     @classmethod
-    def from_hunspell(cls, path: str) -> "Lexicon":
+    def from_hunspell(cls, *paths: str) -> "Lexicon":
+        """The words of one or more Hunspell dictionaries (their .dic files)."""
         lower, capitalised = set(), set()
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for n, line in enumerate(f):
-                word = line.split("/")[0].split("\t")[0].strip()
-                if not word or (n == 0 and word.isdigit()):
-                    continue
-                if word[0].isupper():
-                    capitalised.add(word)
-                else:
-                    lower.add(word.lower())
+        for path in paths:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                for n, line in enumerate(f):
+                    word = line.split("/")[0].split("\t")[0].strip()
+                    if not word or (n == 0 and word.isdigit()):
+                        continue
+                    if word[0].isupper():
+                        capitalised.add(word)
+                    else:
+                        lower.add(word.lower())
         return cls(lower, capitalised)
 
     @classmethod
     def load_default(cls) -> "Lexicon":
-        """The first English dictionary found, or common words only."""
+        """The first English dictionary found, or common words only.
+
+        Linux has the system's own. Where there is none, as on Windows, the installer
+        puts dictionaries in a folder of its own, and all of those are used together.
+        """
         for path in DICTIONARIES:
             if os.path.exists(path):
                 return cls.from_hunspell(path)
+        from . import config
+        folder = os.path.join(config.INSTALL_DIR, "dictionaries")
+        try:
+            own = sorted(os.path.join(folder, name) for name in os.listdir(folder)
+                         if name.endswith(".dic"))
+            if own:
+                return cls.from_hunspell(*own)
+        except OSError:
+            pass
         return cls()
 
     @property

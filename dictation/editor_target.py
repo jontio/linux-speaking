@@ -263,6 +263,8 @@ class EditorTarget:
             reply = {"ok": True, "before": before, "after": after}
             if start != end:
                 reply["selected"] = True  # what is dictated will replace the selection
+                reply["selected_edges"] = [self.T.get_text(o, start, start + 1),
+                                           self.T.get_text(o, end - 1, end)]
             return reply
         if op == "insert":
             return self._insert(o, m.get("text", ""), int(m.get("delete_before", 0)),
@@ -410,13 +412,18 @@ class EditorTarget:
             lo = max(0, caret - WINDOW)
             found = find_nearest(T.get_text(o, lo, min(count, caret + WINDOW)), caret - lo, arg)
             if found is None:
-                return {"ok": False, "why": "can't find that"}
+                return {"ok": False, "why": "can't find that", "sounds_tried": True}
             self._select(o, lo + found[0], lo + found[1])
             return {"ok": True}
         if name == "select_last":
             found = self._last(o)
             if found is None:
                 return {"ok": False, "why": "nothing to select"}
+            # The phrase was put in with a space in front. Highlight the words only.
+            text = T.get_text(o, *found)
+            if text.strip(" "):
+                found = (found[0] + len(text) - len(text.lstrip(" ")),
+                         found[1] - (len(text) - len(text.rstrip(" "))))
             self._select(o, *found)
             return {"ok": True}
         if name == "select_all":

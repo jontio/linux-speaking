@@ -17,7 +17,7 @@ import time
 
 from .formatting import LINE, PARAGRAPH, fit
 from .editor_target import words_left, words_right
-from .selecting import find_all
+from .selecting import find_all, find_exact
 from .words import Lexicon
 
 # Word's own numbers for things.
@@ -241,6 +241,9 @@ class WordTarget:
             reply = {"ok": True, "before": before, "after": after}
             if selected:
                 reply["selected"] = True  # what is dictated will replace the selection
+                edges = self._edges(front)
+                if edges:
+                    reply["selected_edges"] = edges
             return reply
         if op == "insert":
             return self._insert(front, m.get("text", ""), int(m.get("delete_before", 0)),
@@ -269,6 +272,18 @@ class WordTarget:
         before = last_line(self._text(front, start - 1000, start))
         after = first_line(self._text(front, end, end + 1000))
         return before, after, start != end
+
+    def _edges(self, front):
+        """The first and last characters of what is selected, or None. A double click in
+        Word takes the space after the word along with it, and the engine needs to know."""
+        try:
+            selection = front.selection
+            if selection.End - selection.Start > 20000:
+                return None
+            text = selection.Text or ""
+            return [text[:1], text[-1:]] if text else None
+        except Exception:
+            return None
 
     # ---- changing -----------------------------------------------------------------------
     def _record(self, front, title: str, action):
@@ -389,7 +404,16 @@ class WordTarget:
             phrase = self._last(front)
             if phrase is None:
                 return {"ok": False, "why": "nothing to select"}
-            phrase.Select()
+            try:
+                # The phrase was put in with a space in front. Highlight the words only.
+                words = phrase.Duplicate
+                text = words.Text or ""
+                lead, trail = len(text) - len(text.lstrip(" ")), len(text) - len(text.rstrip(" "))
+                if text.strip(" ") and (lead or trail):
+                    words.SetRange(words.Start + lead, words.End - trail)
+                words.Select()
+            except Exception:
+                phrase.Select()
             return {"ok": True}
         if name == "select_all":
             selection.WholeStory()
@@ -491,15 +515,19 @@ class WordTarget:
         return {"ok": True}
 
     # ---- "select ...", with numbers to choose from --------------------------------------
-    def _matches(self, front, phrase: str) -> tuple:
+    def _matches(self, front, phrase: str, as_heard_first: bool = False) -> tuple:
         """A Word range for each place `phrase` is found near the cursor, in reading
-        order, and the index of the one nearest the cursor."""
+        order, and the index of the one nearest the cursor.
+
+        `as_heard_first` leaves out words that only sound the same when the phrase as
+        heard is there: for when the nearest is taken without asking."""
         selection = front.selection
         caret = selection.Start
         low = max(0, caret - WINDOW)
         text = self._text(front, low, selection.End + WINDOW)
         offset = units(self._text(front, low, caret))  # the cursor's place in `text`, roughly
-        places = [(units(text[:a]), units(text[:b]), text[a:b]) for a, b in find_all(text, phrase)]
+        spots = (as_heard_first and find_exact(text, phrase)) or find_all(text, phrase)
+        places = [(units(text[:a]), units(text[:b]), text[a:b]) for a, b in spots]
         chosen = nearest([(a, b) for a, b, _ in places], offset, MAX_CHOICES)
         wanted = {(a, b): words for a, b, words in places}
         found, best, best_distance = [], 0, None
@@ -525,9 +553,9 @@ class WordTarget:
         return tuple(place) if isinstance(place, tuple) and len(place) == 4 else None
 
     def _select(self, front, phrase: str, take_nearest: bool) -> dict:
-        matches, best = self._matches(front, phrase)
+        matches, best = self._matches(front, phrase, as_heard_first=take_nearest)
         if not matches:
-            return {"ok": False, "why": "can't find that"}
+            return {"ok": False, "why": "can't find that", "sounds_tried": True}
         if len(matches) == 1 or take_nearest:
             matches[best].Select()
             return {"ok": True}
