@@ -29,6 +29,11 @@ program in `dictation/`, with a Qt tray icon.
 | `spelling.py` | Turns spoken letters into letters for "spell that" |
 | `settings.py` | Which commands are switched on, and the choice of speech model |
 | `voicetest.py` | Trying every recogniser on a recording of your own voice, and scoring each |
+| `reading.py` | Reading sentences aloud for training: cutting the microphone's sound into a piece for each sentence, judging when a sentence has been read to its end, and keeping each beside its text |
+| `reading_text.py` | The sentences that come with it |
+| `training.py` | The app's side of retraining a model on those sentences: what there is to train on, what the result is called, starting the work as a process of its own and following it by the notes it keeps |
+| `trainer/` | The retraining itself, run by a Python of its own that has PyTorch and NeMo: the passes, the loss for a processor (Parakeet v2's TDT loss is written out here; Parakeet Unified's plain transducer loss is torchaudio's), cutting single words out of the sentences to learn from beside them (`words.py` says why), making the app's 8-bit files, and the comparison on sentences and single words kept back |
+| `speech.py` | Tells speech from other sounds with a voice detector, so that a noise Parakeet wrote a word for is left out |
 | `opinions.py` | One phrase as two recognisers heard it, with a third settling where they differ |
 | `quick.py` | Giving Whisper only as much sound as a phrase needs, with a safety net |
 | `remote.py` | Another computer doing the recognising: the server that shares it, the client, and the fallback |
@@ -41,6 +46,7 @@ program in `dictation/`, with a Qt tray icon.
 | `portal_keys.py` | Linux: pressing keys with the desktop's leave, through its remote-desktop portal |
 | `vscode_args.py` | Linux: the start-up switch that makes VS Code describe its panels' text boxes |
 | `vscode_target.py` | Talks to the VS Code extension |
+| `looks.py` | Windows: the look of Windows 10, 7 or XP for the app's windows and the tray menu, if one is chosen |
 | `tray.py` | The tray icon and its windows |
 
 ## Listening
@@ -52,7 +58,8 @@ is cut at 20 seconds.
 
 Each phrase is turned up to a normal level and given to Whisper, through faster-whisper,
 on the processor. While asleep, only phrases under six seconds are transcribed, and only
-"wake up", or a near miss of it, does anything. While awake, Whisper is also given the
+"wake up", or a near miss of it, does anything (or "wake" by itself, that word exactly,
+where the short words are switched on). While awake, Whisper is also given the
 text before the cursor, so that it carries on in the same style.
 
 ## Commands and dictation
@@ -237,7 +244,8 @@ handy when you develop on one machine and dictate on another.
 |---|---|
 | `~/linux-speaking/` | The program, its Python packages, the speech models |
 | `~/.config/linux-speaking/settings.json` | Your Settings choices |
-| `~/.local/state/linux-speaking/` | Whether dictation was on, and whether the meter window was open |
+| `~/.local/state/linux-speaking/` | Whether dictation was on |
+| `~/.local/state/linux-speaking/training/` | Sentences read aloud for training: a folder for each day, with each one's sound and `said.txt`, the list of what was read |
 | `~/.config/systemd/user/linux-speaking.service` | The login service |
 
 Advanced settings are environment variables beginning `LS_`, listed in

@@ -196,13 +196,17 @@ class Client:
         return self._send("GET", "/status", b"")
 
     def hear(self, kind: str, audio, awake: bool, prompt: str = "", model: str = "",
-             otherwise=(), quick: bool = False, exact: bool = False) -> dict:
+             otherwise=(), quick: bool = False, exact: bool = False, sure: bool = False,
+             speech_only: bool = True) -> dict:
         """One piece of listening. `kind` is "phrase", or "alone" for a second or so of
         sound with nothing to go on. `model` is the one wanted there; if it hasn't got
         it, the first of `otherwise` that it has, else its own choice. `quick` asks for
-        the quick way of listening (see quick.py)."""
+        the quick way of listening (see quick.py). `sure` asks how sure the recogniser
+        was of each word, which comes back as "sure" if it can say. `speech_only` has a
+        noise that was written down as a word left out (see speech.py)."""
         header = {"kind": kind, "awake": bool(awake), "prompt": prompt, "model": model,
-                  "otherwise": list(otherwise), "quick": bool(quick), "exact": bool(exact)}
+                  "otherwise": list(otherwise), "quick": bool(quick), "exact": bool(exact),
+                  "sure": bool(sure), "speech_only": bool(speech_only)}
         return self._send("POST", "/hear", pack(header, to_pcm(audio)))
 
     def _send(self, method: str, path: str, body: bytes) -> dict:
@@ -246,6 +250,7 @@ class Offload:
         self.otherwise = tuple(otherwise)
         self.wake = wake         # send what is heard while asleep, too
         self.quick = False       # ask for the quick way of listening
+        self.speech_only = True  # and for noises written as words to be left out
         self.on_where = on_where
         self._clock = clock
         self._down_until = 0.0
@@ -280,7 +285,7 @@ class Offload:
             return None
         try:
             reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
-                                     self.quick, exact)
+                                     self.quick, exact, speech_only=self.speech_only)
         except RemoteError as e:
             self._down_until = self._clock() + RETRY_SECONDS
             self._note(False, str(e))

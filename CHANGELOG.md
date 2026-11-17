@@ -6,6 +6,8 @@
   Studio Code. `install.ps1` installs it and `uninstall.ps1` removes it.
 - On Windows, a microphone chooser in Settings, and small numbers shown on screen over the
   matches for "select" in Word and Outlook.
+- On Windows, the app's windows and the tray icon's menu can be given the look of
+  Windows 10, Windows 7 or Windows XP, chosen under Appearance in Settings.
 - On Windows, the "other programs" setting types into any text box that has the keyboard,
   such as a chat box, reading what is around the cursor through UI Automation. An empty
   box is read as empty: its hint ("Type a message") and the page around it are not taken
@@ -45,14 +47,43 @@
   how many words it got wrong on your own voice and how long it took. The window has a
   tab for each step: reading, choosing what to try, and the results. Half of the passage
   is words easily taken for others ("better" and "beta"), and slips that every recogniser
-  made alike, which were in the reading, are not counted.
+  made alike, which were in the reading, are not counted. It also counts near misses:
+  words that came out right, but that the recogniser was less than 90% sure of.
 - "Question mark" said by itself after an unfinished question is typed. Whisper wrote a
   bare "?" for it, which was thrown away as no words at all.
 - "Quicker recognition", a tick box: Whisper is given only as much sound as the phrase
   needs, which is three or four times quicker. A phrase that goes wrong is done again the
   usual way.
 - Parakeet can be installed and chosen as the recogniser: quicker than Whisper and about
-  as accurate as its Medium model, English only.
+  as accurate as its Medium model, English only. The models window also offers NVIDIA's
+  newer Parakeet Unified, and each of the two at full precision (2.5 GB), to try against
+  the usual one in the voice test.
+- In "Read aloud for training", a text read to its end can be gone through again.
+- "Read aloud for training", a trial: a window that shows one sentence at a time and
+  keeps the sound of each beside its text, as material for retraining a recogniser to
+  one voice. Three hundred sentences come with it, or a text file of your own can be
+  read. Nothing has to be pressed: it moves on when the recogniser has heard the sentence
+  to its end. A sitting can be paused for a rest and carried on, and a later one begins
+  where the last left off.
+- In Settings, a tick box that would do nothing with the model in use is greyed, and
+  says why when the mouse rests on it.
+- "Wake" and "sleep" by themselves can stand for "wake up" and "go to sleep": tick
+  **Wake, sleep** in Settings. The longer phrases go on working.
+- The level meter window opens the microphone by itself, so it works whether dictation
+  is on or off, and has the reading window's bar and colours, with each phrase judged in
+  words above it. Dictation is off while it is open, and comes back as it was when it is
+  closed. It no longer opens by itself when the program starts; a second start of the
+  program shows Settings.
+- "Train on my voice", a trial: retrains Parakeet (Unified or v2) on the sentences read aloud, from
+  a window that asks for the folder, the model to start from and a name for the result.
+  It learns from the sentences and from single words cut out of them, runs by itself
+  for half an hour or more, can be stopped and carried on, tests the result on sentences
+  and single words kept out of the training, and puts it among the speech models. It needs
+  training tools of about 2 GB, which the window installs with one button on Linux and
+  on Windows.
+- Parakeet no longer writes "yeah" for a rustle or a key press. A phrase it writes words
+  for is also put to a voice detector, and one with no speech in it is left out. "Leave
+  out sounds that aren't speech" in Settings switches that off.
 - Whisper uses one thread for each processor core, not two, which is quicker on small
   processors.
 - Another computer can do the speech recognition: one shares its recogniser, the other

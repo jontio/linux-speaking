@@ -54,16 +54,5 @@ class Status:
             lines.append(f"Heard: {self.last_heard}")
         return "\n".join(lines)
 
-    def voice_line(self) -> str:
-        if not self.voice_db:
-            return "No phrase heard yet."
-        if self.voice_db >= 25:
-            verdict = "good"
-        elif self.voice_db >= 15:
-            verdict = "weak, but usable"
-        else:
-            verdict = "too weak"
-        return f"Last phrase: {self.voice_db} dB above the background ({verdict}; 25 or more is good)."
-
     def menu_toggle_label(self) -> str:
         return "Turn on" if self.state is State.OFF else "Turn off"

@@ -52,9 +52,14 @@ class OverTheNetwork(unittest.TestCase):
         header, length, peak = self.recogniser.asked[0]
         self.assertEqual(header, {"kind": "phrase", "awake": True, "prompt": "Dear Sam,\n“Thanks”",
                                   "model": "medium.en", "otherwise": ["small.en"], "quick": False,
-                                  "exact": False})
+                                  "exact": False, "sure": False, "speech_only": True})
         self.assertEqual(length, 16000)
         self.assertAlmostEqual(peak, 0.5, places=3)
+
+    def test_a_voice_test_asks_how_sure_it_was(self):
+        audio = np.zeros(1600, dtype=np.float32)
+        remote.Client(self.address, KEY).hear("phrase", audio, True, "", "small.en", sure=True)
+        self.assertIs(self.recogniser.asked[0][0]["sure"], True)
 
     def test_a_wrong_key_is_refused_and_nothing_is_done(self):
         with self.assertRaises(remote.RemoteError) as raised:
@@ -138,8 +143,8 @@ class There:
         self.calls, self.down = [], False
 
     def hear(self, kind, audio, awake, prompt="", model="", otherwise=(), quick=False,
-             exact=False):
-        self.quick_asked, self.exact_asked = quick, exact
+             exact=False, speech_only=True):
+        self.quick_asked, self.exact_asked, self.speech_only_asked = quick, exact, speech_only
         self.calls.append((kind, awake, prompt, model, tuple(otherwise)))
         if self.down:
             raise remote.RemoteError("The other computer can't be reached.")
@@ -175,6 +180,13 @@ class Offloading(unittest.TestCase):
         self.assertTrue(self.there.exact_asked)
         self.offload.transcribe(self.audio, True, "prose")
         self.assertFalse(self.there.exact_asked)
+
+    def test_the_other_computer_is_told_whether_to_leave_noises_out(self):
+        self.offload.transcribe(self.audio, True)
+        self.assertTrue(self.there.speech_only_asked)
+        self.offload.speech_only = False
+        self.offload.transcribe(self.audio, True)
+        self.assertFalse(self.there.speech_only_asked)
 
     def test_asleep_stays_here_unless_asked(self):
         self.assertEqual(self.offload.transcribe(self.audio, False), "heard here")
@@ -280,10 +292,15 @@ class Guests(unittest.TestCase):
         os.makedirs(os.path.join(self.folder, "parakeet-x"))
         for name in ("encoder.int8.onnx", "tokens.txt"):
             open(os.path.join(self.folder, "parakeet-x", name), "w").close()
-        self.transcriber._by_transducer = lambda name, audio: f"by {name}"
+        asked = []
+        self.transcriber._by_transducer = lambda name, audio, sure=False, speech_only=None: (
+            asked.append(speech_only), f"by {name}")[1]
         ask = lambda **header: self.transcriber.answer({"kind": "phrase", "model": "parakeet-x", **header}, [])
         self.assertEqual(ask()["text"], "by parakeet-x")
         self.assertEqual(self.heard, [])
+        ask(speech_only=False)   # a guest that wants noises left in says so
+        ask(speech_only=True)
+        self.assertEqual(asked, [None, False, True])  # one that doesn't say gets this computer's choice
         spelled = ask(exact=True)
         self.assertEqual((spelled["text"], spelled["model"]), ("words", "small.en"))  # Whisper
         self.assertEqual(self.heard[-1][2], "small.en")

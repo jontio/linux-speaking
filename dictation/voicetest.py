@@ -11,6 +11,7 @@ The recording is kept, so the same test can be run again after anything changes.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -71,6 +72,20 @@ def words(text: str) -> list:
 _SAID_SIGNS = sorted((phrase.split() for phrase, _ in SPOKEN), key=len, reverse=True)
 
 
+def _not_spoken_signs(heard: list) -> list:
+    """The places in `heard` that are not punctuation said as words."""
+    kept, at = [], 0
+    while at < len(heard):
+        for phrase in _SAID_SIGNS:
+            if heard[at:at + len(phrase)] == phrase:
+                at += len(phrase)
+                break
+        else:
+            kept.append(at)
+            at += 1
+    return kept
+
+
 def without_spoken_signs(heard: list) -> list:
     """`heard` without punctuation that was said as words.
 
@@ -79,16 +94,7 @@ def without_spoken_signs(heard: list) -> list:
     that is a word got wrong, and the passage has none of those words in it, so they are
     left out of the count either way.
     """
-    kept, at = [], 0
-    while at < len(heard):
-        for phrase in _SAID_SIGNS:
-            if heard[at:at + len(phrase)] == phrase:
-                at += len(phrase)
-                break
-        else:
-            kept.append(heard[at])
-            at += 1
-    return kept
+    return [heard[at] for at in _not_spoken_signs(heard)]
 
 
 def score(said: list, heard: list) -> tuple:
@@ -105,6 +111,114 @@ def score(said: list, heard: list) -> tuple:
         else:
             kept.append((spoken, written))
     return wrong, kept
+
+
+# ---- the words that came out right, but only just -----------------------------------------
+NEAR = 0.9  # a word written with less sureness than this, though right, was a near miss
+
+
+class Heard(str):
+    """What a recogniser wrote. It may also say how sure it was of each word."""
+    sure = None   # [(word, sureness from 0 to 1), ...] as written; None if it doesn't say
+    extra = 0.0   # seconds it spent finding that out, which are no part of the listening
+
+
+def heard_as(text: str, sure, extra: float = 0.0) -> Heard:
+    made = Heard(text)
+    made.sure, made.extra = sure, extra
+    return made
+
+
+def pieced_together(text: str, takes: list):
+    """The sureness of each word of `text`, from the times a recogniser chose words while
+    writing it: `takes` is word_sureness() of each of those. Whisper may choose more than
+    once for one piece of sound, trying again when it mistrusts itself, and long sound
+    is chosen for in stretches. None if the takes can't be fitted to the text."""
+    wanted = words(text)
+    if not wanted:
+        return []
+    heard = [[part for word, _ in take for part in words(word)] for take in takes]
+    for said, take in zip(reversed(heard), reversed(takes)):
+        if said == wanted:
+            return list(take)  # all of it at one go, which is the usual thing
+    found, at = [], 0
+    for said, take in zip(heard, takes):
+        if said and wanted[at:at + len(said)] == said:
+            found += take
+            at += len(said)
+    return found if at == len(wanted) else None
+
+
+def word_sureness(pieces, log_probs):
+    """[(word, how sure)] from the pieces a recogniser wrote and the log of the probability
+    it gave each one as it chose it. A piece that begins with a space begins a word. A
+    word is as sure as its least sure piece. Punctuation isn't counted: where a comma
+    goes is not hearing. None if the recogniser didn't say how sure it was."""
+    if log_probs is None or len(pieces) != len(log_probs):
+        return None
+    found = []
+    for piece, log_prob in zip(pieces, log_probs):
+        sure = math.exp(min(0.0, float(log_prob)))
+        bare = piece.strip().lstrip("\u2581")
+        counted = any(c.isalnum() for c in bare)
+        if piece[:1] in (" ", "\u2581") or not found:
+            found.append([bare, sure if counted else 1.0])
+        else:
+            found[-1][0] += bare
+            if counted:
+                found[-1][1] = min(found[-1][1], sure)
+    return [(word, sure) for word, sure in found if word]
+
+
+def _right(said: list, heard: list) -> list:
+    """For each word of `heard`, whether it is the word of `said` that belongs there, by
+    the same matching as compare()."""
+    rows, columns = len(said) + 1, len(heard) + 1
+    cost = [[0] * columns for _ in range(rows)]
+    for i in range(rows):
+        cost[i][0] = i
+    for j in range(columns):
+        cost[0][j] = j
+    for i in range(1, rows):
+        for j in range(1, columns):
+            cost[i][j] = min(cost[i - 1][j] + 1, cost[i][j - 1] + 1,
+                             cost[i - 1][j - 1] + (said[i - 1] != heard[j - 1]))
+    right, i, j = [False] * len(heard), len(said), len(heard)
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and said[i - 1] == heard[j - 1] and cost[i][j] == cost[i - 1][j - 1]:
+            right[j - 1] = True
+            i, j = i - 1, j - 1
+        elif i > 0 and j > 0 and cost[i][j] == cost[i - 1][j - 1] + 1:
+            i, j = i - 1, j - 1
+        elif i > 0 and cost[i][j] == cost[i - 1][j] + 1:
+            i -= 1
+        else:
+            j -= 1
+    return right
+
+
+def near_misses(said: list, phrases: list):
+    """The words a recogniser got right without being sure of them: [(word, sureness)],
+    the least sure first. `phrases` is what word_sureness() gave for each phrase. None if
+    the recogniser didn't say how sure it was, of any phrase.
+
+    The first word of a phrase is left out. The doubt there is mostly whether to give it
+    a capital, which is not a matter of hearing.
+    """
+    flat = []  # (the word as it is compared, how sure, whether it began its phrase)
+    for sure in phrases:
+        if sure is None:
+            return None
+        first = True
+        for word, how in sure:
+            for part in words(word):
+                flat.append((part, how, first))
+                first = False
+    kept = _not_spoken_signs([word for word, _, _ in flat])
+    right = _right(said, [flat[at][0] for at in kept])
+    found = [flat[at][:2] for at, good in zip(kept, right)
+             if good and not flat[at][2] and flat[at][1] < NEAR]
+    return sorted(found, key=lambda pair: pair[1])
 
 
 def rescore(result) -> None:
@@ -287,6 +401,8 @@ class Result:
     slips: list = field(default_factory=list)
     problem: str = ""        # why it could not be tried, if it couldn't
     note: str = ""           # anything else worth saying about how it went
+    near: int = -1           # words right but under NEAR sure: -1 if the recogniser doesn't say
+    shaky: list = field(default_factory=list)  # those words, least sure first: [word, percent]
 
     def percent(self) -> float:
         return 100.0 * self.wrong / self.total if self.total else 0.0
@@ -363,13 +479,14 @@ def hear_together(team: tuple, sound, written: str, hear) -> tuple:
 def try_one(candidate: Candidate, sounds: list, said: list, hear, progress=lambda done: None,
             cancelled=lambda: False, clock=time.monotonic):
     """One recogniser on every phrase. `hear(candidate, sound, written so far)` gives the
-    words. Returns its Result, or None if it was cancelled part way."""
+    words, as a Heard if it can say how sure it was of them. Returns its Result, or None
+    if it was cancelled part way."""
     result = Result(candidate.title(), candidate.where, candidate.name, candidate.quick,
                     total=len(said))
     try:
         for member in (candidate.team or (candidate,)) if sounds else ():
             hear(member, sounds[0], "")  # loads the model: not counted in the time
-        written, spent, asked = "", 0.0, 0
+        written, spent, asked, sures = "", 0.0, 0, []
         for at, sound in enumerate(sounds):
             if cancelled():
                 return None
@@ -377,14 +494,21 @@ def try_one(candidate: Candidate, sounds: list, said: list, hear, progress=lambd
             if candidate.team:
                 text, settled = hear_together(candidate.team, sound, written[-CONTEXT:], hear)
                 asked += settled
+                sures.append(None)  # several together: nobody's sureness is the answer's
             else:
                 text = hear(candidate, sound, written[-CONTEXT:])
+                sures.append(getattr(text, "sure", None))
+                spent -= getattr(text, "extra", 0.0)  # not time dictation would take
             spent += clock() - started
             written = (written + " " + text).strip()
             progress(at + 1)
         result.seconds = spent / len(sounds) if sounds else 0.0
         result.wrong, slips = score(said, words(written))
         result.slips = [list(pair) for pair in slips]
+        missed = near_misses(said, sures) if sounds else None
+        if missed is not None:
+            result.near = len(missed)
+            result.shaky = [[word, int(100 * how)] for word, how in missed[:40]]  # 89.9 is not 90
         if candidate.team:
             first, second, third = candidate.team
             result.note = (f"{first.label} and {second.label} differed in {asked} of "

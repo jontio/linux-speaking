@@ -1,3 +1,4 @@
+import math
 import os
 import tempfile
 import unittest
@@ -308,6 +309,110 @@ class Trying(unittest.TestCase):
         self.assertIsNone(voicetest.try_one(Candidate("here", "s", "S", True), self.SOUNDS, self.SAID,
                                             self.hear({"phrase one": "", "phrase two": ""}),
                                             cancelled=lambda: True))
+
+
+class NearMisses(unittest.TestCase):
+    """Words that came out right, but that the recogniser wasn't sure of."""
+    SAID = words("the cat sat on the mat and the dog ran away")
+
+    def test_pieces_are_joined_into_words_as_sure_as_their_least_sure_piece(self):
+        pieces = [" The", " c", "at", " s", "at", ",", " on", ".", " dog", "'s"]
+        logs = [math.log(p) for p in (0.7, 0.99, 0.6, 1.0, 0.95, 0.2, 0.98, 0.1, 0.9, 0.8)]
+        found = voicetest.word_sureness(pieces, logs)
+        self.assertEqual([word for word, _ in found], ["The", "cat", "sat,", "on.", "dog's"])
+        for (_, sure), wanted in zip(found, (0.7, 0.6, 0.95, 0.98, 0.8)):  # commas and stops don't count
+            self.assertAlmostEqual(sure, wanted)
+
+    def test_a_recogniser_that_does_not_say_gives_none(self):
+        self.assertIsNone(voicetest.word_sureness([" The", " cat"], None))
+        self.assertIsNone(voicetest.word_sureness([" The", " cat"], [0.0]))
+        self.assertIsNone(voicetest.near_misses(self.SAID, [[("the", 0.5)], None]))
+
+    def test_right_words_it_was_unsure_of_are_counted_least_sure_first(self):
+        one = [("The", 0.5), ("cat", 0.85), ("sat", 0.99), ("on", 0.95), ("the", 0.6), ("mat", 0.999)]
+        two = [("and", 0.4), ("the", 0.97), ("dog", 0.3), ("ran", 0.91), ("away.", 0.89)]
+        missed = voicetest.near_misses(self.SAID, [one, two])
+        self.assertEqual([word for word, _ in missed], ["dog", "the", "cat", "away"])
+        # "The" and "and" began their phrases: the doubt there is the capital, so they are left out.
+
+    def test_a_word_got_wrong_is_not_a_near_miss(self):
+        one = [("The", 0.99), ("cat", 0.99), ("sat", 0.99), ("on", 0.99), ("the", 0.99), ("map", 0.55)]
+        two = [("and", 0.99), ("the", 0.99), ("dog", 0.99), ("ran", 0.99), ("away", 0.99)]
+        self.assertEqual(voicetest.near_misses(self.SAID, [one, two]), [])
+
+    def test_punctuation_said_aloud_is_not_a_near_miss(self):
+        one = [("The", 0.99), ("cat", 0.99), ("sat", 0.99), ("on", 0.99), ("the", 0.99), ("mat", 0.99),
+               ("comma", 0.5)]
+        two = [("and", 0.99), ("the", 0.99), ("dog", 0.99), ("ran", 0.99), ("away", 0.99)]
+        self.assertEqual(voicetest.near_misses(self.SAID, [one, two]), [])
+
+    def test_trying_a_recogniser_that_says_how_sure_it_was(self):
+        texts = {"phrase one": voicetest.heard_as("The cat sat on the map", [
+                     ("The", 0.99), ("cat", 0.8), ("sat", 0.99), ("on", 0.99), ("the", 0.99), ("map", 0.5)]),
+                 "phrase two": voicetest.heard_as("and the dog ran away.", [
+                     ("and", 0.6), ("the", 0.99), ("dog", 0.99), ("ran", 0.7), ("away.", 0.99)])}
+        result = voicetest.try_one(Candidate("here", "parakeet", "Parakeet", False, whisper=False),
+                                   ["phrase one", "phrase two"], self.SAID,
+                                   lambda candidate, sound, written: texts[sound])
+        self.assertEqual((result.wrong, result.near, result.shaky), (1, 2, [["ran", 70], ["cat", 80]]))
+
+    def test_time_spent_finding_out_is_not_counted_as_listening(self):
+        now = [0.0]
+
+        def hear(candidate, sound, written):
+            now[0] += 2.0
+            return voicetest.heard_as("the cat", [("the", 0.99), ("cat", 0.99)], extra=0.5)
+
+        result = voicetest.try_one(Candidate("here", "small.en", "Small", True), ["a", "b"],
+                                   words("the cat the cat"), hear, clock=lambda: now[0])
+        self.assertEqual(result.seconds, 1.5)
+
+    def test_whisper_s_choosings_are_fitted_to_what_it_wrote(self):
+        one = [("The", 0.9), ("cat", 0.8), ("sat.", 0.7)]
+        self.assertEqual(voicetest.pieced_together("The cat sat.", [one]), one)
+        # it tried again, mistrusting its first go: the go that gave the words is the one
+        first_go = [("The", 0.5), ("cap", 0.4), ("sat.", 0.3)]
+        self.assertEqual(voicetest.pieced_together("The cat sat.", [first_go, one]), one)
+        # long sound, chosen for in stretches
+        two = [("On", 0.95), ("the", 0.99), ("mat.", 0.6)]
+        self.assertEqual(voicetest.pieced_together("The cat sat. On the mat.", [one, two]), one + two)
+        # a stretch that was thrown away as made up leaves the rest standing
+        made_up = [("Thank", 0.3), ("you.", 0.3)]
+        self.assertEqual(voicetest.pieced_together("The cat sat. On the mat.", [one, made_up, two]),
+                         one + two)
+        self.assertEqual(voicetest.pieced_together("", [[]]), [])
+        self.assertIsNone(voicetest.pieced_together("The dog ran.", [one]))
+
+    def test_trying_one_that_does_not_say(self):
+        result = voicetest.try_one(Candidate("here", "small.en", "Small", True), ["a"], words("the cat"),
+                                   lambda candidate, sound, written: "the cat")
+        self.assertEqual((result.wrong, result.near, result.shaky), (0, -1, []))
+
+    def test_several_together_have_no_sureness_of_their_own(self):
+        member = Candidate("here", "p", "P", False, whisper=False)
+        team = Candidate("team", "p", "P checked", False, whisper=False, team=(member, member, member))
+        result = voicetest.try_one(team, ["a"], words("the cat"),
+                                   lambda candidate, sound, written: voicetest.heard_as(
+                                       "the cat", [("the", 0.5), ("cat", 0.5)]))
+        self.assertEqual((result.wrong, result.near), (0, -1))
+
+    def test_results_from_before_near_misses_were_counted_still_load(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "voice-test.json")
+            result = voicetest.Result("Parakeet", "here", "parakeet", False, 1, 11, 0.5, [["mat", "map"]],
+                                      near=3, shaky=[["cat", 80]])
+            voicetest.save_results([result], path)
+            _, (loaded,) = voicetest.load_results(path)
+            self.assertEqual((loaded.near, loaded.shaky), (3, [["cat", 80]]))
+            import json
+            with open(path, encoding="utf-8") as f:
+                saved = json.load(f)
+            for old in saved["results"]:
+                del old["near"], old["shaky"]
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+            _, (loaded,) = voicetest.load_results(path)
+            self.assertEqual((loaded.wrong, loaded.near, loaded.shaky), (1, -1, []))
 
 
 class Suggesting(unittest.TestCase):

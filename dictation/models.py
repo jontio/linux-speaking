@@ -11,7 +11,9 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
+import struct
 import threading
 import urllib.error
 import urllib.request
@@ -29,6 +31,9 @@ TIMEOUT = 30
 
 WHISPER = "model.bin"               # the file that marks a folder as a Whisper model
 TRANSDUCER = "encoder.int8.onnx"    # and as a transducer, such as Parakeet: see engine.py
+FULL = "encoder.onnx"               # a transducer at full precision: its numbers as they were
+                                    # trained, not rounded to eight bits each. Four times the size.
+TRANSDUCERS = (TRANSDUCER, FULL)
 
 
 @dataclass(frozen=True)
@@ -49,9 +54,18 @@ KNOWN = (
     Known("distil-large-v3", "Systran/faster-distil-whisper-large-v3", 1517),
     Known("large-v3-turbo", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", 1622),
     Known("large-v3", "Systran/faster-whisper-large-v3", 3091),
-    # NVIDIA's Parakeet (CC BY 4.0), as converted for sherpa-onnx by that project.
+    # NVIDIA's Parakeet, as converted for sherpa-onnx by that project: TDT 0.6b v2
+    # (CC BY 4.0) and the newer Unified 0.6b (NVIDIA Open Model License). "-full" is the
+    # same recogniser at full precision.
     Known("parakeet-tdt-0.6b-v2", "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", 661,
           TRANSDUCER),
+    Known("parakeet-tdt-0.6b-v2-full", "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2", 2513,
+          FULL),
+    Known("parakeet-unified-en-0.6b",
+          "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming", 663,
+          TRANSDUCER),
+    Known("parakeet-unified-en-0.6b-full",
+          "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-non-streaming", 2515, FULL),
 )
 BY_NAME = {known.name: known for known in KNOWN}
 
@@ -74,10 +88,72 @@ def kind(model_dir: str, name: str) -> str:
     folder = os.path.join(model_dir, name)
     if os.path.exists(os.path.join(folder, WHISPER)):
         return "whisper"
-    if os.path.exists(os.path.join(folder, TRANSDUCER)) and os.path.exists(
-            os.path.join(folder, "tokens.txt")):
+    if transducer_files(model_dir, name):
         return "transducer"
     return ""
+
+
+def transducer_files(model_dir: str, name: str) -> dict:
+    """The files of the transducer kept as `name`, by what each is for: those of the
+    8-bit build if it is there, else of the full one. Empty if there is no transducer."""
+    folder = os.path.join(model_dir, name)
+    if os.path.exists(os.path.join(folder, "tokens.txt")):
+        for marker in TRANSDUCERS:
+            if os.path.exists(os.path.join(folder, marker)):
+                ending = marker[len("encoder"):]
+                return {"tokens": os.path.join(folder, "tokens.txt"),
+                        **{part: os.path.join(folder, part + ending)
+                           for part in ("encoder", "decoder", "joiner")}}
+    return {}
+
+
+def whisper_layers(model_dir: str, name: str):
+    """How many decoder layers the Whisper model kept as `name` has, read from the names
+    of the numbers in its model file. None if that can't be told."""
+    try:
+        with open(os.path.join(model_dir, name, WHISPER), "rb") as f:
+            def number(kind: str) -> int:
+                return struct.unpack("<" + kind, f.read(struct.calcsize("<" + kind)))[0]
+
+            def string() -> str:
+                return f.read(number("H"))[:-1].decode("utf-8")
+
+            if not 4 <= number("I") <= 6:  # the layouts this was written for
+                return None
+            string()      # what kind of model
+            number("I")   # and its revision
+            count = number("I")
+            if count > 100_000:
+                return None
+            layers = set()
+            for _ in range(count):
+                named = re.match(r"decoder/layer_(\d+)/", string())
+                f.seek(4 * number("B") + 1, os.SEEK_CUR)  # its shape and its type
+                f.seek(number("I"), os.SEEK_CUR)          # the numbers themselves
+                if named:
+                    layers.add(int(named.group(1)))
+            return max(layers) + 1 if layers else None
+    except (OSError, struct.error, UnicodeDecodeError, ValueError):
+        return None
+
+
+def whisper_can_be_scored(model_dir: str, name: str) -> bool:
+    """Whether a Whisper model can safely be asked to score words against sound, which is
+    how it says how sure it was of each (see the voice test).
+
+    The scoring reads particular decoder layers, named in the model's config.json. Some
+    converted models name layers they don't have: a Distil model with the list of the
+    model it was distilled from. The library doesn't notice, and the program dies. So
+    the answer is yes only when every layer named is known to be there.
+    """
+    try:
+        with open(os.path.join(model_dir, name, "config.json"), encoding="utf-8") as f:
+            heads = json.load(f).get("alignment_heads")
+        named = [int(layer) for layer, _ in heads]
+    except (OSError, ValueError, TypeError):
+        return False
+    layers = whisper_layers(model_dir, name)
+    return bool(named) and layers is not None and 0 <= min(named) and max(named) < layers
 
 
 def is_installed(model_dir: str, name: str) -> bool:

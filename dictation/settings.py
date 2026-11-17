@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from . import config
+from . import config, models, opinions, training
 
 PATH = config.SETTINGS_FILE
 
@@ -23,12 +23,16 @@ class Item:
 
 
 ITEMS = (
+    Item("speech_only", "Leave out sounds that aren't speech  (Parakeet can write a rustle "
+         "or a key press as \"yeah\")", "Hearing"),
     Item("quick_listening", "Quicker recognition: listen to only as much sound as the phrase "
          "needs  (a phrase that goes wrong is done again the usual way)", "Speed",
          default=False),
     Item("second_opinions", "Second opinions: each phrase is also heard by Small, and by Medium "
          "where the two differ  (a trial: a little more accurate, slower)", "Speed",
          default=False),
+    Item("short_wake", "Wake, sleep  (the one word, said by itself, does as \"wake up\" or "
+         "\"go to sleep\", which still work)", "Waking and sleeping", default=False),
     Item("scratch", "Scratch that", "Editing"),
     Item("undo", "Undo that", "Editing"),
     Item("delete", "Delete that", "Editing"),
@@ -96,7 +100,8 @@ ITEMS = (
 )
 BY_KEY = {item.key: item for item in ITEMS}
 OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "numpad_plus",
-                     "quick_listening", "second_opinions", "no_greeting_comma"})
+                     "quick_listening", "second_opinions", "no_greeting_comma",
+                     "speech_only"})
 WINDOWS_ONLY = frozenset({"numpad_plus"})  # settings that aren't commands
 
 
@@ -116,11 +121,12 @@ def _share(saved) -> dict:
 
 class Settings:
     def __init__(self, states: dict | None = None, path: str | None = None, model: str = "",
-                 microphone: str = "", words=(), remote=None, share=None):
+                 microphone: str = "", words=(), remote=None, share=None, look: str = ""):
         self.states = dict(states or {})
         self.path = path
         self.model = model  # the chosen speech model's folder name, or "" for the default
         self.microphone = microphone  # Windows: the recording device's name, or "" for the default
+        self.look = look  # Windows: the look of the Settings window and the menu: see looks.py
         self.words = tuple(words)  # the person's own names and terms: see vocabulary.py
         # Another computer that does the listening, and letting others use this one: see
         # remote.py. Each is a dict; an empty one means it has never been set up.
@@ -137,10 +143,11 @@ class Settings:
             words = saved.get("words", [])
             words = [str(w) for w in words] if isinstance(words, list) else []
             remote, share = saved.get("remote"), saved.get("share")
+            look = str(saved.get("look", ""))
         except (OSError, ValueError, AttributeError):
-            states, model, microphone, words, remote, share = {}, "", "", [], None, None
+            states, model, microphone, words, remote, share, look = {}, "", "", [], None, None, ""
         return cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model,
-                   microphone, words, remote, share)
+                   microphone, words, remote, share, look)
 
     def save(self) -> None:
         if not self.path:
@@ -156,6 +163,8 @@ class Settings:
                 saved["remote"] = self.remote
             if self.share["key"]:
                 saved["share"] = self.share
+            if self.look:
+                saved["look"] = self.look
             json.dump(saved, f, indent=1, sort_keys=True)
 
     def enabled(self, key: str) -> bool:
@@ -173,6 +182,10 @@ class Settings:
         self.microphone = microphone
         self.save()
 
+    def set_look(self, look: str) -> None:
+        self.look = look
+        self.save()
+
     def set_words(self, words) -> None:
         self.words = tuple(words)
         self.save()
@@ -184,6 +197,10 @@ class Settings:
     def set_share(self, **changes) -> None:
         self.share = _share({**self.share, **changes})
         self.save()
+
+    def wake_words(self) -> tuple:
+        """What to say to wake it and to send it to sleep: the shortest that will do."""
+        return ("wake", "sleep") if self.enabled("short_wake") else ("wake up", "go to sleep")
 
     def disabled_commands(self) -> frozenset:
         """Names of commands that are switched off."""
@@ -205,6 +222,7 @@ _SIZES = (  # (text in the folder name, order, description), most specific first
     ("distil-medium", 5, "Distil medium: quicker than Medium"),
     ("distil_small", 3, "Distil small: about as quick as Small"),
     ("distil-small", 3, "Distil small: about as quick as Small"),
+    ("parakeet-unified", 11, "Parakeet Unified: a newer Parakeet, not Whisper"),
     ("parakeet", 10, "Parakeet: quick and accurate, not Whisper"),
     ("turbo", 8, "Large turbo: quicker than Large"),
     ("large", 9, "Large: most accurate, very slow"),
@@ -221,6 +239,7 @@ def model_label(name: str) -> tuple[int, str]:
     for key, order, label in _SIZES:
         if key in low:
             extra = ", many languages" if "multilang" in low else ""
+            extra += ", at full precision" if low.endswith("-full") else ""
             return order, f"{label}{extra}  ({name})"
     return 99, name
 
@@ -229,10 +248,39 @@ def available_models(model_dir: str) -> list:
     """(folder name, description) for each speech model in `model_dir`, smallest first."""
     try:
         names = [n for n in os.listdir(model_dir)
-                 if (os.path.exists(os.path.join(model_dir, n, "model.bin"))
-                     or (os.path.exists(os.path.join(model_dir, n, "encoder.int8.onnx"))
-                         and os.path.exists(os.path.join(model_dir, n, "tokens.txt"))))
+                 if models.kind(model_dir, n)
                  and not n.endswith(".part")]  # one still being fetched: see models.py
     except OSError:
         names = []
-    return [(n, model_label(n)[1]) for n in sorted(names, key=lambda n: (model_label(n)[0], n))]
+    # A model retrained here goes by the name it was given: see training.py.
+    return [(n, training.label(model_dir, n) or model_label(n)[1])
+            for n in sorted(names, key=lambda n: (model_label(n)[0], n))]
+
+
+def without_effect(chosen: str, remote: dict, model_dir: str) -> dict:
+    """{setting: why it would do nothing as things stand}, for Settings to grey those
+    out. `chosen` is the model in use on this computer, `remote` the other computer that
+    does the listening, if one is set up.
+
+    Most settings are about what is done with the words, whichever model wrote them, and
+    are never here. These few are about the listening itself."""
+    def parakeet(name: str) -> bool:
+        # By its name, too: a model on the other computer can't be looked at from here.
+        return "parakeet" in name.lower() or models.kind(model_dir, name) == "transducer"
+
+    there = remote.get("model", "") if remote.get("on") else ""
+    found = {}
+    if not parakeet(chosen) and not (there and parakeet(there)):
+        found["speech_only"] = ("Only Parakeet models write a noise as a word. The model in use is "
+                                "a Whisper one, which leaves noises out by itself.")
+    if not remote.get("on"):
+        # With the listening done on another computer, the opinions are asked for there.
+        wanted = opinions.others(chosen)
+        missing = [name for name in wanted if not models.kind(model_dir, name)]
+        if missing:
+            found["second_opinions"] = (
+                "The second and third opinions are given by "
+                + " and ".join(model_label(name)[1].split(":")[0] for name in wanted)
+                + ". Not installed: " + ", ".join(missing)
+                + ". \"Install or remove models\" has them.")
+    return found

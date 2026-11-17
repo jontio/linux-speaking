@@ -43,6 +43,10 @@ def cores() -> int:
 INSTALL_DIR = os.path.normpath(os.path.expanduser(
     os.environ.get("LS_INSTALL_DIR", "~/linux-speaking")))
 _OWN_MODELS = os.path.join(INSTALL_DIR, "models")
+# The tools for retraining a recogniser to one voice, where they have been installed: a
+# Python of their own with PyTorch and NeMo. See training.py.
+TRAINING_DIR = os.path.normpath(os.path.expanduser(
+    os.environ.get("LS_TRAINING_DIR", os.path.join(INSTALL_DIR, "training"))))
 _SPEECH_NOTE = os.path.expanduser(
     "~/.var/app/net.mkiol.SpeechNote/cache/net.mkiol/dsnote/speech-models"
 )
@@ -81,7 +85,6 @@ MAX_GAIN = float(os.environ.get("LS_MAX_GAIN", "60"))
 LEVEL_STEPS = 5  # bars on the tray icon's level meter
 # A fixed boost for quiet microphones. It can't improve a weak signal, only its numbers.
 DEFAULT_BOOST = float(os.environ.get("LS_BOOST", "4"))
-METER_FILE = os.path.join(os.path.dirname(STATE_FILE), "meter")
 # A Writer extension update waiting for LibreOffice to be closed.
 PENDING_EXTENSION = os.path.expanduser(
     os.environ.get("LS_PENDING_EXTENSION", os.path.join(INSTALL_DIR, "pending.oxt"))

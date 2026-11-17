@@ -1,7 +1,8 @@
 """Telling commands from dictation.
 
 As in Dragon, a command is a whole phrase on its own, with a pause before and
-after. Anything else is dictation. While asleep, only "wake up" counts.
+after. Anything else is dictation. While asleep, only "wake up" counts: or "wake" by
+itself, where the short words have been switched on.
 """
 from __future__ import annotations
 
@@ -10,6 +11,11 @@ import re
 from dataclasses import dataclass
 
 WAKE = "wake"
+# The setting that lets one word do as "wake up" or "go to sleep". Off unless asked for:
+# a lone "sleep" can then no longer be dictated, and one word is easier to set off by
+# accident than two.
+SHORT = "short_wake"
+SHORT_COMMANDS = {"wake": WAKE, "wake wake": WAKE, "sleep": "sleep"}
 
 COMMANDS = {
     "wake up": WAKE,
@@ -164,12 +170,17 @@ def is_cancel(raw: str) -> bool:
     return normalise(raw) in CANCEL
 
 
-def is_wake(phrase: str) -> bool:
+def is_wake(phrase: str, short: bool = False) -> bool:
     """True if a normalised phrase is "wake up", allowing for a slight mishearing.
 
     It has to be said on its own: "wake up the kids" doesn't count.
+
+    With `short`, "wake" by itself counts too. That word exactly: one so short has too
+    many neighbours ("wait", "week", "make", "awake") for a near miss to be let through.
     """
     if phrase in ("wake up", "wakeup", "wake up wake up"):
+        return True
+    if short and SHORT_COMMANDS.get(phrase) == WAKE:
         return True
     if len(phrase.split()) > 3:
         return False
@@ -180,13 +191,17 @@ def interpret(raw: str, awake: bool, disabled=frozenset()) -> Command | Dictatio
     """Decide what one phrase from Whisper means. None means ignore it.
 
     A command named in `disabled` is typed as ordinary dictation. Waking and
-    sleeping can't be disabled.
+    sleeping can't be disabled; SHORT in `disabled` only takes the one-word ways of
+    saying them away.
     """
     phrase = normalise(raw)
     if not phrase:
         return None
+    short = SHORT not in disabled
     if not awake:
-        return Command(WAKE) if is_wake(phrase) else None
+        return Command(WAKE) if is_wake(phrase, short) else None
+    if short and phrase in SHORT_COMMANDS:
+        return Command(SHORT_COMMANDS[phrase])
     # "Move to end of line" and "jump to top" are the same as "go to ...".
     for other in ("move to ", "jump to ", "goto "):
         if phrase.startswith(other):

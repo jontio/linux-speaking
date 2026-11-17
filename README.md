@@ -23,7 +23,7 @@ has no connection with Dragon or its makers.
 ## What it does
 
 - **Wake up and go to sleep by voice.** No push-to-talk key. While asleep it listens only
-  for "wake up".
+  for "wake up". A setting lets "wake" and "sleep" by themselves do the same.
 - **Fits what you say to the document.** Put the cursor after a full stop and the next
   phrase starts with a space and a capital. Put it mid-sentence and it doesn't.
 - **Punctuation by name.** "Comma", "full stop" or "period", "question mark", "new line",
@@ -127,6 +127,10 @@ Things to know:
   Windows' default recording device isn't always the one you expect.
 - The tray icon may be tucked behind the little arrow by the clock. Drag it out to keep it
   in view.
+- **The app's windows and the tray icon's menu can have the look of Windows 10, Windows 7
+  or Windows XP**: the title bar, the window's colour, its buttons, tick boxes and scroll
+  bars. Choose under Appearance, at the foot of Settings, and every window follows. It is
+  drawn by the app itself; only the box for choosing a file stays Windows' own.
 - **Other programs' text boxes**, such as a chat box in a web page or Notepad, can be
   dictated into by ticking "Dictate into other programs' text boxes" in Settings. The
   words are typed in as keystrokes, with the spacing and capitals still fitted to what is
@@ -154,11 +158,20 @@ middle of a sentence, the same words are just typed.
 Clicking the tray icon turns the microphone off, or back on and awake, ready for you to
 talk. Right-clicking it gives you the level meter, Settings and About.
 
+The level meter is a small window for trying your microphone. It opens the microphone by
+itself and shows how loud your voice is as you speak, with the same bar as the reading
+window: grey and blue for too quiet, green for a good level, yellow, orange and red as
+the microphone runs out of room. Above the bar each phrase is judged in words, with what
+to do about it. Dictation is off while the window is open, so nothing you say to it is
+typed, and comes back as it was when you close or minimise it. Asking for dictation from
+the tray icon closes it for you.
+
 ### Commands
 
 | Say | What happens |
 |---|---|
 | wake up / go to sleep | Starts and stops dictation |
+| wake / sleep | The same, in one word each, if **Wake, sleep** is ticked in Settings. It is off to begin with: a lone "sleep" can then no longer be dictated, and one word is a little easier to set off by accident than two. "Wake up" and "go to sleep" go on working |
 | scratch that | Removes the last phrase; say it again for the one before |
 | undo that | Undoes the last change |
 | backspace, backspace 3 | Removes characters before the cursor |
@@ -361,6 +374,15 @@ are typed as ordinary text.
 It also lets you choose the speech model. The installer provides Base and Small. Small is
 the default. Bigger models make fewer mistakes but take longer after each phrase.
 
+Nearly every setting is about what is done with the words, and works the same whichever
+model wrote them, on this computer or another: the commands, the punctuation words,
+"wake" and "sleep", your own words. A few are about the listening itself, and a tick box
+that would do nothing with the model in use is greyed, and says why when the mouse rests
+on it. Leaving out sounds that aren't speech is for Parakeet models. Second opinions want
+two more models installed to give them. Quicker recognition is for Whisper; with a
+Parakeet model it only quickens what Whisper still hears, which is spelling, source code
+and second opinions.
+
 **Quicker recognition** is a tick box under "Speed". Whisper works through half a minute
 of sound however short the phrase, and that is most of the wait. Ticked, it is given only
 as much as the phrase needs, which is three or four times quicker with the same words. Now
@@ -373,6 +395,26 @@ text before the cursor, and it finds your own words by their sound once it has w
 them down, not by being told to expect them. "Wake up", spelling and source code are
 still done by Whisper. It is NVIDIA's Parakeet TDT 0.6b v2, licensed CC BY 4.0, run by
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+
+Parakeet has one bad habit: given a short noise by itself, a rustle of clothing or a key
+press, it will now and then write a word for it, nearly always "yeah", "uh" or "okay". So
+each phrase it writes words for is also put to a voice detector (Silero's, the one
+Whisper already uses), and a phrase with nothing like speech in it is left out, as is one
+of those few words with no clear speech behind it. Tried on some 750 recorded noises of
+things, such as typing, mouse clicks, a ticking clock and dripping water, Parakeet
+Unified wrote words for 77 of them and all but 2 were left out. It took nothing from 51
+read sentences, and one of 364 single-word commands spoken by many people. A cough, a
+sneeze or a laugh is made with the voice, and about half of those still get through. A
+real "yeah" is kept. It adds a few thousandths of a second to a phrase. **Leave out
+sounds that aren't speech** in Settings switches it off.
+
+The models window lists Parakeet in four forms. **Parakeet Unified** is NVIDIA's newer
+Parakeet Unified 0.6b, under the NVIDIA Open Model License; by NVIDIA's own figures it
+gets slightly fewer words wrong. Either of the two can also be had **at full precision**:
+the same recogniser with its numbers as they were trained, where the usual form rounds
+each one to eight bits to make it a quarter of the size. That is a 2.5 GB download, takes
+longer to start, and is a little slower for each phrase. Whether any of them hears you
+better than the usual Parakeet is for the voice test to say.
 
 **Test them on my voice** finds out which model suits you. The window has a tab for each
 step. On the first you read a passage aloud once. Half of it is ordinary sentences, which
@@ -387,6 +429,17 @@ so it is listed but not counted against any of them. Click a row to see the word
 wrong. The recording is kept on your computer, so the test can be run again after
 anything changes.
 
+The results also count **near misses**: words a recogniser got right, but was less than
+90% sure of as it wrote them. Two recognisers that both get every word right can still
+differ in how much they had in hand, and a near miss today is a wrong word on a worse
+day. Click a row to see which words they were. The first word of each phrase is left out,
+since the doubt there is mostly whether to give it a capital. Compare near misses between
+forms of the same recogniser, such as Parakeet with its full-precision form, or one
+Whisper model with another: different recognisers don't measure their own sureness alike,
+and one can be sure and wrong. Finding this out changes nothing about how a recogniser
+listens, and the moment it takes is left out of the time for a phrase. Several
+recognisers working together show a dash.
+
 With Parakeet, Small and Medium all installed, the list also offers the three working
 together: **Parakeet, checked by Small and Medium**. Each of them gets some words wrong
 that the others get right. Parakeet and Small both hear the phrase; where they wrote the
@@ -398,6 +451,81 @@ so most phrases take a little longer and some a good deal longer. The others lis
 wherever the first did: on the other computer if recognition is done there and it has
 the models, else on this one. Punctuation you say aloud and your own words are never
 changed by a second opinion. Spelling, source code and "wake up" are left as they were.
+
+**Read aloud for training** collects recordings of your voice with the words that go with
+each. It is the first half of a trial, retraining Parakeet to one person's voice; the
+second half, the retraining, is **Train on my voice**, below. One sentence is shown at a
+time. Read it aloud,
+the way you dictate, and it moves on by itself. At each pause the recogniser you dictate
+with hears the sentence so far, and when it has heard it to the end the sound is kept and
+the next sentence comes up: with Parakeet, about a second after you stop. A pause in the
+middle of a sentence is waited out. Up to a quarter of the words may be heard wrong and
+the sentence still counts as read, since the words a recogniser gets wrong are the ones
+worth teaching it; something that isn't the sentence at all is not kept, and you are
+asked to read it again. The space bar moves on at once, keeping what you read, or passes
+over a sentence you haven't read. Untick **Move on by itself** to work that way
+throughout. If you stumble, start the sentence again or go back one. A bar under the
+sentence shows how loud you are as you speak, with no steps in it: its length is the
+loudness and its colour the verdict, from grey and blue for too quiet for the room,
+through green for a good level, to yellow, orange and red as the microphone runs out of
+room. Beside it the sentence as a whole is judged in words. One button starts, pauses and
+carries on. Pause for a rest whenever you like: the microphone is closed, dictation comes
+back as it was, and the space bar carries on from the same sentence. It pauses by itself
+if nothing is read for a minute, and then brings dictation back asleep, so that it
+doesn't write down what it overhears. When you have had enough, close the window: the
+next sitting, today or another day, begins at the first sentence not yet read. Three
+hundred sentences come with it, about half an hour's reading, a fifth of them built from
+words a vowel away from another word. When you have read them all, **Read them all
+again** starts over from the top, for more of your voice, or your voice in another room:
+what you read before is kept, and the new readings beside it. You can read a plain text file of your own instead,
+such as something you wrote, which has your own words in it. Its sentences with figures
+or unusual marks in them are left out, because a recogniser may write those another way.
+Each sentence is kept as a sound file with the silence trimmed off, in a folder for the
+day, beside a list of what was read (`said.txt`). The folders are in
+`~/.local/state/linux-speaking/training/`, or on Windows in `state\training` in the
+install folder; the window has a button that opens it. The recordings stay on your
+computer, and dictation is switched off while you read.
+
+**Train on my voice** does the retraining, on the computer's own processor. It is a
+trial too: whether it makes a model better for you is what it is there to find out. It
+asks three things: the folder of sentences (the reading window's own to begin with),
+the model to start from (Parakeet Unified or Parakeet v2), and a name for the result. One sentence in
+six is kept out of the training, and when it is over the model as it came and the
+retrained one both hear those: the window says how many words each got wrong, and how
+many it got right without being sure of. The new model is then among the speech models
+under its name, to be chosen for dictation or tried in the voice test beside the others.
+
+It learns from single words as well as from the sentences. A recogniser learns only from
+what it gets wrong or is unsure of, and in a sentence the other words settle what a word
+is: trained on sentences alone, a model heard them a little better and single words no
+better at all. So the words of each sentence are cut out and learned from one by one,
+where there is nothing but the voice to go by. On single words cut from sentences kept
+out of the training, one pass took Parakeet Unified from 56 in a hundred right to 80,
+with the sentences heard as well as before. The cutting is done with Parakeet v2, which
+says closely when each word was spoken, so it wants that model installed whichever one
+is being retrained; if it is missing the window offers to fetch it first, and without it
+only the sentences are learned from. (Parakeet Unified hears better, but writes each word a third
+of a second or so after it was said, and unevenly; Whisper's word times are as loose.) The window's result
+counts those single words too.
+
+Half an hour of reading takes about seven minutes a pass on an eight-core processor,
+half an hour or so in all, and about 14 GB of memory. So the work runs by itself, at low priority: close the window
+or the app and it goes on, and dictation goes on working, a little slower. The window
+shows how far it has come whenever it is opened, and a notice says when it has ended. It
+can be stopped, and carried on later from the last pass that was finished. It goes over
+the sentences up to ten times, and stops sooner when the sentences it keeps aside to
+judge by stop being heard better: a first run of ten passes was at its best after two.
+
+The training tools are no part of the ordinary install: they are a Python of their own
+with PyTorch and NeMo, about 2 GB. The first time, the window offers to install them,
+with one button, on Linux and on Windows; the install goes on if the window is closed.
+(It runs `scripts/install-training.sh` or `scripts/install-training.ps1`, which can be
+run by hand too.) They go into a folder of their own, `training`, beside the app, and
+removing that folder removes them. The first run also fetches the model's training
+checkpoint, 2.5 GB. A run wants about 14 GB of free memory, and the window says so if
+there isn't that much. On Windows the tools install and every step of a run has been
+tried, in a reduced form, on a four-core laptop without the free memory for a real one;
+a full run there has not been timed, and is reckoned at three hours or so.
 
 **Install or remove models** under the chooser lists the others, from Tiny (78 MB) to
 Large (3.1 GB), with a button to download or remove each. A download is checked before
@@ -454,8 +582,9 @@ dictionary decides. Where there is none, as on Windows, your word wins there.
 ## If something isn't working
 
 - **"Wake up" is ignored.** Open the level meter from the tray icon and speak. The bar
-  should fill at least half way. If it barely moves, the microphone is too quiet or the
-  wrong one is selected in your sound settings. If it turns red, it is too loud.
+  should turn green. If it barely moves, or stays grey or blue, the microphone is too
+  quiet or the wrong one is selected in your sound settings. If it turns orange or red,
+  it is too loud. Close the level meter afterwards: dictation is off while it is open.
 - **Words don't appear.** Hover over the tray icon. It says which program it is typing
   into, or that nothing suitable is in front.
 - **Nothing works in Writer after an update.** If LibreOffice was open during the update,

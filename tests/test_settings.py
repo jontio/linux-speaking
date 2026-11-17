@@ -4,15 +4,25 @@ import unittest
 
 from dictation.commands import MOVES, Command, Dictation, interpret, last_words_length, move_steps
 from dictation.formatting import PARAGRAPH, fit
-from dictation.settings import ITEMS, Settings, available_models, model_label
+from dictation.settings import ITEMS, Settings, available_models, model_label, without_effect
 
 
 class Defaults(unittest.TestCase):
     def test_everything_on_except_period(self):
         s = Settings()
-        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["quick_listening", "second_opinions", "enter", "other_apps", "say:period"])
+        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["quick_listening", "second_opinions", "short_wake", "enter", "other_apps", "say:period"])
         self.assertEqual(s.spoken_off(), ["period"])
-        self.assertEqual(s.disabled_commands(), frozenset({"enter"}))  # off until asked for
+        self.assertEqual(s.disabled_commands(), frozenset({"enter", "short_wake"}))  # off until asked for
+
+    def test_the_words_that_wake_it_and_send_it_to_sleep(self):
+        s = Settings()
+        self.assertEqual(s.wake_words(), ("wake up", "go to sleep"))
+        self.assertIsNone(interpret("Wake.", False, s.disabled_commands()))
+        s.states["short_wake"] = True
+        self.assertEqual(s.wake_words(), ("wake", "sleep"))
+        self.assertEqual(interpret("Wake.", False, s.disabled_commands()), Command("wake"))
+        self.assertEqual(interpret("Sleep.", True, s.disabled_commands()), Command("sleep"))
+        self.assertEqual(interpret("Wake up.", False, s.disabled_commands()), Command("wake"))
 
     def test_keys_are_unique(self):
         self.assertEqual(len({i.key for i in ITEMS}), len(ITEMS))
@@ -27,7 +37,7 @@ class SaveAndLoad(unittest.TestCase):
         s.set("say:full stop", False)
         again = Settings.load(path)
         self.assertFalse(again.enabled("scratch"))
-        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter"}))
+        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter", "short_wake"}))
         self.assertEqual(again.spoken_off(), ["full stop"])
 
     def test_bad_file_gives_defaults(self):
@@ -55,6 +65,11 @@ class Models(unittest.TestCase):
         self.assertTrue(model_label("small.en")[1].startswith("Small: recommended"))
         self.assertIn("many languages", model_label("multilang_fasterwhisper_large3")[1])
         self.assertEqual(model_label("something-else")[1], "something-else")
+        self.assertTrue(model_label("parakeet-tdt-0.6b-v2")[1].startswith("Parakeet: "))
+        self.assertTrue(model_label("parakeet-unified-en-0.6b")[1].startswith("Parakeet Unified: "))
+        self.assertIn("at full precision", model_label("parakeet-tdt-0.6b-v2-full")[1])
+        self.assertIn("at full precision", model_label("parakeet-unified-en-0.6b-full")[1])
+        self.assertNotIn("full precision", model_label("parakeet-unified-en-0.6b")[1])
 
     def test_choice_is_saved(self):
         path = os.path.join(tempfile.mkdtemp(), "settings.json")
@@ -64,6 +79,24 @@ class Models(unittest.TestCase):
         s.set("scratch", False)
         again = Settings.load(path)
         self.assertEqual((again.model, again.enabled("scratch")), ("base.en", False))
+
+    def test_the_look_is_saved_and_windows_own_is_the_usual_one(self):
+        path = os.path.join(tempfile.mkdtemp(), "settings.json")
+        s = Settings.load(path)
+        self.assertEqual(s.look, "")
+        s.set_look("7")
+        self.assertEqual(Settings.load(path).look, "7")
+        s.set_look("")
+        with open(path, encoding="utf-8") as f:
+            self.assertNotIn("look", f.read())  # nothing is written for the usual one
+        self.assertEqual(Settings.load(path).look, "")
+
+    def test_a_setting_that_is_no_more_is_forgotten(self):
+        path = os.path.join(tempfile.mkdtemp(), "settings.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"states": {"xp_look": true, "scratch": false}, "model": ""}')
+        s = Settings.load(path)
+        self.assertEqual(s.states, {"scratch": False})
 
 
 class Effects(unittest.TestCase):
@@ -212,3 +245,53 @@ class Effects(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettingsThatWouldDoNothing(unittest.TestCase):
+    """For Settings to grey out: the few that are about the listening itself."""
+
+    def models(self, *names):
+        folder = tempfile.mkdtemp()
+        for name in names:
+            os.makedirs(os.path.join(folder, name))
+            if "parakeet" in name:
+                for part in ("tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx"):
+                    open(os.path.join(folder, name, part), "w").close()
+            else:
+                open(os.path.join(folder, name, "model.bin"), "w").close()
+        return folder
+
+    OFF = {"on": False, "model": ""}
+
+    def test_everything_installed_and_a_parakeet_in_use_nothing_is_greyed(self):
+        folder = self.models("small.en", "medium.en", "parakeet-unified-en-0.6b")
+        self.assertEqual(without_effect("parakeet-unified-en-0.6b", self.OFF, folder), {})
+
+    def test_leaving_out_noises_is_for_parakeet_here_or_on_the_other_computer(self):
+        folder = self.models("small.en", "medium.en", "parakeet-tdt-0.6b-v2")
+        self.assertIn("speech_only", without_effect("small.en", self.OFF, folder))
+        self.assertNotIn("speech_only", without_effect("parakeet-tdt-0.6b-v2", self.OFF, folder))
+        there = {"on": True, "model": "parakeet-unified-en-0.6b-mine-my-voice"}
+        self.assertNotIn("speech_only", without_effect("small.en", there, folder))
+        self.assertIn("speech_only", without_effect("small.en", {"on": True, "model": "medium.en"}, folder))
+        self.assertIn("speech_only", without_effect("small.en", dict(there, on=False), folder))
+
+    def test_second_opinions_want_two_others_installed(self):
+        folder = self.models("small.en", "parakeet-unified-en-0.6b")
+        why = without_effect("parakeet-unified-en-0.6b", self.OFF, folder)["second_opinions"]
+        self.assertIn("Not installed: medium.en", why)
+        # Small is in use, so Medium and Parakeet are the two asked: both are wanted.
+        folder = self.models("small.en", "medium.en")
+        self.assertIn("parakeet-tdt-0.6b-v2", without_effect("small.en", self.OFF, folder)["second_opinions"])
+        folder = self.models("small.en", "medium.en", "parakeet-tdt-0.6b-v2")
+        self.assertNotIn("second_opinions", without_effect("small.en", self.OFF, folder))
+
+    def test_with_another_computer_listening_the_opinions_are_its_affair(self):
+        folder = self.models("parakeet-unified-en-0.6b")
+        there = {"on": True, "model": "parakeet-unified-en-0.6b"}
+        self.assertNotIn("second_opinions", without_effect("parakeet-unified-en-0.6b", there, folder))
+
+    def test_nothing_else_is_ever_greyed(self):
+        folder = self.models()
+        self.assertLessEqual(set(without_effect("base.en", self.OFF, folder)),
+                             {"speech_only", "second_opinions"})

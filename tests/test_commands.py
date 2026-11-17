@@ -13,11 +13,46 @@ class Asleep(unittest.TestCase):
             self.assertEqual(interpret(heard, awake=False), Command("wake"), heard)
 
     def test_ignores_everything_else(self):
-        for heard in ("We go up", "Thank you.", "Wake", "Up", "What's up?", "Wake up the kids now"):
+        for heard in ("We go up", "Thank you.", "Up", "What's up?", "Wake up the kids now"):
             self.assertIsNone(interpret(heard, awake=False), heard)
         self.assertIsNone(interpret("Hello there", awake=False))
         self.assertIsNone(interpret("Go to sleep.", awake=False))
         self.assertIsNone(interpret("Wake up the kids", awake=False))
+
+
+class ShortWords(unittest.TestCase):
+    """ "Wake" and "sleep" by themselves, for "wake up" and "go to sleep": a setting."""
+    OFF = frozenset({"short_wake"})  # how it starts: the setting is not ticked
+
+    def test_off_a_lone_wake_is_ignored_and_a_lone_sleep_is_typed(self):
+        self.assertIsNone(interpret("Wake.", False, self.OFF))
+        self.assertEqual(interpret("Sleep.", True, self.OFF), Dictation("Sleep."))
+        self.assertEqual(interpret("Wake.", True, self.OFF), Dictation("Wake."))
+
+    def test_on_the_one_word_does_it(self):
+        for heard in ("Wake.", "wake", "Wake!", "Wake, wake."):
+            self.assertEqual(interpret(heard, False), Command("wake"), heard)
+        self.assertEqual(interpret("Sleep.", True), Command("sleep"))
+        self.assertEqual(interpret("Wake.", True), Command("wake"))  # not typed, awake already
+
+    def test_the_longer_phrases_work_either_way(self):
+        for off in (frozenset(), self.OFF):
+            self.assertEqual(interpret("Wake up.", False, off), Command("wake"))
+            self.assertEqual(interpret("Go to sleep.", True, off), Command("sleep"))
+
+    def test_only_those_words_exactly(self):
+        for heard in ("Wait.", "Week.", "Weak.", "Awake.", "Make.", "Woke.", "Wakes.", "Sleep."):
+            self.assertIsNone(interpret(heard, False), heard)  # asleep, "sleep" is nothing
+        for heard in ("Slip.", "Asleep.", "Sleet.", "Sleeps."):
+            self.assertEqual(interpret(heard, True), Dictation(heard), heard)
+
+    def test_in_a_sentence_they_are_dictation(self):
+        self.assertIsNone(interpret("Wake the kids", False))
+        for heard in ("Sleep well.", "I need more sleep", "Wake me at six"):
+            self.assertEqual(interpret(heard, True), Dictation(heard), heard)
+
+    def test_sleep_can_not_be_switched_off_by_another_setting(self):
+        self.assertEqual(interpret("Sleep.", True, frozenset({"sleep"})), Command("sleep"))
 
 
 class Awake(unittest.TestCase):

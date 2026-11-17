@@ -13,9 +13,10 @@ import numpy as np
 
 from . import __version__, client, config
 from .commands import (
-    MOVES, Command, Dictation, choice, interpret, is_cancel, is_move, last_words_length,
-    move_steps,
+    MOVES, SHORT_COMMANDS, Command, Dictation, choice, interpret, is_cancel, is_move,
+    last_words_length, move_steps,
 )
+from .commands import normalise as plain_words
 from .formatting import SPOKEN, fit
 from .mailbridge import MailBridge
 from .targets import Targets
@@ -24,8 +25,8 @@ from .words import Lexicon, repetitive
 from .settings import Settings, available_models
 from .segmenter import END, START, Segmenter, SegmenterConfig
 from .selecting import variants
-from . import (accessibility, audio, coding, endings, models, opinions, quick, remote, spelling,
-               vocabulary, voicetest)
+from . import (accessibility, audio, coding, endings, models, opinions, quick, remote, speech,
+               spelling, vocabulary, voicetest)
 from .status import State, Status
 
 
@@ -37,6 +38,62 @@ def log(message: str) -> None:
 
 # Things Whisper invents from noise. Dropped unless Whisper is confident.
 PHANTOMS = {"thank you", "thanks for watching", "you", "bye", "thank you very much"}
+
+
+class _Scoring:
+    """Stands in for a Whisper model's inner model while one piece of sound is heard, and
+    finds out how likely Whisper thought each token it chose.
+
+    The library gives no such figures when it searches for the best wording, which is how
+    Whisper usually listens, and its switch for word probabilities makes it listen another
+    way: several times slower, and writing things that weren't said. So the listening is
+    left exactly as it is. Once the tokens are chosen, the library is asked to score those
+    same tokens against the sound it has already taken in. `seconds` is what that scoring
+    took, so that it can be left out of any timing.
+    """
+
+    def __init__(self, whisper):
+        from faster_whisper.tokenizer import Tokenizer
+        self._whisper, self._model = whisper, whisper.model
+        tokenizer = Tokenizer(whisper.hf_tokenizer, self._model.is_multilingual,
+                              task="transcribe", language="en")
+        self._start, self._end = tokenizer.sot_sequence, tokenizer.eot
+        self.takes = []     # voicetest.word_sureness() of each choosing
+        self.seconds = 0.0
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+    def __enter__(self):
+        self._whisper.model = self
+        return self
+
+    def __exit__(self, *_):
+        self._whisper.model = self._model
+
+    def generate(self, features, prompts, **options):
+        results = self._model.generate(features, prompts, **options)
+        started = time.monotonic()
+        try:
+            tokens = [token for token in results[0].sequences_ids[0] if token < self._end]
+            if tokens:
+                scored = self._model.align(features, self._start, [tokens], features.shape[1] * 2)[0]
+                pieces = [self._whisper.hf_tokenizer.decode([token]) for token in tokens]
+                self.takes.append(voicetest.word_sureness(
+                    pieces, [math.log(max(float(p), 1e-9)) for p in scored.text_token_probs]))
+            else:
+                self.takes.append([])
+        except Exception as e:  # the words still stand; only the sureness is lost
+            log(f"whisper could not say how sure it was: {type(e).__name__}: {e}")
+            self.takes.append(None)
+        self.seconds += time.monotonic() - started
+        return results
+
+    def sureness(self, text: str):
+        """[(word, how sure)] for the words of `text`, or None if it can't be told."""
+        if any(take is None for take in self.takes):
+            return None
+        return voicetest.pieced_together(text, self.takes)
 
 
 def level_step(rms: float) -> int:
@@ -114,7 +171,9 @@ class Transcriber:
         # computer that has been let in (see remote.py).
         self.lock = threading.RLock()
         self._guests = []  # models loaded because another computer asked: latest last
+        self._scorable = {}  # Whisper models: whether each can say how sure it was
         self.quick = False  # give Whisper only as much sound as the phrase needs: see quick.py
+        self.speech_only = True  # a noise Parakeet wrote a word for is left out: see speech.py
         self.not_speech = 0.0  # for the last phrase heard asleep: how likely it was noise
         self.ignored = ""      # and what it was taken for, if it was ignored as noise
         self.wake_name = config.WAKE_MODEL
@@ -135,12 +194,8 @@ class Transcriber:
     def _transducer(self, name: str):
         if name not in self._loaded:
             import sherpa_onnx
-            folder = os.path.join(config.MODEL_DIR, name)
             self._loaded[name] = sherpa_onnx.OfflineRecognizer.from_transducer(
-                encoder=os.path.join(folder, "encoder.int8.onnx"),
-                decoder=os.path.join(folder, "decoder.int8.onnx"),
-                joiner=os.path.join(folder, "joiner.int8.onnx"),
-                tokens=os.path.join(folder, "tokens.txt"),
+                **models.transducer_files(config.MODEL_DIR, name),
                 num_threads=config.THREADS, model_type="nemo_transducer",
             )
         return self._loaded[name]
@@ -148,12 +203,26 @@ class Transcriber:
     def _is_transducer(self, name: str) -> bool:
         return models.kind(config.MODEL_DIR, name) == "transducer"
 
-    def _by_transducer(self, name: str, audio) -> str:
+    def _by_transducer(self, name: str, audio, sure: bool = False, speech_only=None) -> str:
+        """The words. With `sure`, a voicetest.Heard that also says how sure the
+        recogniser was of each word, where its library tells. A noise that was written
+        down as a word is left out, unless `speech_only` (or this computer's own choice,
+        if that is None) says not to: see speech.py."""
         recogniser = self._transducer(name)
         stream = recogniser.create_stream()
         stream.accept_waveform(config.RATE, audio)
         recogniser.decode_stream(stream)
-        return stream.result.text.strip()
+        result = stream.result
+        text = result.text.strip()
+        if text and (getattr(self, "speech_only", True) if speech_only is None else speech_only):
+            why = speech.not_speech(text, audio)
+            if why:
+                log(f"a sound of {len(audio) / config.RATE:.1f} s left out, {len(text)} characters: {why}")
+                return voicetest.heard_as("", []) if sure else ""
+        if not sure:
+            return text
+        return voicetest.heard_as(text, voicetest.word_sureness(
+            list(result.tokens), getattr(result, "ys_log_probs", None)))
 
     def use(self, name: str) -> None:
         """Switch the dictation model. Raises if it can't be loaded, leaving the old one."""
@@ -175,12 +244,24 @@ class Transcriber:
                 exact = bool(header.get("exact", False))
                 if awake and exact and self._is_transducer(model):
                     model = self.wake_name  # what leans on the prompt is Whisper's work
-                text = self.transcribe(audio, awake, str(header.get("prompt", "")), model,
-                                       quick=bool(header.get("quick", False)), exact=exact)
-            return {"ok": True, "text": text, "model": model,
-                    "not_speech": 0.0 if awake else self.not_speech,
-                    "ignored": "" if awake else self.ignored,
-                    "seconds": round(time.monotonic() - started, 2)}
+                wanted = header.get("speech_only")  # an older guest doesn't say: ours, then
+                wanted = None if wanted is None else bool(wanted)
+                if awake and header.get("sure") and not exact:  # for a voice test
+                    text = self.hear_with(model, audio, str(header.get("prompt", "")),
+                                          bool(header.get("quick", False)), sure=True,
+                                          speech_only=wanted)
+                else:
+                    text = self.transcribe(audio, awake, str(header.get("prompt", "")), model,
+                                           quick=bool(header.get("quick", False)), exact=exact,
+                                           speech_only=wanted)
+            reply = {"ok": True, "text": str(text), "model": model,
+                     "not_speech": 0.0 if awake else self.not_speech,
+                     "ignored": "" if awake else self.ignored,
+                     "seconds": round(time.monotonic() - started, 2)}
+            if getattr(text, "sure", None) is not None:
+                reply["sure"] = [[word, round(how, 4)] for word, how in text.sure]
+                reply["extra"] = round(text.extra, 3)  # seconds spent on that, not on listening
+            return reply
 
     def _guest_model(self, header: dict) -> str:
         """The model to use for another computer: the one it asked for if it is installed
@@ -205,13 +286,25 @@ class Transcriber:
                     self._loaded.pop(old, None)
         return name
 
-    def hear_with(self, name: str, audio, prompt: str = "", quick: bool = False) -> str:
+    def hear_with(self, name: str, audio, prompt: str = "", quick: bool = False,
+                  sure: bool = False, speech_only=None) -> str:
         """`audio` as the model `name` hears it, whichever model is in use. For the voice
-        test, which tries them all."""
+        test, which tries them all, and asks with `sure` how sure it was of each word:
+        the answer is then a voicetest.Heard."""
         with self.lock:
             if self._is_transducer(name):
-                return self._by_transducer(name, audio)
-            return self._transcribe(audio, True, prompt, name, quick)
+                return self._by_transducer(name, audio, sure=sure, speech_only=speech_only)
+            if not sure:
+                return self._transcribe(audio, True, prompt, name, quick)
+            if name not in self._scorable:
+                self._scorable[name] = models.whisper_can_be_scored(config.MODEL_DIR, name)
+                if not self._scorable[name]:
+                    log(f"{name} can't be asked how sure it was: its file doesn't bear it out")
+            if not self._scorable[name]:
+                return voicetest.heard_as(self._transcribe(audio, True, prompt, name, quick), None)
+            with _Scoring(self._model(name)) as scoring:
+                text = self._transcribe(audio, True, prompt, name, quick)
+            return voicetest.heard_as(text, scoring.sureness(text), scoring.seconds)
 
     def release(self, name: str) -> None:
         """Forget a model loaded by hear_with, unless it is one in use."""
@@ -253,16 +346,17 @@ class Transcriber:
         return tokenizer.decode(result.sequences_ids[0]).strip()
 
     def transcribe(self, audio, awake: bool, prompt: str = "", model: str = "",
-                   quick=None, exact: bool = False) -> str:
-        """The words in `audio`. `model` and `quick` are for a guest that says which
-        model it wants and whether to try the quick way; left out, this computer's own
-        choices are used. `exact` is for listening that depends on the prompt, such as
-        spelled letters: it is always done by Whisper."""
+                   quick=None, exact: bool = False, speech_only=None) -> str:
+        """The words in `audio`. `model`, `quick` and `speech_only` are for a guest that
+        says which model it wants, whether to try the quick way, and whether a noise
+        written as a word is to be left out; left out, this computer's own choices are
+        used. `exact` is for listening that depends on the prompt, such as spelled
+        letters: it is always done by Whisper."""
         with self.lock:
             model = model or self.dictation_name
             if awake and self._is_transducer(model):
                 if not exact:
-                    return self._by_transducer(model, audio)
+                    return self._by_transducer(model, audio, speech_only=speech_only)
                 model = self.wake_name
             return self._transcribe(audio, awake, prompt, model,
                                     self.quick if quick is None else quick)
@@ -391,6 +485,7 @@ class Engine:
         self._explained_at = -60.0
         self._selected_that = False  # the last thing done was "select that" or "correct that"
         self._held = ""  # "awake" or "asleep" while listening is stopped for a recording
+        self._holds = 0  # how many windows are recording
         self._names_at = 0.0
         self._names_list = []
         self._scope = {}
@@ -618,9 +713,11 @@ class Engine:
         Both are told here whether the quick way is switched on."""
         ears = self._offload if self._offload is not None else self._transcriber
         quickly = self.settings.enabled("quick_listening")
+        speech_only = self.settings.enabled("speech_only")
         for each in (ears, self._transcriber):
             if hasattr(each, "quick"):
                 each.quick = quickly
+                each.speech_only = speech_only
         return ears
 
     def _otherwise(self) -> tuple:
@@ -727,15 +824,23 @@ class Engine:
     # ---- trying each recogniser on the person's own voice: see voicetest.py -----------
     def hold(self) -> None:
         """Stop listening while a recording is made, so that what is read aloud isn't
-        typed anywhere. unhold() puts things back as they were."""
+        typed anywhere. unhold() puts things back as they were, once every window that
+        asked for a hold has let go."""
+        self._holds += 1
         if self.status.state is not State.OFF:
             self._held = "awake" if self.status.awake else "asleep"
             self.turn_off(remember=False)
 
-    def unhold(self) -> None:
+    def unhold(self, asleep: bool = False) -> bool:
+        """Let go of a hold. `asleep` brings dictation back asleep even if it was awake,
+        for when nobody is there to have asked for it. Returns whether that was done."""
+        self._holds = max(0, self._holds - 1)
+        if self._holds:
+            return False
         held, self._held = self._held, ""
         if held:
-            self.turn_on(awake=held == "awake")
+            self.turn_on(awake=held == "awake" and not asleep)
+        return held == "awake" and asleep
 
     def test_candidates(self, both_ways: bool) -> list:
         """Every recogniser the voice test can try: this computer's models, and the
@@ -760,13 +865,30 @@ class Engine:
         if candidate.where == "there":
             chosen = self.settings.remote
             reply = remote.Client(chosen["address"], chosen["key"]).hear(
-                "phrase", sound, True, written, candidate.name, (), candidate.quick)
+                "phrase", sound, True, written, candidate.name, (), candidate.quick, sure=True,
+                speech_only=self.settings.enabled("speech_only"))
             if reply.get("model") != candidate.name:
                 raise remote.RemoteError("The other computer no longer has this model.")
-            return str(reply.get("text", ""))
+            try:  # how sure it was of each word, if that computer says
+                sure = [(str(word), float(how)) for word, how in reply["sure"]]
+                extra = float(reply.get("extra", 0.0))
+            except (KeyError, TypeError, ValueError):
+                sure, extra = None, 0.0
+            return voicetest.heard_as(str(reply.get("text", "")), sure, extra)
         if self._transcriber is None or not hasattr(self._transcriber, "hear_with"):
             raise RuntimeError("the speech models are still loading")
-        return self._transcriber.hear_with(candidate.name, sound, written, candidate.quick)
+        return self._transcriber.hear_with(candidate.name, sound, written, candidate.quick,
+                                           sure=True,
+                                           speech_only=self.settings.enabled("speech_only"))
+
+    def hear_reading(self, sound) -> str:
+        """A sentence read aloud for training, as the recogniser in use hears it: on the
+        other computer, if that does the listening. For the reading window, which moves
+        on when the sentence has been heard to its end. Raises if nothing can listen."""
+        ears = self._ears()
+        if ears is None:
+            raise RuntimeError("the speech models are still loading")
+        return ears.transcribe(normalise(sound), True, "")
 
     def test_done(self, candidate) -> None:
         """Free the models the voice test loaded for a recogniser."""
@@ -864,7 +986,8 @@ class Engine:
         quickly = self.settings.enabled("quick_listening")
         if there:
             try:
-                reply = self._offload.client.hear("phrase", sound, True, prompt, name, (), quickly)
+                reply = self._offload.client.hear("phrase", sound, True, prompt, name, (), quickly,
+                                                  speech_only=self.settings.enabled("speech_only"))
                 if reply.get("model") == name:
                     return str(reply.get("text", ""))
             except remote.RemoteError:
@@ -920,13 +1043,11 @@ class Engine:
             log("spelling started")
             self._back_to_awake()
             return
-        if isinstance(action, Command) and action.name == "wake":
-            self.status.last_heard = "wake up"
-            self.wake()
-            return
-        if isinstance(action, Command) and action.name == "sleep":
-            self.status.last_heard = "go to sleep"
-            self.sleep()
+        if isinstance(action, Command) and action.name in ("wake", "sleep"):
+            said = plain_words(text)  # the one word, where that was what was said
+            long = "wake up" if action.name == "wake" else "go to sleep"
+            self.status.last_heard = said if said in SHORT_COMMANDS else long
+            (self.wake if action.name == "wake" else self.sleep)()
             return
         if isinstance(action, Command):
             self.status.last_heard = text

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import struct
 import os
 import tempfile
 import unittest
@@ -214,6 +215,31 @@ class Kinds(unittest.TestCase):
         self.assertFalse(models.is_installed(folder, "half"))
         self.assertEqual([n for n, _ in available_models(folder)], ["small.en", "parakeet"])
 
+    def test_a_transducer_at_either_precision(self):
+        folder = tempfile.mkdtemp()
+        for name, files in (("packed", ["encoder.int8.onnx", "tokens.txt"]),
+                            ("full", ["encoder.onnx", "encoder.weights", "tokens.txt"]),
+                            ("both", ["encoder.int8.onnx", "encoder.onnx", "tokens.txt"]),
+                            ("no-tokens", ["encoder.onnx"])):
+            os.makedirs(os.path.join(folder, name))
+            for file in files:
+                open(os.path.join(folder, name, file), "w").close()
+        self.assertEqual([models.kind(folder, n) for n in ("packed", "full", "both", "no-tokens")],
+                         ["transducer", "transducer", "transducer", ""])
+
+        def names(name):
+            return {part: os.path.relpath(path, os.path.join(folder, name))
+                    for part, path in models.transducer_files(folder, name).items()}
+
+        self.assertEqual(names("packed"), {"encoder": "encoder.int8.onnx", "decoder": "decoder.int8.onnx",
+                                           "joiner": "joiner.int8.onnx", "tokens": "tokens.txt"})
+        self.assertEqual(names("full"), {"encoder": "encoder.onnx", "decoder": "decoder.onnx",
+                                         "joiner": "joiner.onnx", "tokens": "tokens.txt"})
+        self.assertEqual(names("both")["encoder"], "encoder.int8.onnx")
+        self.assertEqual(models.transducer_files(folder, "no-tokens"), {})
+        self.assertEqual(models.transducer_files(folder, "gone"), {})
+        self.assertEqual([n for n, _ in available_models(folder)], ["both", "full", "packed"])
+
     def test_a_transducer_download_needs_its_own_file_in_the_list(self):
         known = models.Known("parakeet", "Someone/parakeet", 1, models.TRANSDUCER)
         folder = tempfile.mkdtemp()
@@ -223,6 +249,19 @@ class Kinds(unittest.TestCase):
                            "tokens.txt": b"a 0\n"})
         models.Download(known, folder, opener=site, free=lambda _: 10 ** 12).run()
         self.assertEqual(models.kind(folder, "parakeet"), "transducer")
+
+    def test_a_full_precision_download_brings_its_weights_file(self):
+        known = models.Known("parakeet-full", "Someone/parakeet-full", 1, models.FULL)
+        folder = tempfile.mkdtemp()
+        packed = Site(files={"encoder.int8.onnx": b"e", "decoder.int8.onnx": b"d", "joiner.int8.onnx": b"j",
+                             "tokens.txt": b"a 0\n"})
+        with self.assertRaises(models.Failed):  # the 8-bit build's listing won't do
+            models.Download(known, folder, opener=packed, free=lambda _: 10 ** 12).run()
+        site = Site(files={"encoder.onnx": b"e" * 10, "encoder.weights": b"w" * 1000, "decoder.onnx": b"d",
+                           "joiner.onnx": b"j", "tokens.txt": b"a 0\n"})
+        models.Download(known, folder, opener=site, free=lambda _: 10 ** 12).run()
+        self.assertEqual(models.kind(folder, "parakeet-full"), "transducer")
+        self.assertEqual(os.path.getsize(os.path.join(folder, "parakeet-full", "encoder.weights")), 1000)
 
 
 class Catalogue(unittest.TestCase):
@@ -241,6 +280,58 @@ class Catalogue(unittest.TestCase):
 
     def test_free_space_of_a_folder_not_made_yet(self):
         self.assertGreater(models.free_space(os.path.join(tempfile.mkdtemp(), "not", "yet")), 0)
+
+
+class ScoringWhisper(unittest.TestCase):
+    """A Whisper model is asked how sure it was only if it has the layers its own
+    configuration names: asked otherwise, the library takes the program down."""
+
+    def model(self, folder, layers, heads, version=6):
+        os.makedirs(os.path.join(folder, "m"))
+        with open(os.path.join(folder, "m", "model.bin"), "wb") as f:
+            def string(text):
+                f.write(struct.pack("<H", len(text) + 1) + text.encode("utf-8") + b"\0")
+
+            names = ["encoder/layer_0/ffn/weight", "decoder/embeddings/weight"]
+            names += [f"decoder/layer_{n}/{part}/weight" for n in range(layers) for part in ("attention", "ffn")]
+            f.write(struct.pack("<I", version))
+            string("WhisperSpec")
+            f.write(struct.pack("<II", 3, len(names)))
+            for name in names:
+                string(name)
+                f.write(struct.pack("<BII", 2, 2, 3))            # two dimensions: 2 by 3
+                f.write(struct.pack("<BI", 0, 24) + bytes(24))   # its type, its size, itself
+            f.write(struct.pack("<I", 0))
+        if heads is not None:
+            with open(os.path.join(folder, "m", "config.json"), "w", encoding="utf-8") as f:
+                json.dump({"alignment_heads": heads, "lang_ids": []}, f)
+
+    def test_the_layers_are_counted_from_the_model_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.model(folder, 12, [[6, 1], [11, 3]])
+            self.assertEqual(models.whisper_layers(folder, "m"), 12)
+            self.assertTrue(models.whisper_can_be_scored(folder, "m"))
+
+    def test_a_model_that_names_layers_it_has_not_got_is_not_asked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.model(folder, 4, [[6, 1], [11, 3]])  # the list of the model it was distilled from
+            self.assertEqual(models.whisper_layers(folder, "m"), 4)
+            self.assertFalse(models.whisper_can_be_scored(folder, "m"))
+
+    def test_nor_is_one_that_cannot_be_made_out(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertFalse(models.whisper_can_be_scored(folder, "m"))       # no such model
+            self.model(folder, 12, None)
+            self.assertFalse(models.whisper_can_be_scored(folder, "m"))       # it names no layers
+        with tempfile.TemporaryDirectory() as folder:
+            self.model(folder, 12, [[6, 1]], version=9)
+            self.assertIsNone(models.whisper_layers(folder, "m"))             # a layout not known
+            self.assertFalse(models.whisper_can_be_scored(folder, "m"))
+        with tempfile.TemporaryDirectory() as folder:
+            self.model(folder, 12, [[6, 1]])
+            with open(os.path.join(folder, "m", "model.bin"), "r+b") as f:
+                f.truncate(40)
+            self.assertIsNone(models.whisper_layers(folder, "m"))             # cut short
 
 
 if __name__ == "__main__":
