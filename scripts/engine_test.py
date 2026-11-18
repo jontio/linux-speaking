@@ -277,6 +277,63 @@ client.request({"op": "command", "name": "doc_top"})
 client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
 client.request({"op": "command", "name": "delete"})
 check("cleared", doc(), "")
+# Commands of the person's own, and commands only. A real program is really started (one
+# that only makes an empty file); no keys are pressed and nothing is opened on the screen.
+made = os.path.join(tempfile.mkdtemp(), "made by a command")
+engine.settings.shortcuts = {"make the file": f"run: touch \"{made}\"",
+                             "ask and make": f"ask first\nrun: touch \"{made} too\"",
+                             "sign off": "Kind regards,"}
+
+
+def wait_for(path, seconds=5.0):
+    until = time.monotonic() + seconds
+    while time.monotonic() < until and not os.path.exists(path):
+        time.sleep(0.1)
+    return os.path.exists(path)
+
+
+engine.settings.states = {"run_programs": False}
+engine.handle_text("Make the file.", awake=True)
+check("a command that runs a program does nothing until that is switched on",
+      (wait_for(made, 1.0), doc()), (False, ""))
+engine.settings.states = {"run_programs": True}
+engine.handle_text("Make the file.", awake=True)
+check("switched on, the program is run, and nothing is typed", (wait_for(made), doc()), (True, ""))
+engine.handle_text("Ask and make.", awake=True)
+engine.handle_text("Yeah.", awake=True)
+check("a command that asks first is left by anything but yes", wait_for(made + " too", 1.0), False)
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+engine.handle_text("Ask and make.", awake=True)
+engine.handle_text("Yes.", awake=True)
+check("and done on yes, which is not typed", (wait_for(made + " too"), doc()), (True, ""))
+hear(engine, say("command mode"))
+check("nothing that is said switches typing off", engine.status.commands_only, False)
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+engine.settings.states = {"run_programs": True, "commands_only": True}
+engine.setting_changed("commands_only")
+check("commands only, ticked in Settings", engine.status.commands_only, True)
+engine.handle_text("This is only somebody talking.", awake=True)
+check("with commands only what is no command is not typed", doc(), "")
+engine.handle_text("Sign off.", awake=True)
+check("but a shortcut of the person's own still is", doc(), "Kind regards,")
+engine.handle_text("Select all.", awake=True)
+engine.handle_text("Delete that.", awake=True)
+check("and the program's commands are acted on", doc(), "")
+hear(engine, say("normal mode"))
+check("and nothing that is said switches it back on", (engine.status.commands_only, doc()), (True, ""))
+engine.settings.states = {"run_programs": True}
+engine.setting_changed("commands_only")
+check("unticked in Settings", engine.status.commands_only, False)
+engine.handle_text("typed again", awake=True)
+check("and dictation is typed again", doc(), "Typed again")
+client.request({"op": "command", "name": "doc_top"})
+client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+client.request({"op": "command", "name": "delete"})
+engine.settings.shortcuts, engine.settings.states = {}, {}
 if len(sys.argv) > 1:
     w = wave.open(sys.argv[1])
     hear(engine, np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0)

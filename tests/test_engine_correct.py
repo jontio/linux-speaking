@@ -144,7 +144,8 @@ class ARetrainedModel(unittest.TestCase):
         ears = Transcriber.__new__(Transcriber)
         ears.lock, ears._guests = threading.RLock(), []
         ears._loaded = dict(loaded)
-        ears.dictation_name, ears.wake_name = in_use, "base.en"
+        ears.dictation_name, ears.helper_name = in_use, "base.en"
+        ears._code_name, ears._code_used = "", 0.0
         ears._is_transducer = lambda name: True
         ears.made = []
         ears._transducer = lambda name: ears._loaded.setdefault(name, ears.made.append(name) or "new")

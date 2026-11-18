@@ -112,6 +112,10 @@ PENDING_EXTENSION = os.path.expanduser(
 )
 # How long numbered matches stay on screen waiting for you to say a number.
 CHOICE_SECONDS = float(os.environ.get("LS_CHOICE_SECONDS", "20"))
+# A phrase this long, in seconds, has its loudness put in the log: see Engine._listen.
+LONG_PHRASE = float(os.environ.get("LS_LONG_PHRASE", "8"))
+# How long a command of the person's own that begins with "ask first" waits for "yes".
+ASK_SECONDS = float(os.environ.get("LS_ASK_SECONDS", "10"))
 CHOICE_WORDS = 1  # so few words said while numbers show, and no number: asked again, not typed
 LOOK_SECONDS = 3.0  # while awake and idle: how often the program in front is looked for
 MICROPHONE_WAIT, MICROPHONE_TRIES = 2.0, 90  # a microphone that stopped: tried again this often
@@ -136,9 +140,18 @@ OTHER = os.environ.get("LS_OTHER", "1" if WINDOWS else "0") == "1"
 WEB = os.environ.get("LS_WEB", "0" if WINDOWS else "1") == "1"
 # Dictation into Microsoft Word and Outlook, on Windows. LS_OFFICE=0 turns it off.
 OFFICE = os.environ.get("LS_OFFICE", "1" if WINDOWS else "0") == "1"
-# "Wake up" is listened for with the wake model, on short phrases only: longer sound,
-# such as a video playing, is not transcribed at all while asleep.
+# The Whisper model that helps a Parakeet: with a Parakeet chosen for dictation, it
+# hears what leans on a hint, which a Parakeet can't be given. With a Whisper model
+# chosen it isn't loaded at all: the chosen model does everything. (It was once the model
+# that listened for "wake up", whichever was chosen, and its setting keeps that name.)
 WAKE_MODEL = os.environ.get("LS_WAKE_MODEL", AWAKE_MODEL)
+# Source code leans on its hint most of all, the names in the file: so with a Parakeet
+# chosen it is heard by a bigger Whisper where one is installed, loaded when code is first
+# dictated and let go when none has been for this many seconds.
+CODE_MODELS = tuple(name for name in os.environ.get("LS_CODE_MODELS", "medium.en").split(",") if name)
+CODE_MODEL_IDLE = float(os.environ.get("LS_CODE_MODEL_IDLE", "600"))
+# "Wake up" is listened for on short phrases only: longer sound, such as a video
+# playing, is not transcribed at all while asleep.
 WAKE_MAX_SECONDS = float(os.environ.get("LS_WAKE_MAX_SECONDS", "6"))
 # The menu entry touches this file to ask a running engine to show its Settings window.
 SHOW_FILE = os.path.join(os.path.dirname(STATE_FILE), "show")

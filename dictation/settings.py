@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import config, models, opinions, training
+from . import actions, config, models, opinions, training
 
 PATH = config.SETTINGS_FILE
 
@@ -91,6 +91,10 @@ ITEMS = (
          "Programming"),
     Item("app", "\"What can I say\", \"open dictation settings\", \"show microphone level\", "
          "\"close that window\"", "This program's windows"),
+    Item("commands_only", "Commands only  (nothing you say is typed: only commands are acted "
+         "on, the program's and your own)", "My shortcuts and commands", default=False),
+    Item("run_programs", "Let my own commands run programs  (the lines with \"run:\" under "
+         "My shortcuts and commands)", "My shortcuts and commands", default=False),
     Item("no_greeting_comma", "No comma after Hello or Hi  (\"Hello Bob\", not "
          "\"Hello, Bob\")", "Punctuation"),
     Item("say:full stop", "\"Full stop\"  .", "Punctuation", phrases=("full stop",)),
@@ -249,6 +253,20 @@ HELP = {
              "Only where a whole number stands straight before the word: \"a few dollars\" "
              "and \"a dollar\" stay as they are. Unticked, each sum is left as the recogniser "
              "wrote it.",
+    "commands_only": "For using this program for voice commands and not for dictation. "
+                     "Ticked, nothing you say is typed: only commands are acted on, the ones "
+                     "that come with this program and the shortcuts and commands of your own "
+                     "in the box above. Whatever else is heard is left alone. \"Wake up\" and "
+                     "\"go to sleep\" work as always. The tray icon shows a C while this is "
+                     "ticked, so that nobody wonders why nothing is typed. Unticked, which is "
+                     "how it starts, what is no command is dictation, and is typed.",
+    "run_programs": "A command of your own may start a program: a line with \"run:\" under My "
+                    "shortcuts and commands. A program is started only by the words of such a "
+                    "line, said by themselves, and nothing you say is passed on to it. All the "
+                    "same, a phrase may be misheard, or said by a video. So it is off until "
+                    "you tick this, and a command that runs a program has to be two words or "
+                    "more. Begin a command with \"ask first\" and it waits for you to say "
+                    "\"yes\". Pressing keys and opening files and web pages don't need this.",
     "app": "For working this program's own windows without the mouse. \"What can I say\" opens "
            "the list of everything that can be said. \"Open dictation settings\" opens this "
            "window. \"Show microphone level\" opens the level meter. \"Close that window\" "
@@ -269,15 +287,17 @@ def help_for(key: str) -> str:
 # Settings that aren't commands: they are asked about by name, not left out of what is heard.
 OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "keep_final", "money",
                      "quick_listening", "second_opinions", "no_greeting_comma",
-                     "speech_only", "aloud"})
+                     "speech_only", "aloud", "run_programs", "commands_only"})
 WINDOWS_ONLY = frozenset()  # tick boxes shown on Windows only: none now
 
 MOST_SHORTCUTS, LONGEST_SHORTCUT = 200, 2000
 
 
 def parse_shortcuts(text: str) -> tuple:
-    """The person's own shortcuts as typed into Settings, one to a line, "what is said =
-    what is typed": ({said: typed}, [the lines that couldn't be understood]).
+    """The person's own shortcuts and commands as typed into Settings, one to a line,
+    "what is said = what is typed", or "= keys: ...", "= open: ...", "= run: ..." for a
+    command that does something (see actions.py): ({said: what is written after the
+    sign}, [the lines that couldn't be understood, and why]).
 
     A line that starts with a space carries on the text of the one above, as a new line
     of it: an address is written as it will be typed. Nothing needs escaping, so a
@@ -302,6 +322,13 @@ def parse_shortcuts(text: str) -> tuple:
         else:
             found[said] = typed
             last = said
+    # A command of the person's own, which does something and types nothing (see
+    # actions.py), has to be one that can be done: or it is left out, and said why.
+    for said, written in list(found.items()):
+        wrong = actions.problem(said, written)
+        if wrong:
+            del found[said]
+            problems.append(f"{said}  ({wrong})")
     return found, problems
 
 

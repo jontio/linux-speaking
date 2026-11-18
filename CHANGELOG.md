@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+- **Commands of your own.** A line under **My shortcuts and commands** in Settings can
+  do something where a shortcut types something: `new tab = keys: ctrl+t` presses keys,
+  `my notes = open: ~/notes.txt` opens a file, a folder or a web page, and `build it =
+  run: make -C ~/project` starts a program. Further lines under it are further steps,
+  with `wait: 2` to give a program time and `type:` to type a text. They are said by
+  themselves, word for word, like a shortcut, and "What can I say?" lists them.
+- **Running programs is off until you tick "Let my own commands run programs".** Only
+  what you wrote is run: nothing you say is passed on, and no shell reads the line. A
+  command that runs a program has to be two words or more, a notice says what was run,
+  and a command that begins with `ask first` waits for you to say "yes".
+- **Commands only.** A tick box beside that list, for using the program for voice
+  commands and not for dictation: ticked, nothing you say is typed, and only commands
+  are acted on, yours and the program's. It is chosen in Settings and kept; nothing that
+  is said switches it. The tray icon shows a C while it is ticked.
+- **The model you choose does all the listening, "wake up" included.** It used to be
+  the Small Whisper model that listened for "wake up", whatever you had chosen. A
+  Parakeet answers several times sooner (about a tenth of a second against a second, on
+  the computer it was measured on), heard a set of made-up voices saying "wake up" as
+  reliably, and was no more often woken by other phrases or by noises; and a model
+  trained on your voice is the one that listens. There is nothing to tick: it is one
+  rule. With another computer doing the recognising and "wake up" listened for there,
+  the same holds; a computer there with an earlier version carries on with its Whisper.
+- With a Whisper model chosen, only that model is loaded: it does everything. With a
+  Parakeet chosen, Small is still kept beside it for the spelling box and the short
+  second listen for punctuation, which lean on a hint that a Parakeet can't be given.
+- Source code in C and C++ files, with a Parakeet chosen, is heard by the Medium Whisper
+  model where it is installed: it leans most on its hint, the names in the file. Medium
+  is loaded when code is first dictated and let go ten minutes after the last of it.
+  Without Medium, Small does it as before.
+- "C plus plus" is typed C++. Parakeet Unified writes it as "C ??", two question marks,
+  which were taken for the end of a question and dropped: only "C" was typed, and the
+  next word got a capital. Parakeet v2 writes the words, which are now put right too.
+  The same for g++, clang++ and Notepad++.
+- **A phrase no longer takes up to twenty seconds to be acted on when the room gets
+  louder.** The end of a phrase is the pause after it, and a pause was sound below what
+  the room had been measured to be. If the room got louder after you began (a fan
+  coming on, a microphone that turns itself up when the talking stops), that pause never
+  came: the program went on listening to its limit of twenty seconds before doing
+  anything with what you had said. Now sound that falls far below your voice, and stays
+  level as a fan or a hiss does, also ends the phrase, and is taken as the room from
+  then on. Talking that goes soft still rises and falls, and is kept as talking. The log
+  says when a phrase ended this way, or at the limit.
+- On Windows, what a command of your own opens or runs now comes to the front. Windows
+  keeps a program that isn't in front from putting a window there, and this one lives in
+  the tray: a folder opened by voice opened behind the other windows.
+- On Windows a command of your own that presses keys now presses them as a keyboard
+  does: each key with its place on the keyboard, one after another. Sent all at once by
+  number alone, Alt+F4 was taken no notice of. The log says which program the keys went
+  to, and a notice says so if Windows wouldn't take them.
+
 ## 0.6.0
 
 After updating to this version, these are left for you to do by hand:

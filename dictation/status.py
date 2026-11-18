@@ -35,6 +35,7 @@ class Status:
     # sentence that says what. The engine keeps the list; the tray and Settings show it.
     problems: list = field(default_factory=list)
     own_windows: int = 0  # how many of this program's own windows are open (the tray says)
+    commands_only: bool = False  # chosen in Settings: nothing is typed, only commands are acted on
 
     @property
     def awake(self) -> bool:
@@ -45,14 +46,20 @@ class Status:
         recognised in either case, whatever the microphone is doing."""
         if self.failed:
             return "No speech model"
-        return self.state.value if self.ready else "Loading\u2026"
+        if not self.ready:
+            return "Loading\u2026"
+        return self.state.value + (", commands only" if self.commands_only and self.awake else "")
 
     def tooltip(self) -> str:
         lines = [f"Dictation: {self.label()}"]
         if self.failed:
             lines.append(self.failed)
         elif self.state is State.ASLEEP and self.ready:
-            lines[0] += ". Say \"wake up\" to dictate."
+            lines[0] += ". Say \"wake up\" to dictate." if not self.commands_only else \
+                ". Say \"wake up\" to give commands."
+        elif self.commands_only and self.awake and self.ready:
+            lines.append("Nothing is typed: only commands are acted on. To dictate, untick "
+                         "\"Commands only\" in Settings.")
         # Where the words will go is only said once it has been looked for, and only
         # while awake, which is when it is kept up to date: said at other times it was
         # often wrong, and "nothing in front" before anybody had looked.
@@ -60,7 +67,8 @@ class Status:
             if not self.writer_ready:
                 lines.append("Nothing to type into is in front")
             elif self.target:
-                lines.append(f"Typing into {self.target}")
+                lines.append(f"{'Commands go to' if self.commands_only else 'Typing into'} "
+                             f"{self.target}")
         if self.listening_on and self.state is not State.OFF:
             lines.append(f"Recognising on {self.listening_on}")
         if self.loud and self.state is not State.OFF:

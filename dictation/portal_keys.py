@@ -29,7 +29,11 @@ ANSWER_SECONDS = 120.0   # how long the person has to answer the desktop's quest
 # Keys by name, as X and Wayland number them (keysyms).
 KEYSYMS = {"enter": 0xFF0D, "backspace": 0xFF08, "delete": 0xFFFF, "tab": 0xFF09,
            "home": 0xFF50, "end": 0xFF57, "left": 0xFF51, "up": 0xFF52, "right": 0xFF53,
-           "down": 0xFF54, "shift": 0xFFE1, "ctrl": 0xFFE3, "alt": 0xFFE9, "escape": 0xFF1B}
+           "down": 0xFF54, "shift": 0xFFE1, "ctrl": 0xFFE3, "alt": 0xFFE9, "escape": 0xFF1B,
+           # ... and the rest, for commands of the person's own that press keys.
+           "win": 0xFFEB, "space": 0x20, "pageup": 0xFF55, "pagedown": 0xFF56, "insert": 0xFF63,
+           "plus": 0x2B, "minus": 0x2D, "comma": 0x2C, "period": 0x2E, "slash": 0x2F,
+           **{f"f{n}": 0xFFBD + n for n in range(1, 13)}}
 
 
 class NotAllowed(Exception):
@@ -218,6 +222,20 @@ class Keys:
                                         None, None, Gio.DBusCallFlags.NONE, 2000, None)
                 except Exception:
                     pass
+
+
+_shared = None
+
+
+def shared() -> Keys:
+    """The one set of keys for the whole program. The desktop's leave is kept under one
+    token, which is handed over anew each time it is used: two sets would each spend
+    the other's."""
+    global _shared
+    if _shared is None:
+        from . import config
+        _shared = Keys(os.path.join(os.path.dirname(config.STATE_FILE), "keys-token"))
+    return _shared
 
 
 def _token() -> str:

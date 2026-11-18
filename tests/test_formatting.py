@@ -727,5 +727,35 @@ class AfterATitle(unittest.TestCase):
                                  (before, raw, carried))
 
 
+
+class NamesThatEndInTwoPlusSigns(unittest.TestCase):
+    def typed(self, raw, before=""):
+        return fit(raw, before, "").text
+
+    def test_parakeet_unified_writes_two_question_marks_for_them(self):
+        # Its pieces for "C plus plus" are " C", " ", "?", "?": taken for the end of a
+        # question, they were dropped, and only "C" was typed.
+        self.assertEqual(self.typed("C ??."), "C++")
+        self.assertEqual(self.typed("C??."), "C++")
+        self.assertEqual(self.typed("I write C ?? code."), "I write C++ code")   # and no capital on "code"
+        self.assertEqual(self.typed("It is written in C ??."), "It is written in C++")
+        self.assertEqual(self.typed("Open it in Notepad ??."), "Open it in Notepad++")
+
+    def test_and_parakeet_v2_writes_the_words(self):
+        self.assertEqual(self.typed("C plus plus."), "C++")
+        self.assertEqual(self.typed("c plus plus", "I like "), "C++")
+        self.assertEqual(self.typed("I use g plus plus and clang plus plus."), "I use g++ and clang++")
+
+    def test_what_whisper_writes_is_left(self):
+        self.assertEqual(self.typed("C++ and C#."), "C++ and C#")
+
+    def test_nothing_else_is_given_plus_signs(self):
+        self.assertEqual(self.typed("What??"), "What")
+        self.assertEqual(self.typed("Is it C?"), "Is it C")
+        self.assertEqual(self.typed("two plus two"), "Two plus two")
+        self.assertEqual(self.typed("A plus plus"), "A plus plus")
+        self.assertEqual(self.typed("Mac ??"), "Mac")
+        self.assertEqual(self.typed("C ???"), "C")
+
 if __name__ == "__main__":
     unittest.main()

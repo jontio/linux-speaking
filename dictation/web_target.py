@@ -21,7 +21,7 @@ import time
 
 from . import config
 from .keys_target import READ, Box, KeysTarget, presses
-from .portal_keys import Keys, NotAllowed, typable
+from .portal_keys import NotAllowed, shared, typable
 from .selecting import find_nearest
 
 OBJECT = "￼"        # stands in a box's text for something inside it that isn't text
@@ -53,14 +53,14 @@ class WebBoxTarget(KeysTarget):
 
     OWN_THREAD = False   # the accessibility library can be called from any thread
 
-    def __init__(self, everything=lambda: False, keys: Keys | None = None):
+    def __init__(self, everything=lambda: False, keys=None):
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi
         Atspi.init()
         super().__init__(everything)
         self.A, self.T = Atspi, Atspi.Text
-        self.keys = keys or Keys(os.path.join(os.path.dirname(config.STATE_FILE), "keys-token"))
+        self.keys = keys or shared()
         self._object = None
         self._program = ""
         self._asking = None      # the thread putting the desktop's question, while it is open

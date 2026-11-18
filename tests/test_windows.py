@@ -486,6 +486,23 @@ if HAVE_QT and ALONE:
                           settings_module.HELP["scratch"], "Editing", "Punctuation"):
                 self.assertIn(words, page)
 
+        def test_it_lists_the_persons_own_commands(self):
+            self.engine.settings.shortcuts = {"new tab": "keys: ctrl+t",
+                                              "my address": "12 High Street\nDunedin 9016",
+                                              "shut down": "ask first\nrun: systemctl poweroff"}
+            self.addCleanup(setattr, self.engine.settings, "shortcuts", {})
+            self.window.fill()
+            page = self.window.page.toPlainText()
+            for words in ("My shortcuts and commands", "\"New tab\"", "Does: presses keys", "\"My address\"",
+                          "Types: 12 High Street / Dunedin 9016",
+                          "Does: asks first, then runs a program"):
+                self.assertIn(words, page)
+            self.assertNotIn("systemctl", page)          # what it does, not what was written
+            self.window.find.setText("runs a program")
+            self.assertIn("\"Shut down\"", self.window.page.toPlainText())
+            self.assertNotIn("\"New tab\"", self.window.page.toPlainText())
+            self.window.find.setText("")
+
         def test_the_list_narrows_as_the_box_is_typed_in(self):
             everything = len(self.window.shown)
             self.window.find.setText("scratch")
@@ -546,6 +563,27 @@ if HAVE_QT and ALONE:
             self.assertFalse(hasattr(self.window, "strip"))
             self.assertIsNone(self.window.findChild(tray.QLabel, "helpStrip"))
 
+        def test_commands_only_is_a_tick_box_beside_the_list_of_commands_and_off(self):
+            tick = self.window.ticks["commands_only"]
+            self.assertFalse(tick.isChecked())
+            self.assertIs(tick.parentWidget(), self.window.shortcuts.parentWidget())
+            self.engine.asked.clear()
+            tick.setChecked(True)
+            self.assertTrue(self.engine.settings.enabled("commands_only"))
+            self.assertIn(("setting", "commands_only"), self.engine.asked)   # the engine is told at once
+
+        def test_running_programs_is_a_tick_box_in_the_box_of_my_commands_and_off(self):
+            tick = self.window.ticks["run_programs"]
+            self.assertFalse(tick.isChecked())
+            box = tick.parentWidget()
+            self.assertIsInstance(box, tray.QGroupBox)
+            self.assertIn("shortcuts and commands", box.title().replace("&", "").lower())
+            self.assertIs(self.window.shortcuts.parentWidget(), box)   # the same box as the lines
+            self.assertEqual(len([b for b in self.window.findChildren(tray.QGroupBox)
+                                  if "shortcuts and commands" in b.title().replace("&", "").lower()]), 1)
+            tick.setChecked(True)
+            self.assertTrue(self.engine.settings.enabled("run_programs"))
+
         def test_a_greyed_tick_box_says_why_first_and_can_be_tabbed_to(self):
             idle = settings_module.without_effect(config.AWAKE_MODEL, self.engine.settings.remote,
                                                   config.MODEL_DIR)
@@ -554,7 +592,9 @@ if HAVE_QT and ALONE:
                 tick = self.window.ticks[name]
                 self.assertTrue(tick.isEnabled())
                 self.assertTrue(tick.text().endswith(self.window.IDLE))
-                self.assertIn(why, tick.toolTip())     # the reason first, in its tip
+                # The reason first, in its tip: where quotation marks are written for a web page.
+                import html
+                self.assertIn(html.escape(why), tick.toolTip())
                 self.assertTrue(tick.accessibleDescription().startswith(why))
 
         def test_every_tick_box_has_its_help_as_tip_and_description(self):
@@ -590,7 +630,9 @@ if HAVE_QT and ALONE:
             from PyQt6.QtWidgets import QLabel
             words = " ".join(label.text() for label in self.window.findChildren(QLabel))
             self.assertIn("Parakeet Unified is the best of the models so far", words)
-            self.assertIn("\"Wake up\" is still listened for with the", words)
+            # One rule, said where the model is chosen: no other model listens for "wake up".
+            self.assertIn("The model chosen here does all the listening, \"wake up\" included.", words)
+            self.assertNotIn("still listened for", words)
             self.assertNotIn("recommended model", words)
             self.assertFalse(self.window.suggest.isHidden())  # it isn't installed here
 
@@ -694,6 +736,24 @@ if HAVE_QT and ALONE:
             self.engine.asked.clear()
             self.said = []
             self.t.say = lambda title, message, icon, ms: self.said.append((title, message, ms))
+
+        def test_commands_only_shows_on_the_icon_and_is_not_in_the_menu(self):
+            self.assertFalse(hasattr(self.t, "commands_only"))
+            self.assertFalse([a for a in self.t.menu.actions() if "ommand" in a.text()])
+            self.engine.status.state = State.AWAKE
+            self.addCleanup(setattr, self.engine.status, "state", State.ASLEEP)
+            self.addCleanup(setattr, self.engine.status, "commands_only", False)
+            plain = self.t.icon_now()
+            self.engine.status.commands_only = True            # as ticked in Settings
+            marked = self.t.icon_now()
+            self.assertIsNot(marked, plain)                    # the icon with a "C" on it
+            self.assertIs(marked, self.t.command_icons[State.AWAKE, self.engine.status.level])
+            # A "C" really is drawn: the two pictures differ.
+            self.assertNotEqual(tray.make_pixmap(State.AWAKE, commands=True).toImage(),
+                                tray.make_pixmap(State.AWAKE).toImage())
+            # Asleep or off there is no typing to warn about: the usual icons.
+            self.engine.status.state = State.ASLEEP
+            self.assertIs(self.t.icon_now(), self.t.icons[State.ASLEEP, self.engine.status.level])
 
         def test_the_first_time_the_welcome_window_is_shown_not_settings(self):
             self.assertTrue(self.t.welcome_window.isVisible())

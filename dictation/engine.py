@@ -23,9 +23,9 @@ from .targets import Targets
 from .vscode_target import VSCodeTarget
 from .words import Lexicon, repetitive
 from .settings import Settings, available_models, model_label
-from .segmenter import END, START, Segmenter, SegmenterConfig
+from .segmenter import END, FELL_AWAY, LIMIT, START, Segmenter, SegmenterConfig
 from .selecting import variants
-from . import (accessibility, audio, coding, endings, models, money, opinions, quick, remote,
+from . import (accessibility, actions, audio, coding, endings, models, money, opinions, quick, remote,
                speech, spelling, training, vocabulary, voicetest)
 from .status import State, Status
 
@@ -167,13 +167,16 @@ def shown(model: str, prompt: str) -> str:
 
 
 class Transcriber:
-    """The recogniser. One model listens for "wake up", and one, chosen in Settings, takes
-    dictation.
+    """The recogniser. The model chosen in Settings does the listening: dictation, the
+    commands, and "wake up" while asleep. One rule, whichever model it is.
 
-    Most models are Whisper. A transducer such as Parakeet can take dictation too: it is
-    quicker, but it can't be shown the text before the cursor or be given words to
-    expect. So "wake up", spelling and source code, which lean on those, always go to
-    Whisper.
+    Most models are Whisper. A transducer such as Parakeet is quicker, but it can't be
+    shown the text before the cursor or be given words to expect. So with a Parakeet
+    chosen, what leans on those goes to a Whisper model that is kept beside it for the
+    purpose: the spelling box and the short second listen for punctuation to the helper
+    (`helper_name`, Small), and source code to a bigger one where it is installed, which
+    is loaded when code is first dictated and let go when none has been for a while.
+    With a Whisper model chosen there is only that one: it does all of it.
     """
 
     def __init__(self, dictation_model: str = ""):
@@ -185,12 +188,14 @@ class Transcriber:
         self._scorable = {}  # Whisper models: whether each can say how sure it was
         self.quick = False  # give Whisper only as much sound as the phrase needs: see quick.py
         self.speech_only = True  # a noise Parakeet wrote a word for is left out: see speech.py
+        self.left_out = ""       # what the last phrase was written as, if it was left out as a noise
+        self._code_name = ""     # the Whisper loaded for source code beside a Parakeet, if one is
+        self._code_used = 0.0    # and when it last heard any
         self.not_speech = 0.0  # for the last phrase heard asleep: how likely it was noise
         self.ignored = ""      # and what it was taken for, if it was ignored as noise
-        self.wake_name = config.WAKE_MODEL
+        self.helper_name = config.WAKE_MODEL  # the Whisper that helps a Parakeet: see the class
         self._short_window = True  # until it turns out this library can't do it
         self.dictation_name = ""
-        self._model(self.wake_name)
         self.use(dictation_model or config.AWAKE_MODEL)
 
     def _model(self, name: str):
@@ -227,6 +232,7 @@ class Transcriber:
         text = from_pieces(result)
         each = voicetest.word_sureness(list(result.tokens), getattr(result, "ys_log_probs", None))
         self.measured = None  # for a phrase of a word or two: what was measured of it
+        self.left_out = ""
         if text and (getattr(self, "speech_only", True) if speech_only is None else speech_only):
             least = min((how for _, how in each), default=None) if each else None
             numbers = {"seconds": round(len(audio) / config.RATE, 1)}
@@ -236,31 +242,79 @@ class Transcriber:
             if why:
                 log(f"a sound of {len(audio) / config.RATE:.1f} s left out, {len(text)} characters: {why}"
                     + speech.told(numbers))
+                self.left_out = text
                 return voicetest.heard_as("", []) if sure else ""
         if not sure:
             return text
         return voicetest.heard_as(text, each)
 
     def use(self, name: str) -> None:
-        """Switch the dictation model. Raises if it can't be loaded, leaving the old one."""
+        """Switch the dictation model. Raises if it can't be loaded, leaving the old one.
+        A Parakeet has its Whisper helper loaded beside it; a Whisper model needs none,
+        and what was loaded to help the last one is let go."""
         with self.lock:
-            (self._transducer if self._is_transducer(name) else self._model)(name)
-            old, self.dictation_name = self.dictation_name, name
-            if old and old not in (name, self.wake_name, *self._guests):
-                del self._loaded[old]  # free its memory
+            if self._is_transducer(name):
+                self._transducer(name)
+                self._model(self.helper_name)
+            else:
+                self._model(name)
+            self.dictation_name = name
+            self._code_name = ""
+            for other in list(self._loaded):
+                if other not in self._in_use():
+                    del self._loaded[other]  # free its memory
+
+    def _in_use(self) -> tuple:
+        """The models that are to stay loaded: the chosen one, its helper if it is a
+        Parakeet, the one hearing source code just now, and the guests'."""
+        helper = (self.helper_name,) if self._is_transducer(self.dictation_name) else ()
+        code = (self._code_name,) if getattr(self, "_code_name", "") else ()
+        return (self.dictation_name, *helper, *code, *self._guests)
+
+    def _whisper_name(self, code: bool = False) -> str:
+        """The Whisper model for listening that leans on a hint: the chosen model if it
+        is one. With a Parakeet chosen, its helper; or for source code a bigger one,
+        where one of config.CODE_MODELS is installed."""
+        if not self._is_transducer(self.dictation_name):
+            return self.dictation_name
+        if not code:
+            return self.helper_name
+        if not getattr(self, "_code_name", ""):
+            self._code_name = next((name for name in config.CODE_MODELS
+                                    if models.kind(config.MODEL_DIR, name) == "whisper"),
+                                   self.helper_name)
+            if self._code_name != self.helper_name:
+                log(f"source code is heard by {self._code_name}, loaded now")
+        self._code_used = time.monotonic()
+        return self._code_name
+
+    def _let_go_of_code_model(self) -> None:
+        """The Whisper that was loaded for source code is let go when no code has been
+        dictated for a while: it is the biggest thing in memory."""
+        name = getattr(self, "_code_name", "")
+        if name and time.monotonic() - self._code_used > config.CODE_MODEL_IDLE:
+            self._code_name = ""
+            if name not in self._in_use():
+                self._loaded.pop(name, None)
+                log(f"no source code for a while: {name} let go")
 
     def answer(self, header: dict, audio) -> dict:
         """One piece of listening done for another computer: see remote.py."""
         started = time.monotonic()
         with self.lock:
+            code = bool(header.get("code", False))
             if header.get("kind") == "alone":
-                text, model, awake = self.hear_alone(audio), self.wake_name, True
+                text, model, awake = self.hear_alone(audio), self._whisper_name(), True
             else:
                 awake = bool(header.get("awake", True))
-                model = self._guest_model(header) if awake else self.wake_name
+                # Asleep, it is "wake up" that is listened for, by the guest's own model as
+                # everything else of its is. (A guest from before that was so doesn't ask
+                # for it, and gets this computer's Whisper as it used to.)
+                same = not awake and bool(header.get("wake_same", False))
+                model = self._guest_model(header) if awake or same else self._whisper_name()
                 exact = bool(header.get("exact", False))
                 if awake and exact and self._is_transducer(model):
-                    model = self.wake_name  # what leans on the prompt is Whisper's work
+                    model = self._whisper_name(code)  # what leans on the prompt is Whisper's work
                 wanted = header.get("speech_only")  # not said: this computer's own choice, then
                 wanted = None if wanted is None else bool(wanted)
                 if awake and header.get("sure") and not exact:  # for a voice test
@@ -270,7 +324,7 @@ class Transcriber:
                 else:
                     text = self.transcribe(audio, awake, str(header.get("prompt", "")), model,
                                            quick=bool(header.get("quick", False)), exact=exact,
-                                           speech_only=wanted)
+                                           speech_only=wanted, code=code)
             reply = {"ok": True, "text": str(text), "model": model,
                      "not_speech": 0.0 if awake else self.not_speech,
                      "ignored": "" if awake else self.ignored,
@@ -292,7 +346,7 @@ class Transcriber:
         wanted = [header.get("model", "")] + (list(others) if isinstance(others, list) else [])
         name = next((m for m in wanted if isinstance(m, str) and m in installed),
                     self.dictation_name)
-        own = (self.dictation_name, self.wake_name)
+        own = tuple(n for n in self._in_use() if n not in self._guests)
         if name not in own:
             if name in self._guests:
                 self._guests.remove(name)
@@ -337,19 +391,19 @@ class Transcriber:
     def release(self, name: str) -> None:
         """Forget a model loaded by hear_with, unless it is one in use."""
         with self.lock:
-            if name not in (self.dictation_name, self.wake_name, *self._guests):
+            if name not in self._in_use():
                 self._loaded.pop(name, None)
 
     def hear_alone(self, audio) -> str:
-        """A second or so of sound by itself, with only the sound to go on. The model
-        that listens for "wake up" does it: short phrases alone are its work.
+        """A second or so of sound by itself, with only the sound to go on. A Whisper
+        model does it: the chosen one, or the helper of a Parakeet.
 
         Whisper takes in half a minute of sound however little there is, and that is
         most of the time it takes. Given ten seconds it hears a short clip just the same
         in a quarter of the time. Given much less it starts to repeat itself.
         """
         with self.lock:
-            model = self._model(self.wake_name)
+            model = self._model(self._whisper_name())
             if self._short_window:
                 try:
                     return self._hear_short(model, audio)
@@ -374,20 +428,39 @@ class Transcriber:
         return tokenizer.decode(result.sequences_ids[0]).strip()
 
     def transcribe(self, audio, awake: bool, prompt: str = "", model: str = "",
-                   quick=None, exact: bool = False, speech_only=None) -> str:
-        """The words in `audio`. `model`, `quick` and `speech_only` are for a guest that
-        says which model it wants, whether to try the quick way, and whether a noise
-        written as a word is to be left out; left out, this computer's own choices are
-        used. `exact` is for listening that depends on the prompt, such as spelled
-        letters: it is always done by Whisper."""
+                   quick=None, exact: bool = False, speech_only=None, code: bool = False) -> str:
+        """The words in `audio`, as the chosen model hears them: awake or asleep. `model`,
+        `quick` and `speech_only` are for a guest that says which model it wants, whether
+        to try the quick way, and whether a noise written as a word is to be left out;
+        left out, this computer's own choices are used. `exact` is for listening that
+        depends on the prompt, such as spelled letters, which a Parakeet can't be given:
+        with one chosen that goes to a Whisper model, and with `code`, to the one kept
+        for source code."""
         with self.lock:
+            self._let_go_of_code_model()
             model = model or self.dictation_name
-            if awake and self._is_transducer(model):
+            if self._is_transducer(model):
+                if not awake:
+                    return self._asleep_by_transducer(model, audio, speech_only)
                 if not exact:
                     return self._by_transducer(model, audio, speech_only=speech_only)
-                model = self.wake_name
+                model = self._whisper_name(code)
             return self._transcribe(audio, awake, prompt, model,
                                     self.quick if quick is None else quick)
+
+    def _asleep_by_transducer(self, model: str, audio, speech_only=None) -> str:
+        """What was said while asleep, which only matters if it is "wake up", as the
+        Parakeet chosen for dictation hears it. As with Whisper, long sound is not
+        listened to at all: a video playing, a conversation. And a sound that is no
+        speech is left out, where that is switched on: what it was written as is kept
+        in `ignored`, for the log to show what "wake up" was taken for."""
+        self.not_speech, self.ignored = 0.0, ""
+        if len(audio) > config.WAKE_MAX_SECONDS * config.RATE:
+            return ""
+        text = self._by_transducer(model, audio, speech_only=speech_only)
+        if not text and getattr(self, "left_out", ""):
+            self.not_speech, self.ignored = 1.0, self.left_out
+        return text
 
     def _quick_try(self, model: str, audio, prompt: str):
         """The words, heard the quick way, or None if it has to be done the usual way."""
@@ -436,7 +509,7 @@ class Transcriber:
             # "wake up" on a noisy microphone. No hint towards the phrase is given either:
             # with one, hiss and bumps were written down as "Wake up." What is kept is
             # the model's own estimate of whether it heard speech at all.
-            segments, _ = self._model(self.wake_name).transcribe(
+            segments, _ = self._model(model).transcribe(
                 audio, language="en", beam_size=config.BEAM,
                 condition_on_previous_text=False, without_timestamps=True,
                 no_speech_threshold=None,
@@ -472,6 +545,7 @@ class Engine:
         self.on_level = lambda: None  # the level meter changed
         self.boost = config.DEFAULT_BOOST
         self.settings = Settings.load()
+        self.status.commands_only = self.settings.enabled("commands_only")  # see _apply_mode
         if getattr(self.settings, "first_time", False) and os.path.exists(config.STATE_FILE):
             # No settings were ever saved, but dictation has been switched on or off here
             # before: this is an install from before the settings were kept at once, and
@@ -538,6 +612,8 @@ class Engine:
         self._choice_timer = None
         self._explained_at = -60.0
         self._selected_that = False  # the last thing done was "select that" or "correct that"
+        self._asked = None   # a command of the person's own waiting for "yes": (said, steps, until)
+        self._doer = actions.Doer()  # presses keys, opens things, runs programs: see actions.py
         self._heard_sound = None  # the last phrase heard awake: (sound, words, model, measures)
         self._typed_sound = None  # and, if its words were typed, that with (when, taken back)
         self._where_typed = ""  # the program the last words went into
@@ -772,6 +848,23 @@ class Engine:
                 phrase = []
                 preroll.clear()
                 self.status.voice_db = best
+                seconds = len(audio) / config.RATE
+                if segmenter.ended_by in (FELL_AWAY, LIMIT) or seconds >= config.LONG_PHRASE:
+                    # Not the usual pause, or a long time coming: said in the log, in
+                    # loudness only. It is what to look at when somebody says a phrase
+                    # took a long time to be acted on: whether the room was louder than
+                    # it was taken to be, and whether what was left was a steady noise or
+                    # something that rose and fell, as other people talking does.
+                    how = {FELL_AWAY: "because the sound fell away from the voice, though the "
+                                      "room stayed louder than it had been",
+                           LIMIT: "at the longest a phrase may be: the sound never fell quiet"
+                           }.get(segmenter.ended_by, "at a pause")
+                    voice = segmenter.voice_was or 1.0
+                    log(f"a phrase of {seconds:.1f} s ended {how} (voice {segmenter.voice_was:.0f}, "
+                        f"its last second {segmenter.tail_was:.0f}, "
+                        f"{100 * segmenter.tail_was / voice:.0f}% of the voice, "
+                        f"{'level' if segmenter.tail_steady else 'rising and falling'}; "
+                        f"room {segmenter.room_was:.0f}, now {segmenter.noise:.0f})")
                 self._phrases.put(("audio", audio))
         self.status.level = self.status.meter = 0
         self.status.loud = False
@@ -894,6 +987,8 @@ class Engine:
         if key == "other_apps":
             self.apply_accessibility()
             self._vscode_switch()
+        if key == "commands_only":
+            self._apply_mode()
 
     def _vscode_switch(self) -> None:
         """VS Code only shows its panels to other programs when started with a switch for
@@ -1202,7 +1297,7 @@ class Engine:
             self._typing_into(self.targets.name)
             if self._coding(context) and coding.where(context.get("before", ""))[0] != "comment":
                 prompt = coding.prompt(self._names(), self._scope)
-                exact = {"exact": True}
+                exact = {"exact": True, "code": True}
             else:
                 if context.get("ok"):
                     before = context.get("before", "")
@@ -1353,7 +1448,15 @@ class Engine:
             self.status.last_heard = said if said in SHORT_COMMANDS else long
             (self.wake if action.name == "wake" else self.sleep)()
             return
+        if self._answered(text, awake):
+            return
         typed = self._shortcut(text) if awake else None
+        steps = self._steps(typed) if typed is not None else None
+        if steps:
+            # One of the person's own commands: said by itself, it does what they wrote.
+            self._own_command(text, steps)
+            self._back_to_awake()
+            return
         if typed is not None:
             # One of the person's own shortcuts: said by itself, it types their text,
             # exactly as they wrote it, fitted to what is before it like anything else.
@@ -1475,7 +1578,15 @@ class Engine:
                                                "Linux Speaking extension is an older one)")
                 log(f"command {action.name}: {outcome(reply)}"
                     + (", as select: the program's extension is older" if older else ""))
-        if isinstance(action, Dictation):
+        if isinstance(action, Dictation) and self.status.commands_only:
+            # Commands only: what is no command is not typed, and is not kept. Said, but
+            # not with every phrase: a room full of talk is what the choice is for.
+            self.status.last_heard = f"{brief(text)}  (commands only: not typed)"
+            self._typed_sound = None
+            self.tell("That was no command, so nothing was typed: \"Commands only\" is "
+                      "ticked in Settings.", every=60.0)
+            log(f"commands only, {len(text)} characters: not a command, not typed")
+        elif isinstance(action, Dictation):
             self.status.last_heard = text
             reply = self._dictate(action.text)
             self._note(reply)
@@ -1515,6 +1626,124 @@ class Engine:
         elif why:
             self.tell(f"\"{said}\" couldn't be done: {why}.", "problem",
                       logged=f"{action.name} couldn't be done: {why}")
+
+    # ---- commands only, and commands of the person's own --------------------------------
+    def _apply_mode(self) -> None:
+        """Commands only, where nothing is typed and only commands are acted on, or the
+        usual way, where what is no command is dictation: as it is chosen in Settings.
+        It is a setting and not something said: somebody who wants this program for its
+        commands alone ticks it once, and nothing heard can then switch typing back on."""
+        wanted = self.settings.enabled("commands_only")
+        if wanted != self.status.commands_only:
+            self.status.commands_only = wanted
+            log("commands only: nothing is typed" if wanted else "dictation and commands")
+            self.on_change()
+
+    def _steps(self, written: str):
+        """The steps of one of the person's own commands, as it is written: None if it
+        is a shortcut that types a text."""
+        try:
+            return actions.parse(written)
+        except ValueError:
+            return None      # Settings left out what it couldn't read: this is one typed in since
+
+    def _own_command(self, text: str, steps: list) -> None:
+        """Do one of the person's own commands, or ask first, or say why not."""
+        self.status.last_heard = text
+        self._last_typed = None           # a command in between: see _dictate
+        self._typed_sound = None
+        if actions.runs_programs(steps) and not self.settings.enabled("run_programs"):
+            self.tell(f"\"{brief(text)}\" runs a program, and that is switched off. To allow "
+                      "it, tick \"Let my own commands run programs\" in Settings.", "problem",
+                      logged="a command that runs a program was said: switched off")
+            log(f"own command ({actions.kinds(steps)}): running programs is switched off")
+            return
+        if steps[0] == ("ask",):
+            self._asked = (text, steps[1:], time.monotonic() + config.ASK_SECONDS)
+            self.status.last_heard = f"{text}  (say \"yes\" to do it)"
+            self.tell(f"{brief(text).capitalize()}? Say \"yes\" to do it. Anything else "
+                      "leaves it.", logged="a command asks first")
+            log(f"own command ({actions.kinds(steps[1:])}): asking first")
+            return
+        self._carry_out(steps)
+
+    def _answered(self, text: str, awake: bool) -> bool:
+        """Whether `text` was the "yes" that a command was waiting for: then it is done.
+        Anything else, or "yes" said too late, leaves it, and is heard as what it is."""
+        asked, self._asked = getattr(self, "_asked", None), None
+        if not asked or not awake or not text.strip():
+            if asked and time.monotonic() < asked[2] and not text.strip():
+                self._asked = asked       # nothing was heard: it is still waiting
+            return False
+        said, steps, until = asked
+        late = time.monotonic() > until
+        if late or plain_words(text) not in YES:
+            self.tell(f"\"{brief(said)}\" was left.", logged="the command that asked was left")
+            log("own command: not done, no yes")
+            if late or not (plain_words(text) in NO or is_cancel(text)):
+                return False              # something else was said: it is heard as usual
+            self.status.last_heard = text  # "no" was the answer, and is not typed
+            self._back_to_awake()
+            return True
+        self.status.last_heard = text
+        self._carry_out(steps)
+        self._back_to_awake()
+        return True
+
+    def _carry_out(self, steps: list) -> None:
+        """Do the steps of one of the person's own commands, in order, up to the first
+        that can't be done: that one is said."""
+        doer = self._doer
+        where = ""    # the program the keys went to, where that can be told: for the log
+        for count, step in enumerate(steps, 1):
+            try:
+                if step[0] == "keys":
+                    for at, chord in enumerate(step[1]):
+                        if at:
+                            doer.wait(actions.BETWEEN_KEYS)
+                        where = doer.press(chord) or where
+                elif step[0] == "open":
+                    doer.open(step[1])
+                elif step[0] == "run":
+                    doer.run(step[1])
+                elif step[0] == "wait":
+                    doer.wait(step[1])
+                elif step[0] == "type":
+                    reply = self._dictate(step[1], exact=True, as_written=True)
+                    self._note(reply)
+                    if not reply.get("ok"):
+                        raise actions.ActionError("")     # said already: see _note
+            except actions.ActionError as e:
+                if str(e):
+                    self.tell(str(e), "problem", logged=f"a step of a command failed: {step[0]}")
+                log(f"own command ({actions.kinds(steps)}): step {count}, {step[0]}, failed")
+                return
+            except Exception as e:  # nothing here may stop the listening
+                self.tell(f"That command's step {count} ({step[0]}) went wrong. The log "
+                          "says how.", "problem")
+                log(f"own command ({actions.kinds(steps)}): step {count}, {step[0]}: "
+                    f"{type(e).__name__}: {e}")
+                return
+            said = actions.done(step)
+            if said:
+                self.tell(said, logged=f"a command did: {step[0]}")
+                self._note_what_came_forward(step[0])
+        log(f"own command ({actions.kinds(steps)}): done" + (f", keys to {where}" if where else ""))
+
+    def _note_what_came_forward(self, kind: str) -> None:
+        """A moment after a command opened or ran something, put in the log which program
+        is in front: whether the new window came forward can't be seen from here, and it
+        is the first thing to know when somebody says it didn't. Its name only."""
+        look = getattr(self._doer, "in_front", None)
+        if look is None or not look():
+            return                      # it can't be told on this system
+
+        def noted() -> None:
+            log(f"after a command's \"{kind}\", in front: {look() or 'not known'}")
+
+        timer = threading.Timer(1.5, noted)
+        timer.daemon = True
+        timer.start()
 
     def _shortcut(self, text: str):
         """The text one of the person's own shortcuts types, if `text` is one: or None."""
@@ -1801,6 +2030,10 @@ class Engine:
 
 
 # What a program answers when it isn't there to be typed into.
+# What does as "yes" to a command of the person's own that asks first, and as "no". Not
+# "yeah" or "okay": those are what a noise is most often written as.
+YES = frozenset({"yes", "yes do it", "do it", "yes please", "yes go ahead", "go ahead"})
+NO = frozenset({"no", "no thanks", "no thank you", "leave it", "don't", "do not", "stop"})
 NOWHERE = ("writer not running", "writer not focused", "no writer document",
            "mail not running", "mail not focused", "mail not answering",
            "editor not focused")

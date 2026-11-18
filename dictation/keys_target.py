@@ -44,6 +44,15 @@ KEYS = {"enter": 0x0D, "backspace": 0x08, "delete": 0x2E, "tab": 0x09, "home": 0
         "end": 0x23, "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
         "ctrl": 0x11, "shift": 0x10, "a": 0x41, "z": 0x5A}
 EXTENDED = {"delete", "home", "end", "left", "up", "right", "down"}
+# And the rest of the keyboard, for commands of the person's own that press keys: see
+# actions.py. (Signs are where a US keyboard has them.)
+KEYS.update({"alt": 0x12, "win": 0x5B, "escape": 0x1B, "space": 0x20, "pageup": 0x21,
+             "pagedown": 0x22, "insert": 0x2D, "plus": 0xBB, "minus": 0xBD, "comma": 0xBC,
+             "period": 0xBE, "slash": 0xBF})
+KEYS.update({letter: 0x41 + at for at, letter in enumerate("abcdefghijklmnopqrstuvwxyz")})
+KEYS.update({str(figure): 0x30 + figure for figure in range(10)})
+KEYS.update({f"f{n}": 0x6F + n for n in range(1, 13)})
+EXTENDED |= {"insert", "pageup", "pagedown", "win"}
 
 # What each command is on the keyboard: the keys held together. Those in COUNTED are
 # pressed as many times as the command says.
@@ -790,6 +799,107 @@ def _rects(text_range) -> list:
 
 
 # ---- pressing keys ----------------------------------------------------------------------
+def program_in_front() -> str:
+    """Windows: the name of the program whose window has the keyboard, such as
+    "Notepad.exe": "" if it can't be told. Its name only, never its window's title."""
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    process = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(process))
+    handle = kernel32.OpenProcess(0x1000, False, process.value)  # to ask its name, no more
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(520)
+        name = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(size)):
+            return ""
+        return name.value.replace("/", "\\").rsplit("\\", 1)[-1]
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+CHORD_PAUSE = 0.02  # seconds between one key going down, or up, and the next
+
+
+def chord_events(chord: str, scan_of) -> list:
+    """What pressing `chord` ("alt+f4") is, as a keyboard does it: [(key, its place on the
+    keyboard, flags), ...], each key down in order and then up in reverse. `scan_of`
+    gives a key's place from its number."""
+    names = chord.split("+")
+    up, extended = 0x0002, 0x0001
+
+    def one(name: str, flags: int) -> tuple:
+        return KEYS[name], scan_of(KEYS[name]), flags | (extended if name in EXTENDED else 0)
+
+    return [one(name, 0) for name in names] + [one(name, up) for name in reversed(names)]
+
+
+def press_keys(chord: str, pause: float = CHORD_PAUSE) -> str:
+    """Windows: press keys held together, for a command of the person's own, the way a
+    keyboard does. Each key is sent with its place on the keyboard as well as its
+    number, and one after another with a moment between: sent all at once and by number
+    alone, as text is typed, Alt+F4 was taken no notice of by the program in front.
+
+    Returns the name of the program in front, which is where they went. Raises OSError
+    if Windows wouldn't take them: it takes none for a program run as administrator.
+    Whatever happens, no key is left held down."""
+    import ctypes
+    from ctypes import wintypes
+
+    class KeyboardInput(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MouseInput(ctypes.Structure):  # only here to give the union its full size
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t)]
+
+    class Either(ctypes.Union):
+        _fields_ = [("ki", KeyboardInput), ("mi", MouseInput)]
+
+    class Input(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", Either)]
+
+    user32 = ctypes.WinDLL("user32")
+    user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+
+    def send(key: int, scan: int, flags: int) -> bool:
+        item = Input(type=1)  # a keyboard event
+        item.ki = KeyboardInput(key, scan, flags, 0, 0)
+        return user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(Input)) == 1
+
+    where = program_in_front()
+    events = chord_events(chord, lambda key: user32.MapVirtualKeyW(key, 0))
+    down = []
+    try:
+        for key, scan, flags in events:
+            if not send(key, scan, flags):
+                raise OSError("Windows took no key presses")
+            if flags & 0x0002:
+                down = [held for held in down if held[0] != key]
+            else:
+                down.append((key, scan, flags))
+            time.sleep(pause)
+    finally:
+        for key, scan, flags in reversed(down):   # it stopped part way: let them all go
+            send(key, scan, flags | 0x0002)
+    return where
+
+
 def _send(steps: list, as_keys: bool = False) -> None:
     """Type the steps into whatever has the keyboard.
 

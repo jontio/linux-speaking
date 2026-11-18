@@ -23,8 +23,7 @@ retraining one to it. All of them hear English only. Back to the [README](../REA
 words wrong. It is the one to use.
 
 The installers don't fetch it, because it is a 660 MB download on top of the rest. They
-fetch two small Whisper models, Base and Small, which listening for "wake up" and your
-first dictation need. So a new install dictates with Small until you get Parakeet
+fetch two small Whisper models, Base and Small, which your first dictation needs. So a new install dictates with Small until you get Parakeet
 Unified:
 
 - the **welcome window**, the first time the app starts, has a button for it, **Install
@@ -43,7 +42,19 @@ is more about it [below](#parakeet).
 
 The other models are there for comparison, and for a computer that suits them better.
 Among the Whisper models, bigger ones make fewer mistakes but take longer after each
-phrase. Whichever you choose, "wake up" is still listened for with the Small model.
+phrase.
+
+**The model you choose does all the listening**: dictation, the commands, and "wake up"
+while dictation is asleep. So how quickly it wakes is how quick that model is, and a
+Parakeet answers several times sooner than a Whisper model.
+
+One thing a Parakeet can't do is take a hint: be shown words to expect. So with a
+Parakeet chosen, the Small Whisper model is kept beside it for the two things that lean
+on a hint, the spelling box and the short second listen for punctuation said after a
+pause. Source code, in C and C++ files, leans on its hint most (the names in the file):
+it is heard by the Medium Whisper model if that is installed, which is loaded when you
+first dictate code and let go ten minutes after the last of it, and by Small if not.
+With a Whisper model chosen, that one model does all of this.
 Which model hears *you* best is for [the voice test](#testing-the-models-on-your-voice)
 to say.
 
@@ -194,8 +205,8 @@ over the internet.
   so does a download that was cut short by the connection. **Discard** throws away what
   has arrived, and asks first.
 - **A download is checked** before the model is offered.
-- **Remove** asks first. The model in use and the one that listens for "wake up" can't
-  be removed.
+- **Remove** asks first. The model in use can't be removed, nor can Small, which is
+  kept for the spelling box beside a Parakeet model.
 
 Any other [faster-whisper](https://github.com/SYSTRAN/faster-whisper) model placed in
 the models folder appears in the list too. The models folder is

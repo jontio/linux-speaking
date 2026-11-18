@@ -15,7 +15,7 @@ class Defaults(unittest.TestCase):
         # off are in the list below this one.)
         self.assertEqual([key for key in off if not key.startswith("say:")],
                          ["aloud", "quick_listening", "second_opinions", "short_wake", "noise",
-                          "enter", "keep_final", "other_apps"])
+                          "enter", "keep_final", "other_apps", "commands_only", "run_programs"])
         self.assertEqual([key for key in off if key.startswith("say:")],
                          ["say:period", "say:quote", "say:dash", "say:slash"])
         self.assertEqual(s.spoken_off(), ["dash", "end quote", "period", "quote", "slash", "unquote"])
@@ -329,6 +329,12 @@ class SettingsThatWouldDoNothing(unittest.TestCase):
         folder = self.models()
         self.assertLessEqual(set(without_effect("base.en", self.OFF, folder)),
                              {"speech_only", "second_opinions"})
+
+    def test_there_is_no_setting_for_which_model_hears_wake_up(self):
+        # One rule, and so nothing to tick: the model that is chosen does the waking.
+        from dictation.settings import ITEMS, OPTIONS
+        self.assertNotIn("wake_same", [item.key for item in ITEMS])
+        self.assertNotIn("wake_same", OPTIONS)
 
 
 class TheFileItself(unittest.TestCase):

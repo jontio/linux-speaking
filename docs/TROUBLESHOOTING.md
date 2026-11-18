@@ -44,13 +44,21 @@ Five things say what the program is doing:
   see [Programs](PROGRAMS.md). The terminal you installed from, and a web browser, are
   not among them without that setting. The notice comes once a minute at most; the
   icon's tip says "(nothing to type into)" after each phrase that had nowhere to go.
+- **Nothing is typed, though the icon is green.** If the icon has a **C** on it,
+  **Commands only** is ticked in Settings (in the My shortcuts and commands box), and
+  only commands are acted on. Untick it to dictate.
+- **A command of my own does nothing.** Its words have to be said by themselves, exactly
+  as written before the equals sign. Settings lists under the box any line it couldn't
+  understand, and why. A line with `run:` needs **Let my own commands run programs**
+  ticked. On Linux, pressing keys needs the desktop's leave: it asks the first time.
 - **"Wake up" is ignored.** Open the microphone level from the tray icon's menu and
   speak. The bar should turn green. If it barely moves, or stays grey or blue, the
   microphone is too quiet or the wrong one is selected: in your desktop's sound settings
   on Linux, in Linux Speaking's own Settings on Windows. If it turns orange or red, it
   is too loud. Close the microphone level afterwards: dictation is off while it is open.
   It has to be "wake up", said by itself: "wake me up", "woke up" and "make up" don't
-  wake it.
+  wake it. It is the model you chose that listens for it: if it often misses, try
+  another model in Settings.
 - **The icon is grey with a "!", and its tip says "No speech model".** The tip says why,
   and what to do. If no model is installed, or one was cut short, open Settings and
   press **Install or remove models**. If a part the recogniser needs is missing, run

@@ -9,6 +9,10 @@ from dataclasses import dataclass
 
 START = "start"
 END = "end"
+# How a phrase ended (Segmenter.ended_by): the room went quiet, as it nearly always does;
+# or the sound fell far below the voice but not below what the room was thought to be;
+# or it never fell at all, and was cut at the longest a phrase may be.
+PAUSE, FELL_AWAY, LIMIT = "pause", "fell away", "limit"
 
 
 @dataclass
@@ -20,6 +24,15 @@ class SegmenterConfig:
     min_level: float = 150.0    # never treat anything quieter as speech
     ratio: float = 3.0          # speech is this many times louder than the room
     warmup_ms: int = 500        # at the start, just measure the room
+    # A room can get louder after a phrase has started: a fan comes on, or the
+    # microphone turns itself up when the talking stops. What is left is then above
+    # what the room was taken to be, and the pause never came: the phrase ran on to its
+    # limit, twenty seconds, before anything was done with it. So sound this far below
+    # the voice of the phrase itself counts as quiet too, once there has been this much
+    # of the voice to go by: if it stays level, as a fan or a hiss does. What rises and
+    # falls as talking does is taken for talking, however soft.
+    fall_ratio: float = 0.15
+    fall_after_ms: int = 300
 
 
 class Segmenter:
@@ -34,6 +47,13 @@ class Segmenter:
         self._length = 0
         self._levels = []  # loudness of each frame in the current phrase
         self._warmup = []  # loudness of the first frames, to measure the room
+        self._voice = []   # loudness of the frames of this phrase that were the voice
+        self._typical = 0.0  # how loud the voice of this phrase usually is
+        self.ended_by = ""   # how the last phrase ended: PAUSE, FELL_AWAY or LIMIT
+        self.room_was = 0.0  # what the room was taken to be when it ended, and before
+        # Of the last phrase, for the log: how loud its voice was, how loud its last
+        # second was, and whether that second stayed level as a fan or a hiss does.
+        self.voice_was, self.tail_was, self.tail_steady = 0.0, 0.0, False
 
     @property
     def threshold(self) -> float:
@@ -65,20 +85,58 @@ class Segmenter:
                 self._length = self._loud
                 self._loud = 0
                 self._levels = [level]
+                self._voice, self._typical = [level], level
                 return START
             return None
         self._length += 1
         self._levels.append(level)
-        self._quiet = 0 if speech else self._quiet + 1
+        # Quiet is what is below the room's threshold: or, once the voice of this phrase
+        # is known, what is far below the voice. (See SegmenterConfig.fall_ratio.)
+        quiet_below = self.threshold
+        if len(self._voice) * c.frame_ms >= c.fall_after_ms:
+            quiet_below = max(quiet_below, self._typical * c.fall_ratio)
+        if level > quiet_below:
+            self._quiet = 0
+            self._voice.append(level)
+            if len(self._voice) % 5 == 0:   # the upper quarter: loud enough to be the voice itself
+                self._typical = sorted(self._voice)[(3 * len(self._voice)) // 4]
+        else:
+            self._quiet += 1
         too_long = self._length * c.frame_ms >= c.max_phrase_ms
+        if self._quiet * c.frame_ms >= c.end_silence_ms and not too_long:
+            recent = self._levels[-self._quiet:]
+            if _median(recent) > self.threshold and not _steady(recent):
+                # Far below what came before, and yet it rises and falls as talking does:
+                # a voice gone soft, or one that began after a bang. That is the voice
+                # now. Only what stays level, as a fan or a hiss does, is the room.
+                self._voice = [each for each in recent if each > self.threshold]
+                self._typical = sorted(self._voice)[(3 * len(self._voice)) // 4]
+                self._quiet = 0
+                return None
         if self._quiet * c.frame_ms >= c.end_silence_ms or too_long:
             self.in_phrase = False
             self._loud = 0
+            self.room_was = self.noise
+            last_second = self._levels[-1000 // c.frame_ms:]
+            self.voice_was, self.tail_was = self._typical, _median(last_second)
+            self.tail_steady = _steady(last_second)
+            tail = _median(self._levels[-self._quiet:]) if self._quiet else 0.0
             if too_long and _steady(self._levels):
                 # It never paused and never dipped, so it's a steady noise, not
                 # someone talking at length: treat its loudness as the new room level.
+                self.ended_by = LIMIT
                 self.noise = max(self.noise, _median(self._levels))
+            elif too_long:
+                self.ended_by = LIMIT
+                self.noise = max(self.noise, min(self._levels))
+            elif tail > self.threshold:
+                # The voice stopped and what was left was louder than the room was taken
+                # to be: that is the room now. Or it would start a phrase of its own at
+                # once, and swallow whatever is said next.
+                self.ended_by = FELL_AWAY
+                self.noise = max(self.noise, tail)
             else:
+                self.ended_by = PAUSE
                 self.noise = max(self.noise, min(self._levels))
             self._levels = []
             return END

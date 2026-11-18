@@ -13,6 +13,8 @@ Everything you can say. Dictation and the commands are in English only. Back to 
 - [The microphone level](#the-microphone-level)
 - [Your own words](#your-own-words)
 - [Your own shortcuts](#your-own-shortcuts)
+- [Your own commands](#your-own-commands)
+- [Commands only](#commands-only)
 
 ## How dictating works
 
@@ -474,8 +476,8 @@ fetches one.) Where there is no dictionary at all, your word wins there.
 ## Your own shortcuts
 
 A few words of your own can stand for a longer text of your own: say "my address" and
-your address is typed. They are listed under **My shortcuts** in Settings, one to a
-line: what you say, an equals sign, what is typed.
+your address is typed. They are listed under **My shortcuts and commands** in Settings,
+one to a line: what you say, an equals sign, what is typed.
 
 ```
 my address = 12 High Street
@@ -497,3 +499,80 @@ sign off = Kind regards, and thank you for your time.
   understood, Settings lists it under the box, and the rest are kept.
 - They are saved a moment after you stop typing. There can be 200 of them, each up to
   2,000 characters long.
+
+## Your own commands
+
+In the same box, a line can do something where a shortcut types something: press keys,
+open a file or a web page, or run a program. Write what is to be done after the equals
+sign, beginning with the kind of thing it is:
+
+```
+new tab      = keys: ctrl+t
+save all     = keys: ctrl+k ctrl+s
+my notes     = open: ~/notes.txt
+morning news = open: https://example.org/news
+    wait: 2
+    keys: ctrl+l
+build it     = run: make -C ~/project
+shut down    = ask first
+    run: systemctl poweroff
+```
+
+| Written | What it does |
+|---|---|
+| `keys: ctrl+shift+t` | Presses keys held together, in the program in front. Several, one after another: `keys: ctrl+k ctrl+s` |
+| `open: ~/notes.txt` | Opens a file, a folder or a web page with the program that usually opens it |
+| `run: make -C ~/project` | Starts a program, with what is given to it, and leaves it running |
+| `type: Notes for today` | Types a text, as a shortcut does: for a step among others |
+| `wait: 2` | Waits so many seconds (up to 10), for a program to be ready for the next step |
+| `ask first` | As the first step: you are asked, and the rest is done only if you say "yes" |
+
+- A line that begins with a space, under a command, is a further step, done after the
+  one before. There can be 12. If a step can't be done, a notice says so and the rest
+  are left.
+- The keys are `ctrl`, `shift`, `alt`, `win`, the letters and figures, `f1` to `f12`,
+  `enter`, `tab`, `escape`, `space`, `backspace`, `delete`, `insert`, `home`, `end`,
+  `pageup`, `pagedown`, `left`, `right`, `up`, `down`, `plus`, `minus`, `comma`,
+  `period` and `slash`. On Linux the desktop asks, the first time, whether Linux
+  Speaking may press keys: say yes, and it is remembered.
+- Like a shortcut, a command has to be said by itself, as a phrase of its own, word for
+  word. It works with [Commands only](#commands-only) ticked, too.
+- "What can I say?" lists your shortcuts and commands with the rest, and what each does.
+
+**Running programs is off until you switch it on.** A phrase can be misheard, and a
+video can say it. So:
+
+- `run:` lines do nothing until **Let my own commands run programs** is ticked, in the
+  same box in Settings. Said before that, a notice says where the tick box is.
+- A command that runs a program has to be two words or more: one short word is what a
+  noise is most easily taken for.
+- Only what you wrote is run. Nothing you say is passed to the program, and no shell
+  reads the line: a `|` or a `>` in it is only a character given to the program. `~`,
+  and names such as `$HOME` (`%USERPROFILE%` on Windows), are filled in.
+- A notice says what was run or opened.
+- Begin a command with `ask first` if it would be a nuisance to set off by accident.
+  You then have ten seconds to say "yes" ("yes, do it" and "go ahead" will do); "no",
+  or anything else, leaves it.
+
+To type a text that begins with one of these words and a colon, begin the line with
+`type:`.
+
+## Commands only
+
+If you want Linux Speaking for voice commands and not for dictation, tick **Commands
+only** in Settings, in the **My shortcuts and commands** box, and write a few commands
+of your own in the list above it. That is all there is to set up.
+
+With it ticked, nothing you say is typed. Only commands are acted on: the ones that
+come with Linux Speaking, and your own shortcuts and commands. Whatever else is heard is
+left alone, so it also suits a room where other people are talking.
+
+- It is chosen in Settings and nowhere else. Nothing that is said switches it, so
+  nothing overheard can start typing into your work.
+- It is kept: the program starts the way you left it.
+- The tray icon shows a **C** while it is ticked, and its tip says that nothing is
+  typed, so that nobody wonders why.
+- "Wake up" and "go to sleep" work as always.
+- Something said that is no command is noted in the icon's tip as "not typed", and a
+  notice says so once a minute at most.
+- Unticked, which is how it starts, what is no command is dictation, and is typed.

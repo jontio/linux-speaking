@@ -102,7 +102,8 @@ class OverTheNetwork(unittest.TestCase):
         header, length, peak = self.recogniser.asked[0]
         self.assertEqual(header, {"kind": "phrase", "awake": True, "prompt": "Dear Sam,\n“Thanks”",
                                   "model": "medium.en", "otherwise": ["small.en"], "quick": False,
-                                  "exact": False, "sure": False, "speech_only": True})
+                                  "exact": False, "sure": False, "speech_only": True,
+                                  "wake_same": True, "code": False})
         self.assertEqual(length, 16000)
         self.assertAlmostEqual(peak, 0.5, places=3)
 
@@ -295,8 +296,9 @@ class There:
         self.calls, self.down = [], False
 
     def hear(self, kind, audio, awake, prompt="", model="", otherwise=(), quick=False,
-             exact=False, speech_only=True):
+             exact=False, speech_only=True, wake_same=True, code=False):
         self.quick_asked, self.exact_asked, self.speech_only_asked = quick, exact, speech_only
+        self.wake_same_asked, self.code_asked = wake_same, code
         self.calls.append((kind, awake, prompt, model, tuple(otherwise)))
         if self.down:
             raise remote.RemoteError("The other computer can't be reached.")
@@ -347,6 +349,18 @@ class Offloading(unittest.TestCase):
         self.offload.wake = True
         self.assertEqual(self.offload.transcribe(self.audio, False), "phrase there")
         self.assertEqual(self.offload.not_speech, 0.1)
+
+    def test_the_other_computer_is_asked_for_the_chosen_model_asleep_too(self):
+        self.offload.wake = True
+        self.offload.transcribe(self.audio, False)
+        self.assertTrue(self.there.wake_same_asked)      # the chosen model does the waking
+        self.assertEqual(self.there.calls[-1][3], self.offload.model)
+
+    def test_the_other_computer_is_told_when_it_is_source_code(self):
+        self.offload.transcribe(self.audio, True, "names", exact=True, code=True)
+        self.assertTrue(self.there.code_asked and self.there.exact_asked)
+        self.offload.transcribe(self.audio, True, "letters", exact=True)
+        self.assertFalse(self.there.code_asked)
 
     def test_too_long_to_be_wake_up_is_never_sent(self):
         self.offload.wake = True
@@ -410,7 +424,8 @@ class Guests(unittest.TestCase):
             def __init__(self):  # no real models
                 self.lock = threading.RLock()
                 self._loaded = {"small.en": object(), "base.en": object()}
-                self._guests, self.wake_name, self.dictation_name = [], "small.en", "base.en"
+                self._guests, self.helper_name, self.dictation_name = [], "small.en", "base.en"
+                self._code_name, self._code_used = "", 0.0
                 self.not_speech, self.ignored, self.quick = 0.7, "tap", False
 
             def _model(self, name):
@@ -456,7 +471,7 @@ class Guests(unittest.TestCase):
         ask("distil-small.en")  # a fourth: the one used longest ago goes
         self.assertEqual(sorted(self.transcriber._loaded),
                          ["base.en", "distil-small.en", "medium.en", "small.en", "tiny.en"])
-        ask("small.en")       # this computer's own: nothing is dropped for it
+        ask("base.en")        # this computer's own: nothing is dropped for it
         self.assertEqual(sorted(self.transcriber._loaded),
                          ["base.en", "distil-small.en", "medium.en", "small.en", "tiny.en"])
 
@@ -474,17 +489,57 @@ class Guests(unittest.TestCase):
         ask(speech_only=True)
         self.assertEqual(asked, [None, False, True])  # one that doesn't say gets this computer's choice
         spelled = ask(exact=True)
-        self.assertEqual((spelled["text"], spelled["model"]), ("words", "small.en"))  # Whisper
-        self.assertEqual(self.heard[-1][2], "small.en")
-        self.assertEqual(ask(awake=False)["model"], "small.en")  # "wake up": Whisper
+        # ... which goes to this computer's Whisper: its own chosen model, being one.
+        self.assertEqual((spelled["text"], spelled["model"]), ("words", "base.en"))
+        self.assertEqual(self.heard[-1][2], "base.en")
+        # "Wake up" from a guest that doesn't say (an earlier version): Whisper, as before.
+        self.assertEqual(ask(awake=False)["model"], "base.en")
+        # From one that asks for its own model to listen for it: the Parakeet does.
+        self.transcriber.left_out = ""
+        before = len(self.heard)
+        woken = ask(awake=False, wake_same=True)
+        self.assertEqual((woken["text"], woken["model"], woken["not_speech"], woken["ignored"]),
+                         ("by parakeet-x", "parakeet-x", 0.0, ""))
+        self.assertEqual(len(self.heard), before)                 # Whisper wasn't asked
+        # ... and a sound it left out as a noise is said to have been one, with what it was written as.
+        def noise(name, audio, sure=False, speech_only=None):
+            self.transcriber.left_out = "Yeah."
+            return ""
+        self.transcriber._by_transducer = noise
+        left = ask(awake=False, wake_same=True)
+        self.assertEqual((left["text"], left["not_speech"], left["ignored"]), ("", 1.0, "Yeah."))
+        # Sound too long to be "wake up" isn't listened to at all.
+        self.transcriber._by_transducer = lambda *a, **k: self.fail("listened to")
+        long = self.transcriber.answer({"kind": "phrase", "model": "parakeet-x", "awake": False,
+                                        "wake_same": True}, [0.0] * int(7 * config.RATE))
+        self.assertEqual(long["text"], "")
 
-    def test_asleep_uses_the_wake_model_and_says_how_sure_it_was(self):
+    def test_asleep_a_guests_whisper_model_does_its_waking_too(self):
+        # One rule: the model that was chosen does all the listening, "wake up" included.
+        answer = self.transcriber.answer({"kind": "phrase", "awake": False, "model": "medium.en",
+                                          "wake_same": True}, [])
+        self.assertEqual(answer["model"], "medium.en")
+        self.assertEqual(self.heard[-1][:3], (False, "", "medium.en"))
+
+    def test_source_code_from_a_guest_with_a_parakeet_goes_to_the_whisper_kept_for_code(self):
+        os.makedirs(os.path.join(self.folder, "parakeet-x"))
+        for name in ("encoder.int8.onnx", "tokens.txt"):
+            open(os.path.join(self.folder, "parakeet-x", name), "w").close()
+        self.transcriber.dictation_name = "parakeet-x"       # this computer's own is a Parakeet
+        self.transcriber._by_transducer = lambda *a, **k: self.fail("a Parakeet can't take the hint")
+        ask = lambda **header: self.transcriber.answer(
+            {"kind": "phrase", "model": "parakeet-x", "exact": True, **header}, [])
+        self.assertEqual(ask()["model"], "small.en")              # spelling: the helper
+        with mock.patch.object(config, "CODE_MODELS", ("medium.en",)):
+            self.assertEqual(ask(code=True)["model"], "medium.en")    # code: the bigger one, here
+
+    def test_asleep_for_an_earlier_guest_uses_this_computers_whisper_and_says_how_sure_it_was(self):
         answer = self.transcriber.answer({"kind": "phrase", "awake": False, "model": "medium.en"}, [])
-        self.assertEqual((answer["model"], answer["not_speech"], answer["ignored"]), ("small.en", 0.7, "tap"))
+        self.assertEqual((answer["model"], answer["not_speech"], answer["ignored"]), ("base.en", 0.7, "tap"))
 
     def test_a_short_listen(self):
         answer = self.transcriber.answer({"kind": "alone"}, [])
-        self.assertEqual((answer["text"], answer["model"]), ("alone", "small.en"))
+        self.assertEqual((answer["text"], answer["model"]), ("alone", "base.en"))   # its own Whisper
 
 
 class TextBefore(unittest.TestCase):

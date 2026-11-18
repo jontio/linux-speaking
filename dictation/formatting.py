@@ -565,6 +565,24 @@ def _without_capital(tokens: list, at: int, previous: str, names, lexicon: Lexic
     return lexicon.decapitalise(token)
 
 
+# Names that end in two plus signs, as they are to be written.
+_PLUS_PLUS = {"c": "C++", "g": "g++", "clang": "clang++", "notepad": "Notepad++"}
+_PLUS_PLUS_RE = re.compile(
+    r"(?<![\w+#])(" + "|".join(_PLUS_PLUS) + r")(?: ?\?\?(?!\?)| plus plus\b)", re.IGNORECASE)
+
+
+def plus_plus(text: str) -> str:
+    """`text` with "C++" written so, where a recogniser wrote it another way.
+
+    Parakeet Unified writes "C plus plus" as "C ??": two question marks, which are then
+    taken for the end of a question and dropped, so that only "C" was typed, with a
+    capital on the word after it. Parakeet v2 writes the words, "C plus plus". Whisper
+    writes "C++", which is left as it is. The same for the few other names that end so."""
+    if "??" not in text and "plus plus" not in text.lower():
+        return text
+    return _PLUS_PLUS_RE.sub(lambda found: _PLUS_PLUS[found.group(1).lower()], text)
+
+
 def fit(
     raw: str,
     before: str,
@@ -605,7 +623,7 @@ def fit(
     """
     off = set(DEFAULT_OFF if spoken_off is None else spoken_off)
     lexicon = lexicon or Lexicon()
-    text = " ".join(raw.split())
+    text = plus_plus(" ".join(raw.split()))
 
     after_text = after.lstrip(" \t")
     mid_sentence = bool(after_text) and after_text[0] not in BREAKS + "\n\r"

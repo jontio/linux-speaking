@@ -28,9 +28,9 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTextBrowser, QVBoxLayout, QWidget, QToolTip,
 )
 
-from . import (APP_NAME, HOMEPAGE, __version__, audio, autostart, config, control, hotkey,
+from . import (APP_NAME, HOMEPAGE, __version__, actions, audio, autostart, config, control, hotkey,
                looks, models, reading, settings as settings_module, speech, training, voicetest)
-from .engine import Engine, meter_value, saved_on
+from .engine import Engine, brief, meter_value, saved_on
 from .formatting import LINE, PARAGRAPH
 from .reading_text import SENTENCES
 from .settings import (ITEMS, WINDOWS_ONLY, available_models, help_for, model_label,
@@ -93,15 +93,15 @@ TOO_LOUD = "#e53935"  # the meter's colour when the microphone is distorting
 
 
 def make_icon(state: State, level: int = 0, pixels: int = 64, meter: bool = True,
-              loud: bool = False) -> QIcon:
-    """A microphone on a coloured disc, with a slash when off, a "z" when asleep, and a
-    level bar when on. Each state has a shape of its own as well as a colour, for anyone
-    who can't tell the colours apart."""
-    return QIcon(make_pixmap(state, level, pixels, meter, loud))
+              loud: bool = False, commands: bool = False) -> QIcon:
+    """A microphone on a coloured disc, with a slash when off, a "z" when asleep, a "C"
+    when only commands are acted on, and a level bar when on. Each state has a shape of its own as well
+    as a colour, for anyone who can't tell the colours apart."""
+    return QIcon(make_pixmap(state, level, pixels, meter, loud, commands))
 
 
 def make_pixmap(state: State, level: int = 0, pixels: int = 64, meter: bool = True,
-                loud: bool = False) -> QPixmap:
+                loud: bool = False, commands: bool = False) -> QPixmap:
     size = 64  # drawn on a 64-unit grid, scaled to `pixels`
     pixmap = QPixmap(pixels, pixels)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -148,6 +148,16 @@ def make_pixmap(state: State, level: int = 0, pixels: int = 64, meter: bool = Tr
             p.setPen(stroke)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPolyline(QPolygonF(shape))
+    elif commands and state not in (State.OFF, State.ASLEEP) and meter:
+        # Commands only (a choice in Settings): a "C" in the same corner, drawn the same
+        # way. Nothing is typed while it shows, which nobody should have to find out by
+        # dictating.
+        for colour, width in ((QColor(0, 0, 0, 215), 9.5), (white, 5.0)):
+            stroke = QPen(colour, width)
+            stroke.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(stroke)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(41, 4, 19, 21), 50 * 16, 260 * 16)
     p.end()
     return pixmap
 
@@ -1080,6 +1090,7 @@ class StartTick(QWidget):
 class SettingsWindow(Window):
     """Tick boxes for every voice command and punctuation word. Changes apply at once."""
 
+    OWN_GROUP = "My shortcuts and commands"  # the box, and the group of the tick box in it
 
     def __init__(self, engine: Engine, hub: Hub | None = None):
         super().__init__()
@@ -1127,7 +1138,7 @@ class SettingsWindow(Window):
         if hasattr(engine.settings, "set_shortcuts"):
             layout.addWidget(self.shortcuts_box())
         layout.addWidget(self.remote_box())
-        groups = {}
+        groups = dict(getattr(self, "own_groups", {}))   # a box that is there already
         self.ticks = {}  # by setting: those that do nothing as things stand are greyed
         self.tick_text = {}  # by setting: (its line, what of its line is said in its help)
         for item in ITEMS:
@@ -1239,10 +1250,9 @@ class SettingsWindow(Window):
         row.addWidget(label)
         row.addWidget(self.models, 1)
         layout.addLayout(row)
-        wake = short_name(model_label(config.WAKE_MODEL)[1])
         note = QLabel("Parakeet Unified is the best of the models so far, and the one to "
-                      "use. A change of model takes a few seconds to load. \"Wake up\" is "
-                      f"still listened for with the {wake} model, whichever is chosen here.")
+                      "use. A change of model takes a few seconds to load. The model chosen "
+                      "here does all the listening, \"wake up\" included.")
         note.setWordWrap(True)
         layout.addWidget(note)
         # Said only while the recommended model isn't here to be chosen.
@@ -1737,15 +1747,21 @@ class SettingsWindow(Window):
         """The person's own shortcuts: a few words said by themselves that type a longer
         text, such as an address. How they are written is settings.py's to say: one to a
         line, and a line that begins with a space carries on the text of the line above."""
-        box = QGroupBox(self.alt("My shortcuts"))
+        box = QGroupBox(self.alt(self.OWN_GROUP))
+        self.own_groups = {self.OWN_GROUP: box}   # its tick box is put in here: see __init__
         layout = QVBoxLayout(box)
-        note = QLabel("A few words that stand for a longer text: say them by themselves and "
-                      "the text is typed. Write one to a line: what you say, an equals sign, "
-                      "what is typed.\nA line that begins with a space carries on the text of "
-                      "the line above, as a new line of it. For example:")
+        note = QLabel("A few words of your own, said by themselves, that type a longer text "
+                      "or do something. Write one to a line: what you say, an equals sign, "
+                      "then the text to type, or \"keys:\", \"open:\" or \"run:\" and what "
+                      "to press, open or run.\nA line that begins with a space carries on "
+                      "the one above: another line of its text, or a further step. For "
+                      "example:")
         note.setWordWrap(True)
         layout.addWidget(note)
-        example = QLabel("my address = 12 High Street\n    Dunedin 9016")
+        example = QLabel("my address = 12 High Street\n    Dunedin 9016\n"
+                         "new tab = keys: ctrl+t\n"
+                         "my notes = open: ~/notes.txt\n"
+                         "build it = run: make -C ~/project")
         example.setStyleSheet("font-family: monospace; padding-left: 16px;")
         example.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(example)
@@ -1756,13 +1772,18 @@ class SettingsWindow(Window):
             getattr(self.engine.settings, "shortcuts_text", lambda: "")())
         self.shortcuts.setTabChangesFocus(True)
         self.shortcuts.setFixedHeight(self.shortcuts.fontMetrics().lineSpacing() * 5 + 16)
-        self.shortcuts.setAccessibleName("My shortcuts, one to a line")
+        self.shortcuts.setAccessibleName("My shortcuts and commands, one to a line")
         explain(self.shortcuts,
-                "One shortcut to a line: what you say, an equals sign, what is typed. A line "
-                "that begins with a space carries on the text of the line above, as a new "
-                "line of it. Empty lines, and lines that begin with #, are passed over. The "
-                "words have to be said by themselves, as a phrase of their own. They are "
-                "saved a moment after you stop typing.")
+                "One to a line: what you say, an equals sign, what is typed. Or, in place of "
+                "a text, something to do: \"keys: ctrl+shift+t\" presses keys (several, one "
+                "after another: \"keys: ctrl+k ctrl+s\"); \"open:\" opens a file, a folder "
+                "or a web page; \"run:\" starts a program, once the tick box below allows "
+                "it; \"type:\" types a text; \"wait: 2\" waits two seconds. A line that "
+                "begins with a space carries on the one above: another line of its text, or "
+                "a further step. \"ask first\" as the first step waits for you to say "
+                "\"yes\". Empty lines, and lines that begin with #, are passed over. The "
+                "words have to be said by themselves, as a phrase of their own. They work "
+                "with \"Commands only\" ticked, too. Saved a moment after you stop typing.")
         layout.addWidget(self.shortcuts)
         self.shortcuts_note = QLabel()  # the lines that couldn't be understood
         self.shortcuts_note.setWordWrap(True)
@@ -2035,7 +2056,7 @@ class ModelsWindow(Window):
         if name == (self.engine.settings.model or config.AWAKE_MODEL):
             return "in use for dictation"
         if name == config.WAKE_MODEL:
-            return "used to hear \"wake up\""
+            return "kept for the spelling box, beside a Parakeet model"
         return ""
 
     def build(self, names: list) -> None:
@@ -4172,6 +4193,8 @@ class HelpWindow(Window):
     window, and by saying "what can I say"."""
 
     # Always on, and not among the tick boxes: said first.
+    STEP_WORDS = {"keys": "presses keys", "open": "opens a file or a page", "run": "runs a program",
+                  "type": "types a text", "wait": "waits", "ask": "asks first"}
     ALWAYS = (
         ("\"Wake up\"", "Wakes dictation: from then on what you say is typed. It is "
                         "listened for while dictation is asleep."),
@@ -4234,6 +4257,15 @@ class HelpWindow(Window):
                 continue  # a setting, not something to say
             found.append((item.group, item.key, item.label, help_for(item.key),
                           self.engine.settings.enabled(item.key)))
+        # And the person's own, from Settings: what each is said as, and what it does.
+        for said, written in (getattr(self.engine.settings, "shortcuts", None) or {}).items():
+            try:
+                steps = actions.parse(written)
+            except ValueError:
+                continue
+            what = ("Types: " + brief(written.replace("\n", " / "), 60) if not steps else
+                    "Does: " + ", then ".join(self.STEP_WORDS.get(step[0], step[0]) for step in steps))
+            found.append((SettingsWindow.OWN_GROUP, "", f"\"{said.capitalize()}\"", what, True))
         return found
 
     def fill(self) -> None:
@@ -4944,6 +4976,11 @@ class Tray:
             for state in State for level in range(config.LEVEL_STEPS + 1)
         }
         self.loud_icons = {state: make_icon(state, loud=True) for state in State}
+        self.command_icons = {    # awake with only commands acted on: a "C" on each
+            (state, level): make_icon(state, level, commands=True)
+            for state in (State.AWAKE, State.HEARING, State.THINKING)
+            for level in range(config.LEVEL_STEPS + 1)
+        }
         self.loading_icon = make_loading_icon()
         self.failed_icon = make_failed_icon()
         self.tray = QSystemTrayIcon(self.loading_icon)
@@ -5082,6 +5119,8 @@ class Tray:
             return self.loading_icon
         if status.loud and status.state is not State.OFF:
             return self.loud_icons[status.state]
+        if getattr(status, "commands_only", False) and (status.state, level) in self.command_icons:
+            return self.command_icons[status.state, level]
         return self.icons[status.state, level]
 
     def refresh_icon(self) -> None:
