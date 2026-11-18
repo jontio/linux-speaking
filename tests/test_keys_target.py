@@ -1,12 +1,13 @@
 """Typing into any text box on Windows: what is typed, with a pretend text box."""
 import unittest
+from unittest import mock
 
 from dictation.formatting import LINE, PARAGRAPH
 from dictation.keys_target import (READ, Box, KeysTarget, around, as_one_piece, box_kind, drawn_after,
                                    keystrokes, place_in, placed,
                                    program_name, takes_text_whole,
                                    right_to_left, says_empty, steps_for_insert,
-                                   steps_for_text, typed_length)
+                                   arrow_length, presses, steps_back, steps_for_text, typed_length)
 
 
 class StepsTests(unittest.TestCase):
@@ -186,6 +187,44 @@ class HintTests(unittest.TestCase):
         self.assertFalse(right_to_left("Type a message"))
 
 
+class StepsBackTests(unittest.TestCase):
+    """The arrow keys after "correct ...". The words chosen ran from 4 to 7, and four
+    characters were typed in their place."""
+
+    def test_right_for_a_cursor_that_was_after_the_words(self):
+        self.assertEqual(steps_back(22, 4, 7, 4), [("press", "right", 15)])
+        self.assertEqual(steps_back(8, 4, 7, 4), [("press", "right", 1)])
+
+    def test_left_for_one_that_was_before_them(self):
+        self.assertEqual(steps_back(0, 4, 7, 4), [("press", "left", 8)])
+        self.assertEqual(steps_back(4, 4, 7, 4), [("press", "left", 4)])
+
+    def test_nothing_for_one_that_was_among_them_or_right_after(self):
+        self.assertEqual(steps_back(7, 4, 7, 4), [])
+        self.assertEqual(steps_back(5, 4, 7, 4), [])
+
+    def test_what_was_deleted_beside_the_words(self):
+        self.assertEqual(steps_back(22, 4, 7, 4, delete_after=1), [("press", "right", 14)])
+        self.assertEqual(steps_back(8, 4, 7, 4, delete_after=1), [])
+        self.assertEqual(steps_back(0, 4, 7, 4, delete_before=1), [("press", "left", 7)])
+        self.assertEqual(steps_back(4, 4, 7, 4, delete_before=1), [("press", "left", 4)])
+
+    def test_presses(self):
+        self.assertEqual(presses("one\r\ntwo\nthree"), 13)
+        self.assertEqual(presses(""), 0)
+        self.assertEqual(presses("\U0001f600"), 1)                       # a face
+        self.assertEqual(presses("\U0001f44d\U0001f3fd"), 1)             # a thumb with a skin tone
+        self.assertEqual(presses("e\u0301"), 1)                          # a letter and its accent
+        self.assertEqual(presses("\U0001f468\u200d\U0001f469\u200d\U0001f467"), 1)  # a family
+        self.assertEqual(presses("\U0001f1f3\U0001f1ff\U0001f1eb\U0001f1f7"), 2)     # two flags
+        self.assertEqual(presses("\u2764\ufe0f ok"), 4)                  # a heart, drawn in colour
+
+    def test_how_far_back_across_what_was_typed(self):
+        self.assertEqual(arrow_length("lion"), 4)
+        self.assertEqual(arrow_length("\U0001f600 ok"), 4)
+        self.assertEqual(arrow_length("one" + LINE + "two" + PARAGRAPH + "x"), 10)
+
+
 class TargetTests(unittest.TestCase):
     def setUp(self):
         self.box = Box("Hello ", "", "", "Code.exe")
@@ -250,6 +289,14 @@ class TargetTests(unittest.TestCase):
             [("press", "enter", 1)], [("press", "ctrl+left", 3)], [("press", "ctrl+a", 1)],
             [("press", "home", 1), ("press", "shift+end", 1), ("press", "backspace", 1)]])
 
+    def test_delete_several_lines(self):
+        self.ask(op="command", name="delete_line", arg="3")
+        self.assertEqual(self.typed, [[("press", "home", 1), ("press", "shift+down", 2),
+                                       ("press", "shift+end", 1), ("press", "backspace", 1)]])
+        self.typed.clear()
+        self.ask(op="command", name="select_line", arg="3")       # one line only, whatever is said
+        self.assertEqual(self.typed, [[("press", "home", 1), ("press", "shift+end", 1)]])
+
     def test_new_line_is_fitted_and_typed(self):
         self.ask(op="command", name="new_line")
         self.assertIn(("press", "shift+enter", 1), self.typed[-1])
@@ -259,10 +306,249 @@ class TargetTests(unittest.TestCase):
         self.ask(op="command", name="all_caps")
         self.assertEqual(self.typed, [[("type", "HELLO")]])
 
+    # "Correct ...": the program's text can't be selected through the stand-in, so the
+    # words are said to have been chosen, as selecting them would.
+    TEXT = "the cat sat on the mat"
+
+    def chosen(self, mark, found=(4, 7), text=TEXT):
+        self.target._chose(text, mark, found)
+        self.box = Box(text[:found[0]], text[found[1]:], text[found[0]:found[1]], "x.exe")
+
+    def test_after_correct_the_cursor_goes_back_to_the_end(self):
+        self.chosen(mark=22)
+        reply = self.ask(op="insert", text="lion")
+        self.assertTrue(reply["back"])
+        self.assertEqual(self.typed, [[("press", "backspace", 1), ("type", "lion")],
+                                      [("press", "right", 15)]])
+
+    def test_after_correct_the_cursor_goes_back_to_before_the_words(self):
+        self.chosen(mark=0)
+        self.ask(op="insert", text="lion")
+        self.assertEqual(self.typed[-1], [("press", "left", 8)])
+
+    def test_correcting_the_word_the_cursor_is_right_after_leaves_it_after_the_new_one(self):
+        self.chosen(mark=22, found=(19, 22))
+        self.assertTrue(self.ask(op="insert", text="rug").get("back"))
+        self.assertEqual(self.typed, [[("press", "backspace", 1), ("type", "rug")]])
+
+    def test_only_the_next_thing_said_goes_back(self):
+        self.chosen(mark=22)
+        self.ask(op="insert", text="lion")
+        self.box = Box("the lion sat on the mat", "", "", "x.exe")
+        self.assertFalse(self.ask(op="insert", text=" again").get("back"))
+        self.assertEqual(self.typed[-1], [("type", " again")])
+
+    def test_no_going_back_if_other_words_are_selected_by_then(self):
+        self.chosen(mark=22)
+        self.box = Box("the cat sat on the ", "", "mat", "x.exe")
+        self.assertFalse(self.ask(op="insert", text="rug").get("back"))
+        self.assertEqual(len(self.typed), 1)
+        # The same word somewhere else in the text is not the one that was chosen.
+        self.chosen(mark=22)
+        self.box = Box("a different ", " here", "cat", "x.exe")
+        self.assertFalse(self.ask(op="insert", text="dog").get("back"))
+
+    def test_unselect_after_correct_goes_back_too(self):
+        self.chosen(mark=22)
+        self.ask(op="command", name="unselect")
+        self.assertEqual(self.typed, [[("press", "right", 1)], [("press", "right", 15)]])
+        self.typed.clear()
+        self.chosen(mark=0)
+        self.ask(op="command", name="unselect")
+        self.assertEqual(self.typed, [[("press", "right", 1)], [("press", "left", 7)]])
+        self.typed.clear()
+        self.box = Box("a ", " c", "b", "x.exe")      # selected some other way
+        self.ask(op="command", name="unselect")
+        self.assertEqual(self.typed, [[("press", "right", 1)]])
+
+    def test_a_line_break_is_one_press_however_it_is_written(self):
+        text = "the cat sat\r\non the mat\r\nand more"
+        self.chosen(mark=len(text), text=text)
+        self.ask(op="insert", text="lion")
+        self.assertEqual(self.typed[-1], [("press", "right", len("sat\non the mat\nand more") + 1)])
+
+    def test_too_far_to_go_back_one_key_at_a_time(self):
+        text = "the cat sat " + "and sat " * 50
+        self.chosen(mark=len(text), text=text)
+        reply = self.ask(op="insert", text="lion")
+        self.assertEqual((reply.get("back"), reply.get("too_far")), (None, True))
+        self.assertEqual(len(self.typed), 1)          # the words, and no arrow keys
+
+    def test_further_where_keys_go_in_a_burst_but_not_without_end(self):
+        self.target._paced = lambda: False
+        text = "the cat sat " + "and sat " * 50
+        self.chosen(mark=len(text), text=text)
+        self.assertTrue(self.ask(op="insert", text="lion").get("back"))
+        self.assertEqual(self.typed[-1], [("press", "right", len(text) - 7)])
+        text = "the cat sat " + "and sat " * 500
+        self.chosen(mark=len(text), text=text)
+        self.assertTrue(self.ask(op="insert", text="lion").get("too_far"))
+
+    def test_any_other_command_ends_it(self):
+        self.chosen(mark=22)
+        self.ask(op="command", name="all_caps")
+        self.assertIsNone(self.ask(op="insert", text="lion").get("back"))
+        self.chosen(mark=22)
+        self.ask(op="command", name="cancel_choices")   # sent to every program at once
+        self.assertTrue(self.ask(op="insert", text="lion").get("back"))
+
+    def test_an_arrow_key_crosses_a_character_as_it_is_seen(self):
+        text = "the cat sat \U0001f44d\U0001f3fd ok cafe\u0301 \U0001f1f3\U0001f1ff"
+        self.chosen(mark=len(text), text=text)
+        self.ask(op="insert", text="\U0001f600")
+        self.assertEqual(self.typed[-1], [("press", "right", len(" sat X ok cafe F"))])
+        self.chosen(mark=0, text=text)
+        self.ask(op="insert", text="\U0001f600")
+        self.assertEqual(self.typed[-1], [("press", "left", 5)])
+
     def test_unknown_things(self):
         self.assertEqual(self.ask(op="command", name="go_to_line", arg="3")["why"], "unknown command")
         self.assertEqual(self.ask(op="move", steps=[])["why"], "unknown request")
         self.assertEqual(self.ask(op="command", name="bold")["why"], "plain text has no formatting")
+
+
+class _EditBox:
+    """Stands in for one of Windows' own edit boxes, and for the messages it answers."""
+
+    def __init__(self, text, first, last=None):
+        self.text, self.first, self.last = text, first, first if last is None else last
+        self.asked, self.reads, self.late = [], 0, None
+
+    # What dictation.winapi offers.
+    def edit_text(self, window, most):
+        self.reads += 1
+        if self.late and self.reads <= self.late[0]:
+            return self.late[1]               # the keys haven't all been taken in yet
+        return self.text, self.first, self.last
+
+    def select_in_edit(self, window, first, last):
+        self.asked.append((first, last))
+        self.first, self.last = first, last
+        return True
+
+    def tap_shift(self, window):
+        pass
+
+    # The keys that reach it.
+    def press(self, steps):
+        for step in steps:
+            if step[0] == "type":
+                self.put(step[1])
+            elif step[1] == "backspace":
+                if self.first == self.last:
+                    self.first = max(0, self.first - step[2])
+                self.put("")
+            elif step[1] == "delete":
+                self.last = self.first + step[2]
+                self.put("")
+            elif step[1] == "shift+enter":
+                self.put("\r\n" * step[2])
+            else:
+                raise AssertionError(f"an arrow key was pressed: {step}")
+
+    def put(self, new):
+        self.text = self.text[:self.first] + new + self.text[self.last:]
+        self.first = self.last = self.first + len(new)
+
+
+class EditBoxCorrectTests(unittest.TestCase):
+    """In a box that is asked by message the cursor is put straight back, however far."""
+
+    TEXT = "the cat sat on the mat\r\n" + "and more\r\n" * 500 + "the end"
+
+    def setUp(self):
+        self.edit = _EditBox(self.TEXT, len(self.TEXT))
+        self.target = KeysTarget(lambda: True, look=self.look, press=self.edit.press)
+        import dictation
+        for patch in (mock.patch.dict("sys.modules", {"dictation.winapi": self.edit}),
+                      mock.patch.object(dictation, "winapi", self.edit, create=True),
+                      mock.patch("dictation.keys_target.SETTLE", 0)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def look(self):
+        e = self.edit
+        return Box(e.text[:e.first], e.text[e.last:], e.text[e.first:e.last], "notepad.exe")
+
+    def correct(self, start, end):
+        """As "correct ..." leaves things once it has selected the words from start to end."""
+        self.target._chose(self.edit.text, self.edit.first, (start, end), (7, "plain"))
+        self.edit.first, self.edit.last = start, end
+
+    def test_back_to_the_end_of_a_long_text(self):
+        self.correct(4, 7)
+        reply = self.target.request({"op": "insert", "text": "lion", "delete_before": 0, "delete_after": 1})
+        self.assertTrue(reply["back"])
+        self.assertTrue(self.edit.text.startswith("the lionsat on the mat\r\nand more"))
+        self.assertEqual((self.edit.first, self.edit.last), (len(self.edit.text),) * 2)
+        self.assertEqual(len(self.edit.text), len(self.TEXT))
+
+    def test_back_to_a_place_before_the_words(self):
+        self.edit.first = self.edit.last = 2
+        at = self.TEXT.rindex("end")
+        self.correct(at, at + 3)
+        self.assertTrue(self.target.request({"op": "insert", "text": "finish"}).get("back"))
+        self.assertTrue(self.edit.text.endswith("the finish"))
+        self.assertEqual((self.edit.first, self.edit.last), (2, 2))
+
+    def test_the_word_the_cursor_is_right_after(self):
+        at = self.TEXT.rindex("end")
+        self.correct(at, at + 3)
+        self.target.request({"op": "insert", "text": "finish"})
+        self.assertEqual(self.edit.first, len(self.edit.text))
+        self.assertTrue(self.edit.text.endswith("the finish"))
+
+    def test_it_waits_until_the_words_have_all_gone_in(self):
+        self.correct(4, 7)
+        half = self.TEXT[:4] + "li" + self.TEXT[7:]     # as the box is with typing under way
+        self.edit.late = (3, (half, 6, 6))
+        self.assertTrue(self.target.request({"op": "insert", "text": "lion"}).get("back"))
+        self.assertEqual((self.edit.reads, self.edit.first), (4, len(self.edit.text)))
+        self.assertEqual(self.edit.asked, [(len(self.edit.text),) * 2])
+
+    def test_not_if_the_box_never_holds_what_it_should(self):
+        self.correct(4, 7)
+        self.edit.late = (10 ** 6, (self.TEXT[:4] + "liXon" + self.TEXT[7:], 9, 9))
+        reply = self.target.request({"op": "insert", "text": "lion"})
+        self.assertEqual((reply.get("back"), reply.get("too_far"), self.edit.asked), (None, True, []))
+
+    def test_a_line_break_in_the_new_words(self):
+        self.correct(4, 7)
+        self.assertTrue(self.target.request({"op": "insert", "text": "big" + LINE + "lion"}).get("back"))
+        self.assertTrue(self.edit.text.startswith("the big\r\nlion sat on"))
+        self.assertEqual(self.edit.first, len(self.edit.text))
+
+    def test_unselect_goes_straight_back(self):
+        self.correct(4, 7)
+        self.target.request({"op": "command", "name": "unselect"})
+        self.assertEqual((self.edit.first, self.edit.last), (len(self.TEXT),) * 2)
+
+    def test_not_if_other_words_are_selected_by_then(self):
+        self.correct(4, 7)
+        self.edit.first, self.edit.last = 8, 11
+        self.assertFalse(self.target.request({"op": "insert", "text": "stood"}).get("back"))
+        self.assertEqual(self.edit.first, 13)
+
+
+class EditBoxCountingTests(unittest.TestCase):
+    """Windows' own edit boxes count a face, or any character from beyond the first
+    65,536, as two. Here it is one."""
+
+    TEXT = "\U0001f44d Hello world"
+
+    def test_where_the_cursor_is(self):
+        text, first, last = placed(self.TEXT, 9, 9, "plain")       # before "world", as Windows counts
+        self.assertEqual((text[:first], text[first:]), ("\U0001f44d Hello ", "world"))
+        self.assertEqual(placed(self.TEXT, 9, 14, "rich")[1:], (8, 13))
+
+    def test_and_back_again(self):
+        self.assertEqual(place_in(self.TEXT, 8, "plain"), 9)
+        self.assertEqual(place_in(self.TEXT, 13, "rich"), 14)
+        self.assertEqual(place_in("plain words", 6, "plain"), 6)
+
+    def test_text_without_such_characters_is_as_before(self):
+        self.assertEqual(placed("one\r\ntwo", 5, 8, "plain"), ("one\r\ntwo", 5, 8))
+        self.assertEqual(placed("one\r\ntwo", 4, 7, "rich"), ("one\rtwo", 4, 7))
 
 
 if __name__ == "__main__":

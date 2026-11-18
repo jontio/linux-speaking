@@ -3,10 +3,12 @@
 # talks to it through the engine's bridge on a test port. Run from the repo root.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-port=47614
+port=47615   # not the mail bridge's own (47613), nor the one for sharing a recogniser (47614)
 work="$PWD/build/tb-test"            # snap Thunderbird can only read files in the home folder
 rm -rf "$work" && mkdir -p "$work/profile/extensions" "$work/addon"
 cp thunderbird/manifest.json thunderbird/compose.js "$work/addon/"
+key="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"   # one for this test alone
+printf 'const LINUX_SPEAKING_KEY = "%s";\n' "$key" > "$work/addon/key.js"
 # The test copy uses the test port, opens its own compose window, and treats any compose
 # window as in front, because a headless window never is.
 sed -e "s/127.0.0.1:47613/127.0.0.1:$port/" \
@@ -44,4 +46,4 @@ thunderbird --headless --no-remote --profile "$work/profile" >"$work/tb.log" 2>&
 pid=$!
 cleanup() { kill $pid 2>/dev/null || true; sleep 2; pkill -f "$work/profile" 2>/dev/null || true; rm -rf "$work"; }
 trap cleanup EXIT
-python3 scripts/thunderbird_e2e.py "$port" || { echo "--- thunderbird log"; tail -15 "$work/tb.log"; exit 1; }
+python3 scripts/thunderbird_e2e.py "$port" "$key" "$work/profile" || { echo "--- thunderbird log"; tail -15 "$work/tb.log"; exit 1; }

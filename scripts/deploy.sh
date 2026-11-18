@@ -12,4 +12,5 @@ host="${1:?usage: scripts/deploy.sh user@host}"
 rsync -a --delete --exclude .git --exclude build --exclude __pycache__ ./ "$host:.cache/linux-speaking-source/"
 ssh -o BatchMode=yes "$host" "cd .cache/linux-speaking-source && \
   LS_SKIP_PACKAGES=${LS_SKIP_PACKAGES:-1} LS_ENGINE_ONLY=${LS_ENGINE_ONLY:-0} \
-  LS_SKIP_MODELS=${LS_SKIP_MODELS:-0} LS_SKIP_INTEGRATIONS=${LS_SKIP_INTEGRATIONS:-0} ./install.sh"
+  LS_SKIP_MODELS=${LS_SKIP_MODELS:-0} LS_SKIP_INTEGRATIONS=${LS_SKIP_INTEGRATIONS:-0} \
+  LS_NO_AUTOSTART=${LS_NO_AUTOSTART:-} LS_NO_START=${LS_NO_START:-0} ./install.sh"

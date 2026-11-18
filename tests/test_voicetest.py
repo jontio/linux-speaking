@@ -477,5 +477,17 @@ class ReadingSlips(unittest.TestCase):
         self.assertEqual(voicetest.own_wrong(self.result("ok", 3, [["at the", "this"], ["x", "y"]]), []), 3)
 
 
+class SlipsMadeMoreThanOnce(unittest.TestCase):
+    def result(self, wrong, slips):
+        return voicetest.Result("r", "here", "r", False, wrong=wrong, total=314, slips=slips)
+
+    def test_a_slip_is_shared_as_often_as_all_made_it_and_no_count_goes_below_nought(self):
+        results = [self.result(2, [["the", "a"], ["the", "a"]]),
+                   self.result(1, [["the", "a"]]), self.result(1, [["the", "a"]])]
+        shared = voicetest.shared_slips(results)
+        self.assertEqual(shared, [["the", "a"]])
+        self.assertEqual([voicetest.own_wrong(r, shared) for r in results], [1, 0, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

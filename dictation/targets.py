@@ -17,13 +17,43 @@ class Targets:
         self.editor = editor  # Kate and KWrite
         self.vscode = vscode
         self.office = office  # Microsoft Word and Outlook, on Windows
-        self.other = other    # on Windows, any other text box, typed into; asked last
+        self.other = other    # any other text box, typed into (Windows, and web boxes on Linux); asked last
+        self._own = None
         self.name = ""  # the program in front, such as "Writer", or "" when none is
         self._send = client.request
         self._picked = 0.0
 
+    @property
+    def own(self):
+        """A box in one of this program's own windows, for a newcomer to try dictating
+        into: set while that box has the keyboard, None otherwise. Asked first."""
+        return self._own
+
+    @own.setter
+    def own(self, box) -> None:
+        self._own = box
+        # Where the words go is looked for again at the next request, not in most of a
+        # second's time: until then they would still go to the box that was just left,
+        # or to one whose window has closed.
+        self._picked = 0.0
+        if box is None:
+            self._send, self.name = client.request, ""
+
     def pick(self) -> None:
-        self._picked = time.monotonic()
+        try:
+            self._pick()
+        finally:
+            self._picked = time.monotonic()   # from when it was settled, however long that took
+
+    def _pick(self) -> None:
+        own = self.own
+        if own is not None:
+            try:
+                if own.request({"op": "status"}).get("ready"):
+                    self._send, self.name = own.request, getattr(own, "name", "the box here")
+                    return
+            except Exception:
+                pass                      # its window has gone: ask the others
         if self.mail is not None and self.mail.connected():
             if self.mail.request({"op": "status"}, timeout=1.5).get("ready"):
                 self._send, self.name = self.mail.request, "Thunderbird"

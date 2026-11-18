@@ -3,12 +3,13 @@
 Run by scripts/test-thunderbird-e2e.sh. Uses its own port, so a running engine and the
 user's own Thunderbird are left alone.
 """
+import os
 import sys
 import time
 
 from dictation.mailbridge import MailBridge
 
-bridge = MailBridge(int(sys.argv[1]))
+bridge = MailBridge(int(sys.argv[1]), sys.argv[2])
 assert bridge.start(), "port in use"
 failures = 0
 
@@ -54,5 +55,18 @@ if windows:
     check("select a word in the message", r({"op": "command", "name": "select", "arg": "hello"}).get("ok"), True)
     check("it is selected", r({"op": "text"}).get("selected"), "hello")
     check("unknown request falls through", r({"op": "move", "steps": []}).get("why"), "unknown request")
+    # Talking to the add-on must leave nothing behind in Thunderbird. Unless it is told
+    # not to, Thunderbird keeps every answer the engine gives as a file in its cache: a
+    # file an exchange, and an add-on that once asked without a pause made a million.
+    profile = sys.argv[3] if len(sys.argv) > 3 else ""
+    if profile:
+        def kept():
+            return sum(len(names) for at, _, names in os.walk(profile) if os.sep + "cache2" in at)
+        time.sleep(2)
+        before = kept()
+        answered = sum(bridge.request({"op": "status"}, timeout=5).get("ok") is not None for _ in range(500))
+        time.sleep(6)   # the cache is written a little after the answer
+        check("500 more exchanges were answered", answered, 500)
+        check("and Thunderbird kept no file for any of them", kept() - before, 0)
 print("failures:", failures, flush=True)
 sys.exit(1 if failures else 0)

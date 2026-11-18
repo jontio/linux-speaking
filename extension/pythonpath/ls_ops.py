@@ -7,7 +7,7 @@ import uno
 import unohelper
 from com.sun.star.awt import XCallback
 
-from dictation.formatting import LINE, PARAGRAPH, Insertion, fit
+from dictation.formatting import LINE, PARAGRAPH, Insertion, fit, title
 from dictation.selecting import find_all, find_nearest
 from dictation.words import Lexicon
 
@@ -50,6 +50,10 @@ class Ops:
         self.lexicon = Lexicon.load_default()
         self.history = []  # (document, text range) of recent phrases, newest last
         self.choices = None  # (document, [text ranges]) while numbered matches are showing
+        self.choices_mark = None  # and where the cursor was, if they are for "correct ..."
+        # After "correct ...": (document, where the cursor was, the words chosen, whether
+        # the cursor was "before", "among" or "after" them), until something is said over them.
+        self.correction = None
         self.choice_serial = 0
         self.poster = self.smgr.createInstanceWithContext("com.sun.star.awt.AsyncCallback", ctx)
         self.check_focus = os.environ.get("LINUX_SPEAKING_NO_FOCUS_CHECK") != "1"
@@ -81,6 +85,9 @@ class Ops:
         if self.choices and (op in ("insert", "dictate", "move") or (
                 op == "command" and message.get("name") != "choose")):
             self._clear_choices()  # doing anything else takes the numbers away
+        if op == "move" or (op == "command" and message.get("name") not in (
+                "correct", "unselect", "choose", "cancel_choices")):
+            self.correction = None  # "correct ..." is only for what is said next
         if op == "context":
             before, after, view, _ = self._around(doc)
             reply = {"ok": True, "before": before, "after": after}
@@ -136,12 +143,52 @@ class Ops:
                   spoken_off=spoken_off)
         return self._apply(doc, ins)
 
+    # ---- "correct ...": the cursor goes back afterwards -------------------
+    def _chose(self, doc, mark):
+        """Remember, for "correct ...", that the cursor was at `mark` when the words now
+        selected were chosen."""
+        self.correction = None
+        if mark is None:
+            return
+        try:
+            view = doc.getCurrentController().getViewCursor()
+            text = view.getText()
+            chosen = text.createTextCursorByRange(view.getStart())
+            chosen.gotoRange(view.getEnd(), True)
+            if text.compareRegionStarts(mark, chosen) >= 0:
+                where = "before"
+            elif text.compareRegionEnds(mark, chosen) <= 0:
+                where = "after"
+            else:
+                where = "among"
+            self.correction = (doc, mark, chosen, where)
+        except Exception:
+            pass  # the words are in another part of the document than the cursor was
+
+    def _correcting(self, doc, view):
+        """Where the cursor was before "correct ...", and whether that was "before",
+        "among" or "after" the words it chose, if those words are still what is selected.
+        Forgotten either way: the next thing said or done settles it."""
+        correction, self.correction = self.correction, None
+        if correction is None or view.isCollapsed():
+            return None
+        try:
+            owner, mark, chosen, where = correction
+            text = view.getText()
+            if (owner == doc and text.compareRegionStarts(view.getStart(), chosen) == 0
+                    and text.compareRegionEnds(view.getEnd(), chosen) == 0):
+                return mark, where
+        except Exception:
+            pass
+        return None
+
     def _apply(self, doc, ins):
         """Put one fitted phrase into the document at the cursor or over the selection."""
         if not ins.text:
             return {"ok": True, "text": ""}
         view = doc.getCurrentController().getViewCursor()
         text = view.getText()
+        back = self._correcting(doc, view)
         undo = doc.getUndoManager()
         undo.enterUndoContext("Dictation")
         try:
@@ -180,9 +227,21 @@ class Ops:
             self.history.append((doc, spoken))
             del self.history[:-HISTORY]
             view.gotoRange(cursor.getEnd(), False)
+            if back is not None:
+                # After "correct ...": back to where the cursor was before it. A place
+                # right beside the new words may have been carried to their other side.
+                mark, where = back
+                if where == "before":
+                    first = text.compareRegionStarts(mark, spoken) >= 0
+                    view.gotoRange(mark if first else spoken.getStart(), False)
+                elif where == "after" and text.compareRegionStarts(mark, cursor.getEnd()) <= 0:
+                    view.gotoRange(mark, False)
         finally:
             undo.leaveUndoContext()
-        return {"ok": True, "text": ins.text}
+        reply = {"ok": True, "text": ins.text}
+        if back is not None:
+            reply["back"] = True
+        return reply
 
     # ---- moving the cursor --------------------------------------------------
     def _move(self, doc, steps):
@@ -255,10 +314,20 @@ class Ops:
                 return self._scratch(doc, view)
             self._edit(doc, "Delete", lambda: view.setString(""))
             return {"ok": True}
-        if name == "select":
+        if name in ("select", "correct"):
+            mark = None
+            if name == "correct":
+                mark = view.getText().createTextCursorByRange(view.getEnd())
+            self.correction = None
             if nearest:
-                return self._select(doc, view, arg)
-            return self._select_or_number(doc, view, arg)
+                reply = self._select(doc, view, arg)
+            else:
+                reply = self._select_or_number(doc, view, arg)
+            if reply.get("choices"):
+                self.choices_mark = mark
+            elif reply.get("ok"):
+                self._chose(doc, mark)
+            return reply
         if name == "cancel_choices":
             return {"ok": True}  # already cleared in handle()
         if name == "choose":
@@ -268,8 +337,10 @@ class Ops:
             n = int(arg or 0)
             if not 1 <= n <= len(matches):
                 return {"ok": False, "why": "no such number"}
+            mark = self.choices_mark
             self._clear_choices()
             doc.getCurrentController().select(matches[n - 1])
+            self._chose(doc, mark)
             return {"ok": True}
         if name == "select_last":
             rng = self._last(doc)
@@ -278,7 +349,11 @@ class Ops:
             doc.getCurrentController().select(rng)
             return {"ok": True}
         if name == "unselect":
-            view.collapseToEnd()
+            back = self._correcting(doc, view)
+            if back is not None:
+                view.gotoRange(back[0], False)  # after "correct ...", where it was
+            else:
+                view.collapseToEnd()
             return {"ok": True}
         if name in ("bold", "italic", "underline", "cap", "all_caps", "no_caps"):
             return self._format(doc, view, name)
@@ -326,7 +401,7 @@ class Ops:
                 target.setPropertyValue("CharUnderline", SINGLE_UNDERLINE)
             else:
                 old = target.getString()
-                new = {"cap": old.title(), "all_caps": old.upper(),
+                new = {"cap": title(old), "all_caps": old.upper(),
                        "no_caps": old.lower()}[name]
                 # Change one character at a time so the formatting survives.
                 text = target.getText()
@@ -428,7 +503,7 @@ class Ops:
         if not self.choices:
             return
         doc, matches = self.choices
-        self.choices = None
+        self.choices = self.choices_mark = None
 
         def clear():
             for m in matches:

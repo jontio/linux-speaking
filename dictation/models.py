@@ -70,6 +70,15 @@ KNOWN = (
 BY_NAME = {known.name: known for known in KNOWN}
 
 
+_FETCHING, _FETCHING_LOCK = set(), threading.Lock()  # the models being fetched just now
+
+
+def fetching(name: str) -> bool:
+    """Whether this model is being fetched at the moment, by any window."""
+    with _FETCHING_LOCK:
+        return name in _FETCHING
+
+
 class Cancelled(Exception):
     """The download was stopped on purpose."""
 
@@ -189,6 +198,18 @@ def free_space(model_dir: str) -> int:
         return 0
 
 
+def room_problem(model_dir: str, known: Known, free=None) -> str:
+    """Why a model can't be downloaded for want of disk space, or "" if there is room.
+    Asked before a download is started, so that the answer comes at once and not after
+    the download site has been asked what there is; the download checks again, exactly."""
+    needed = known.megabytes * 1e6 - part_size(model_dir, known.name)
+    free = free_space(model_dir) if free is None else free
+    if needed > 0 and free < needed + SPARE:
+        return ("There isn't enough free disk space: this model needs about "
+                f"{size_text(needed)} more, and {size_text(free)} is free.")
+    return ""
+
+
 def remove(model_dir: str, name: str) -> None:
     """Remove a model, and anything half-fetched of it. Raises OSError if it can't be.
 
@@ -228,12 +249,25 @@ class Download:
 
     def run(self) -> str:
         """Fetch the model and return its folder. Raises Cancelled or Failed."""
+        with _FETCHING_LOCK:
+            if self.known.name in _FETCHING:
+                # Two at once would write into the same half-fetched folder.
+                raise Failed("This model is already being fetched, from another window.")
+            _FETCHING.add(self.known.name)
+        try:
+            return self._run()
+        finally:
+            with _FETCHING_LOCK:
+                _FETCHING.discard(self.known.name)
+
+    def _run(self) -> str:
         final = os.path.join(self.model_dir, self.known.name)
         if is_installed(self.model_dir, self.known.name):
             return final
         part = final + PART
         try:
             files = self._list()
+            self._check()                 # paused while the list was being asked for
             total = sum(size for _, size, _ in files)
             os.makedirs(part, exist_ok=True)
             have = sum(min(_size(os.path.join(part, path)), size) for path, size, _ in files)
@@ -277,6 +311,7 @@ class Download:
         return files
 
     def _fetch(self, path: str, size: int, digest: str, dest: str, done: int, total: int) -> None:
+        self._check()                     # before each file is asked for, too
         have = _size(dest)
         if have > size:
             os.remove(dest)

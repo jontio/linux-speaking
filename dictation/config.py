@@ -39,9 +39,23 @@ def cores() -> int:
         pass
     return os.cpu_count() or 4
 
+def _install_dir() -> str:
+    given = os.environ.get("LS_INSTALL_DIR")
+    if given:
+        return given
+    if WINDOWS:
+        # The shortcuts that start the app there carry no settings, so an install put
+        # somewhere other than the usual place is known by where the app itself is:
+        # <install>\app\dictation, beside <install>\venv.
+        app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if os.path.basename(app).lower() == "app" and os.path.isdir(
+                os.path.join(os.path.dirname(app), "venv")):
+            return os.path.dirname(app)
+    return "~/linux-speaking"
+
+
 # Where things are installed. The installer puts the speech models in "models" here.
-INSTALL_DIR = os.path.normpath(os.path.expanduser(
-    os.environ.get("LS_INSTALL_DIR", "~/linux-speaking")))
+INSTALL_DIR = os.path.normpath(os.path.expanduser(_install_dir()))
 _OWN_MODELS = os.path.join(INSTALL_DIR, "models")
 # The tools for retraining a recogniser to one voice, where they have been installed: a
 # Python of their own with PyTorch and NeMo. See training.py.
@@ -72,6 +86,13 @@ SETTINGS_FILE = os.path.expanduser(os.environ.get("LS_SETTINGS_FILE") or (
     os.path.join(INSTALL_DIR, "settings.json") if WINDOWS
     else "~/.config/linux-speaking/settings.json"))
 LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "log.txt")  # Windows, with no console
+# Sounds that were written down as words and marked "that was a noise": see speech.py.
+NOISE_DIR = os.path.join(os.path.dirname(STATE_FILE), "noises")
+NOISE_SECONDS = 120.0  # how long after words were written "that was a noise" still means them
+# The key this computer's engine and its Thunderbird add-on prove to each other that they
+# hold. The installer makes it and builds it into the add-on: see mailbridge.py.
+MAIL_KEY_FILE = os.path.expanduser(os.environ.get("LS_MAIL_KEY_FILE") or os.path.join(
+    os.path.dirname(SETTINGS_FILE), "mail-key"))
 RATE = 16000
 FRAME = 320  # samples per 20 ms frame
 PREROLL_FRAMES = 15  # audio kept from before a phrase starts (300 ms)
@@ -91,6 +112,11 @@ PENDING_EXTENSION = os.path.expanduser(
 )
 # How long numbered matches stay on screen waiting for you to say a number.
 CHOICE_SECONDS = float(os.environ.get("LS_CHOICE_SECONDS", "20"))
+CHOICE_WORDS = 1  # so few words said while numbers show, and no number: asked again, not typed
+LOOK_SECONDS = 3.0  # while awake and idle: how often the program in front is looked for
+MICROPHONE_WAIT, MICROPHONE_TRIES = 2.0, 90  # a microphone that stopped: tried again this often
+MICROPHONE_DROPS = 3  # so many stops in a minute, and it is left for the person to try again
+LOAD_AGAIN = 20.0  # with no speech model loaded: how long before loading is tried again
 # The Thunderbird add-on connects to this port on this computer. LS_MAIL=0 turns it off.
 MAIL_PORT = int(os.environ.get("LS_MAIL_PORT", "47613"))
 # Sharing this computer's recogniser with others: the port, and the one address of this
@@ -114,7 +140,7 @@ OFFICE = os.environ.get("LS_OFFICE", "1" if WINDOWS else "0") == "1"
 # such as a video playing, is not transcribed at all while asleep.
 WAKE_MODEL = os.environ.get("LS_WAKE_MODEL", AWAKE_MODEL)
 WAKE_MAX_SECONDS = float(os.environ.get("LS_WAKE_MAX_SECONDS", "6"))
-# The menu entry touches this file to ask a running engine to show its meter window.
+# The menu entry touches this file to ask a running engine to show its Settings window.
 SHOW_FILE = os.path.join(os.path.dirname(STATE_FILE), "show")
 # The meter turns red when the microphone signal gets this close to its limit (1.0),
 # where it starts to distort.

@@ -288,5 +288,102 @@ class Context(unittest.TestCase):
         self.assertEqual(code("for open brackets int i close brackets"), "for (int i)")
 
 
+class NamesThatBeginLikeOtherThings(unittest.TestCase):
+    """A name in the file that starts with "to", "for" or "in" is that name."""
+
+    KNOWN = ["to_string", "in_buf", "for_each", "x", "y", "i"]
+
+    def code(self, phrase, before=""):
+        return fit_code(phrase, before, "", self.KNOWN, {}).text
+
+    def test_the_name_wins(self):
+        self.assertEqual(self.code("x equals to string open bracket y close bracket"), "x = to_string(y)")
+        self.assertEqual(self.code("in buf open square i close square equals zero semicolon"), "in_buf[i] = 0;")
+        self.assertEqual(self.code("x equals for each open bracket"), "x = for_each(")
+
+    def test_without_such_a_name_the_guesses_stand(self):
+        self.assertEqual(self.code("x equals y times to semicolon"), "x = y * 2;")
+        self.assertEqual(self.code("four open bracket int i equals zero semicolon"), "for (int i = 0;")
+
+    def test_not_equals_written_as_a_sign_is_kept(self):
+        self.assertEqual(self.code("if open bracket x != y close bracket"), "if (x != y)")
+
+
+class StringsAndCommentsAsWritten(unittest.TestCase):
+    """Inside a string and after "//" the words are prose: their capitals, apostrophes
+    and punctuation are kept as the recogniser wrote them."""
+
+    def test_a_string_keeps_apostrophes_and_capitals(self):
+        self.assertEqual(code("quote don't panic quote"), '"don\'t panic"')
+        self.assertEqual(code("quote Hello, World! quote"), '"Hello, World!"')
+        self.assertEqual(code("quote NASA says hi quote"), '"NASA says hi"')
+        self.assertEqual(code("I don't know.", before='puts("'), 'puts("I don\'t know')
+
+    def test_but_not_what_the_recogniser_adds_to_every_phrase(self):
+        # The capital on the first word, the stop after the last, the commas between.
+        self.assertEqual(code("Hello there world.", before='printf("'), 'printf("hello there world')
+        self.assertEqual(code("Print f, open bracket, quote, hello world, quote, close bracket, semicolon."),
+                         'printf("hello world");')
+        self.assertEqual(code("quote it works. quote"), '"it works"')
+
+    def test_capital_still_asks_for_one(self):
+        self.assertEqual(code("quote capital hello world quote"), '"Hello world"')
+
+    def test_a_comment_is_fitted_as_prose(self):
+        self.assertEqual(code("comment Don't touch this, it's needed by Jonti."),
+                         "// Don't touch this, it's needed by Jonti")
+        self.assertEqual(code("double slash set x comma then y full stop"), "// Set x, then y.")
+        self.assertEqual(code("//done here"), "// Done here")
+        self.assertEqual(code("comment"), "//")
+
+    def test_a_line_break_ends_the_comment_and_code_goes_on(self):
+        self.assertEqual(code("comment check the U.S. rate new line x plus plus semicolon"),
+                         "// Check the U.S. rate" + LINE + "x++;")
+
+
+class OperatorsNamesAndNumbers(unittest.TestCase):
+    def test_operators_that_end_in_equals(self):
+        self.assertEqual(code("flags pipe equals mask semicolon"), "flags |= mask;")
+        self.assertEqual(code("x percent equals two"), "x %= 2")
+        self.assertEqual(code("x caret equals y"), "x ^= y")
+        self.assertEqual(code("x ampersand equals mask"), "x &= mask")
+        self.assertEqual(code("x shift left equals 2 semicolon"), "x <<= 2;")
+        self.assertEqual(code("x shift right equals 2"), "x >>= 2")
+        self.assertEqual(code("a %= b; c &= d; e ^= f; g |= h"), "a %= b; c &= d; e ^= f; g |= h")
+        self.assertEqual(code("equals one", before="x |"), "x | = 1")   # two phrases: two signs
+        self.assertEqual(code("one", before="x |="), "x |= 1")
+
+    def test_underscore_joins_a_name(self):
+        self.assertEqual(code("m underscore count"), "m_count")
+        self.assertEqual(code("underscore underscore init"), "__init")
+        self.assertEqual(code("my underscore var underscore one equals five"), "my_var_1 = 5")
+
+    def test_a_type_ends_a_name(self):
+        self.assertEqual(code("uint8_t value"), "uint8_t value")
+        self.assertEqual(code("size_t n equals zero semicolon"), "size_t n = 0;")
+        self.assertEqual(code("std::string name"), "std::string name")
+        self.assertEqual(code("std double colon string name semicolon"), "std::string name;")
+
+    def test_hundreds_thousands_and_sixteens(self):
+        self.assertEqual(code("x equals one hundred"), "x = 100")
+        self.assertEqual(code("x equals two hundred and fifty six"), "x = 256")
+        self.assertEqual(code("x equals four thousand and ninety six semicolon"), "x = 4096;")
+        self.assertEqual(code("x equals zero x f f"), "x = 0xff")
+        self.assertEqual(code("x equals zero x one f plus b"), "x = 0x1f + b")
+        self.assertEqual(code("mask equals 0x ff"), "mask = 0xff")
+        self.assertEqual(code("x equals zero"), "x = 0")
+
+    def test_and_and_or_between_two_values(self):
+        self.assertEqual(code("if open bracket a and b close bracket"), "if (a && b)")
+        self.assertEqual(code("return a or b semicolon"), "return a || b;")
+        self.assertEqual(code("ptr arrow next and ptr arrow prev"), "ptr->next && ptr->prev")
+
+    def test_but_in_a_name_they_are_part_of_it(self):
+        self.assertEqual(code("bool black and white semicolon"), "bool black_and_white;")
+        self.assertEqual(code("if open bracket read and write close bracket", names=["read_and_write"]),
+                         "if (read_and_write)")
+        self.assertEqual(code("and mask"), "and_mask")
+
+
 if __name__ == "__main__":
     unittest.main()

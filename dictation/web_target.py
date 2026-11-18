@@ -20,7 +20,7 @@ import threading
 import time
 
 from . import config
-from .keys_target import READ, Box, KeysTarget
+from .keys_target import READ, Box, KeysTarget, presses
 from .portal_keys import Keys, NotAllowed, typable
 from .selecting import find_nearest
 
@@ -65,6 +65,7 @@ class WebBoxTarget(KeysTarget):
         self._program = ""
         self._asking = None      # the thread putting the desktop's question, while it is open
         self._refused = 0.0      # when the question was last refused
+        self.problem = ""        # why keys can't be pressed, for the person to read: "" if they can
         self.log = lambda message: print(message, flush=True)
 
     # ---- finding the text box ---------------------------------------------------------
@@ -186,12 +187,19 @@ class WebBoxTarget(KeysTarget):
         self.log("asking the desktop to let dictation press keys: answer its question on the screen")
         try:
             self.keys.allow()
+            self.problem = ""
             self.log("the desktop allows key presses")
         except NotAllowed as e:
             self._refused = time.monotonic()
+            self.problem = ("The desktop didn't let this program press keys, so nothing can "
+                            "be typed into other programs' text boxes. It asks again the "
+                            "next time you dictate into one, a few minutes from now.")
             self.log(f"key presses not allowed: {e}")
 
     # ---- writing ----------------------------------------------------------------------------
+    def _paced(self) -> bool:
+        return False                         # the desktop takes key presses as fast as they come
+
     def _type(self, steps: list) -> None:
         for step in steps:
             if step[0] == "type":
@@ -204,16 +212,21 @@ class WebBoxTarget(KeysTarget):
         # for "scratch that", is what really went in.
         return super()._insert(box, typable(text), delete_before, delete_after)
 
-    def _select(self, box, phrase: str) -> dict:
+    def _select(self, box, phrase: str, correcting: bool = False) -> dict:
         """Select the nearest match for `phrase`, by moving the cursor there with the
-        arrow keys and holding Shift across it."""
+        arrow keys and holding Shift across it. `correcting` is for "correct ...": where
+        the cursor was is remembered, to go back to."""
         found = find_nearest(self._text, self._cursor, phrase)
         if found is None:
             return {"ok": False, "why": "can't find that", "sounds_tried": True}
         steps = [("press", "left", 1)] if self._chosen else []   # that puts the cursor at its start
-        move = found[0] - self._cursor
-        if move:
-            steps.append(("press", "right" if move > 0 else "left", abs(move)))
-        steps.append(("press", "shift+right", found[1] - found[0]))
+        # Counted as an arrow key moves: one press for a face with its skin tone, say.
+        if found[0] > self._cursor:
+            steps.append(("press", "right", presses(self._text[self._cursor:found[0]])))
+        elif found[0] < self._cursor:
+            steps.append(("press", "left", presses(self._text[found[0]:self._cursor])))
+        steps.append(("press", "shift+right", presses(self._text[found[0]:found[1]])))
         self._press(steps)
+        if correcting:
+            self._chose(self._text, self._cursor, found)
         return {"ok": True}

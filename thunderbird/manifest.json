@@ -9,5 +9,5 @@
     "gecko": { "id": "linux-speaking@jontio.github.io", "strict_min_version": "115.0" }
   },
   "permissions": ["compose", "tabs", "http://127.0.0.1/*"],
-  "background": { "scripts": ["background.js"] }
+  "background": { "scripts": ["key.js", "background.js"] }
 }

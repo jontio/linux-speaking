@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
 
 from dictation.editor_target import (
-    line_move, line_span, paragraph_end, paragraph_start, units, words_left, words_right,
+    EditorTarget, line_move, line_span, paragraph_end, paragraph_start, units, words_left,
+    words_right,
 )
 
 DOC = "one\ntwo\n\nthree\nfour\n\n\nfive\n"
@@ -94,6 +96,134 @@ class Units(unittest.TestCase):
         self.assertEqual(units("abc"), 3)
         self.assertEqual(units("café"), 4)
         self.assertEqual(units("\U0001f600"), 2)
+
+
+class _Box:
+    """Stands in for an editor's text area as the accessibility interface gives it."""
+
+    def __init__(self, text, caret):
+        self.text, self.caret, self.chosen = text, caret, None
+
+
+class _Text:
+    get_character_count = staticmethod(lambda o: len(o.text))
+    get_caret_offset = staticmethod(lambda o: o.caret)
+    get_text = staticmethod(lambda o, start, end: o.text[start:end])
+    get_n_selections = staticmethod(lambda o: 1 if o.chosen else 0)
+    get_selection = staticmethod(
+        lambda o, n: SimpleNamespace(start_offset=o.chosen[0], end_offset=o.chosen[1]))
+
+    @staticmethod
+    def remove_selection(o, n):
+        o.chosen = None
+
+    @staticmethod
+    def set_caret_offset(o, at):
+        o.caret = at
+
+    @staticmethod
+    def add_selection(o, start, end):
+        o.chosen, o.caret = (start, end), end
+
+
+class _Edit:
+    @staticmethod
+    def insert_text(o, at, text, length):
+        o.text = o.text[:at] + text + o.text[at:]
+
+    @staticmethod
+    def delete_text(o, start, end):
+        o.text = o.text[:start] + o.text[end:]
+
+
+class Correct(unittest.TestCase):
+    """ "Correct ..." chooses words as "select ..." does, and once something has been said
+    in their place the cursor is back where it was."""
+
+    def setUp(self):
+        self.box = _Box("the cat sat on the mat", 22)
+        self.target = EditorTarget.__new__(EditorTarget)
+        self.target.T, self.target.E = _Text, _Edit
+        self.target._utf16, self.target._one_line = True, False
+        self.target.history, self.target.correction = [], None
+        self.target.focused = lambda: self.box
+
+    def cmd(self, name, arg=""):
+        return self.target.request({"op": "command", "name": name, "arg": arg})
+
+    def say(self, text, **extra):
+        return self.target.request({"op": "insert", "text": text, **extra})
+
+    def test_the_cursor_goes_back_to_the_end(self):
+        self.assertTrue(self.cmd("correct", "cat")["ok"])
+        self.assertEqual(self.box.chosen, (4, 7))
+        self.assertTrue(self.say("lion").get("back"))
+        self.assertEqual((self.box.text, self.box.caret, self.box.chosen),
+                         ("the lion sat on the mat", 23, None))
+        self.say(" today")
+        self.assertEqual(self.box.text, "the lion sat on the mat today")
+
+    def test_back_to_a_place_before_the_words(self):
+        self.box.caret = 0
+        self.cmd("correct", "mat")
+        self.say("carpet")
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the carpet", 0))
+
+    def test_the_word_the_cursor_is_right_after(self):
+        self.cmd("correct", "mat")
+        self.say("rug")
+        self.say(" again")
+        self.assertEqual(self.box.text, "the cat sat on the rug again")
+
+    def test_the_word_the_cursor_is_right_before(self):
+        self.box.caret = 4
+        self.cmd("correct", "cat")
+        self.say("lion")
+        self.assertEqual(self.box.caret, 4)
+
+    def test_spaces_taken_out_beside_the_words(self):
+        self.cmd("correct", "cat")
+        self.say("lion,", delete_after=1)
+        self.assertEqual((self.box.text, self.box.caret), ("the lion,sat on the mat", 23))
+
+    def test_only_the_next_thing_said_goes_back(self):
+        self.cmd("correct", "cat")
+        self.say("lion")
+        self.box.caret = 3
+        self.assertFalse(self.say(" big").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the big lion sat on the mat", 7))
+
+    def test_no_going_back_if_something_else_is_selected_by_then(self):
+        self.cmd("correct", "cat")
+        self.cmd("select", "sat")
+        self.assertFalse(self.say("stood").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the cat stood on the mat", 13))
+        self.cmd("correct", "cat")
+        _Text.add_selection(self.box, 0, 3)           # chosen by hand meanwhile
+        self.assertFalse(self.say("a").get("back"))
+        self.assertEqual(self.box.caret, 1)
+
+    def test_unselect_goes_back_too(self):
+        self.cmd("correct", "cat")
+        self.cmd("unselect")
+        self.assertEqual((self.box.caret, self.box.chosen), (22, None))
+        self.cmd("select", "cat")
+        self.cmd("unselect")
+        self.assertEqual(self.box.caret, 7)
+
+    def test_any_other_command_ends_it(self):
+        self.cmd("correct", "cat")
+        self.cmd("all_caps")
+        self.assertEqual(self.box.chosen, (4, 7))
+        self.assertIsNone(self.say("lion").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the lion sat on the mat", 8))
+        self.cmd("correct", "lion")
+        self.cmd("cancel_choices")                    # sent to every program at once
+        self.assertTrue(self.say("cat").get("back"))
+
+    def test_not_there(self):
+        self.assertEqual(self.cmd("correct", "zebra")["why"], "can't find that")
+        self.assertFalse(self.say(" more").get("back"))
 
 
 if __name__ == "__main__":

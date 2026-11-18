@@ -10,9 +10,16 @@ from dictation.settings import ITEMS, Settings, available_models, model_label, w
 class Defaults(unittest.TestCase):
     def test_everything_on_except_period(self):
         s = Settings()
-        self.assertEqual([i.key for i in ITEMS if not s.enabled(i.key)], ["quick_listening", "second_opinions", "short_wake", "enter", "other_apps", "say:period"])
-        self.assertEqual(s.spoken_off(), ["period"])
-        self.assertEqual(s.disabled_commands(), frozenset({"enter", "short_wake"}))  # off until asked for
+        off = [i.key for i in ITEMS if not s.enabled(i.key)]
+        # The commands and settings that are off to begin with. (The spoken signs that are
+        # off are in the list below this one.)
+        self.assertEqual([key for key in off if not key.startswith("say:")],
+                         ["aloud", "quick_listening", "second_opinions", "short_wake", "noise",
+                          "enter", "keep_final", "other_apps"])
+        self.assertEqual([key for key in off if key.startswith("say:")],
+                         ["say:period", "say:quote", "say:dash", "say:slash"])
+        self.assertEqual(s.spoken_off(), ["dash", "end quote", "period", "quote", "slash", "unquote"])
+        self.assertEqual(s.disabled_commands(), frozenset({"enter", "short_wake", "noise"}))  # off until asked for
 
     def test_the_words_that_wake_it_and_send_it_to_sleep(self):
         s = Settings()
@@ -37,8 +44,9 @@ class SaveAndLoad(unittest.TestCase):
         s.set("say:full stop", False)
         again = Settings.load(path)
         self.assertFalse(again.enabled("scratch"))
-        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter", "short_wake"}))
-        self.assertEqual(again.spoken_off(), ["full stop"])
+        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter", "short_wake", "noise"}))
+        self.assertEqual(again.spoken_off(),   # with the signs that are off to begin with
+                         ["dash", "end quote", "full stop", "quote", "slash", "unquote"])
 
     def test_bad_file_gives_defaults(self):
         path = os.path.join(tempfile.mkdtemp(), "settings.json")
@@ -62,11 +70,35 @@ class Models(unittest.TestCase):
         self.assertEqual(available_models("/no/such/folder"), [])
 
     def test_labels(self):
-        self.assertTrue(model_label("small.en")[1].startswith("Small: recommended"))
+        self.assertTrue(model_label("small.en")[1].startswith("Small: "))
         self.assertIn("many languages", model_label("multilang_fasterwhisper_large3")[1])
         self.assertEqual(model_label("something-else")[1], "something-else")
-        self.assertTrue(model_label("parakeet-tdt-0.6b-v2")[1].startswith("Parakeet: "))
+        self.assertTrue(model_label("parakeet-tdt-0.6b-v2")[1].startswith("Parakeet v2: "))
         self.assertTrue(model_label("parakeet-unified-en-0.6b")[1].startswith("Parakeet Unified: "))
+
+    def test_one_model_is_the_one_recommended(self):
+        from dictation import settings
+        said = [name for name in ("small.en", "base.en", "medium.en", "parakeet-tdt-0.6b-v2",
+                                  "parakeet-unified-en-0.6b", "parakeet-unified-en-0.6b-full",
+                                  "parakeet-unified-en-0.6b-mine-my-voice")
+                if "recommended" in model_label(name)[1]]
+        self.assertEqual(said, [settings.RECOMMENDED])
+        self.assertEqual(model_label(settings.RECOMMENDED)[0],
+                         model_label("parakeet-unified-en-0.6b-full")[0])   # they sort together
+
+    def test_shortcuts_are_written_one_to_a_line(self):
+        from dictation.settings import parse_shortcuts
+        found, problems = parse_shortcuts(
+            "My Address = 12 High Street\n    Dunedin 9016\n# a note\n\nbtw=by the way\n"
+            "no sign here\n = nothing said\nempty =\npath = C:\\new\\table\n")
+        self.assertEqual(found, {"my address": "12 High Street\nDunedin 9016", "btw": "by the way",
+                                 "path": "C:\\new\\table"})   # a backslash is a backslash
+        self.assertEqual(problems, ["no sign here", "= nothing said", "empty ="])
+        self.assertEqual(parse_shortcuts("    carried on from nothing")[1], ["carried on from nothing"])
+        s = Settings()
+        self.assertEqual(s.set_shortcuts("my address = 12 High Street\n  Dunedin 9016\noops"), ["oops"])
+        self.assertEqual(s.shortcuts_text(), "my address = 12 High Street\n    Dunedin 9016")
+        self.assertEqual(parse_shortcuts(s.shortcuts_text())[0], s.shortcuts)
         self.assertIn("at full precision", model_label("parakeet-tdt-0.6b-v2-full")[1])
         self.assertIn("at full precision", model_label("parakeet-unified-en-0.6b-full")[1])
         self.assertNotIn("full precision", model_label("parakeet-unified-en-0.6b")[1])
@@ -124,8 +156,10 @@ class Effects(unittest.TestCase):
         self.assertEqual(move_steps("line_end", "", ""), MOVES["line_end"])
 
     def test_undo_that_and_how_it_gets_misheard(self):
-        for heard in ("Undo that.", "Undo.", "Undue that.", "And do that."):
+        for heard in ("Undo that.", "Undo.", "Undue that.", "On do that."):
             self.assertEqual(interpret(heard, True), Command("undo"), heard)
+        # People do say this one, so it is words.
+        self.assertEqual(interpret("And do that.", True), Dictation("And do that."))
 
     def test_spell_that(self):
         self.assertEqual(interpret("Spell that.", True), Command("spell"))
@@ -295,3 +329,206 @@ class SettingsThatWouldDoNothing(unittest.TestCase):
         folder = self.models()
         self.assertLessEqual(set(without_effect("base.en", self.OFF, folder)),
                              {"speech_only", "second_opinions"})
+
+
+class TheFileItself(unittest.TestCase):
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(), "settings.json")
+
+    def test_a_save_leaves_nothing_half_written_behind(self):
+        settings = Settings.load(self.path)
+        settings.model = "medium.en"
+        settings.save()
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["settings.json"])
+        self.assertEqual(Settings.load(self.path).model, "medium.en")
+
+    @unittest.skipIf(os.name == "nt", "Windows keeps its own account of who may read a file")
+    def test_only_its_owner_may_read_it(self):
+        Settings.load(self.path).save()
+        self.assertEqual(os.stat(self.path).st_mode & 0o077, 0)
+        os.chmod(self.path, 0o664)                    # as one saved by an earlier version is
+        Settings.load(self.path)
+        self.assertEqual(os.stat(self.path).st_mode & 0o077, 0)
+
+    def test_a_file_with_the_wrong_things_in_it_gives_the_usual_settings(self):
+        for damaged in ('{"states": null}', '{"states": [1, 2]}', '{"model": "med', "[]", ""):
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write(damaged)
+            settings = Settings.load(self.path)
+            self.assertTrue(settings.enabled("scratch"), damaged)
+
+    def saved(self) -> dict:
+        import json
+        with open(self.path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def write(self, saved) -> None:
+        import json
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(saved if isinstance(saved, str) else json.dumps(saved))
+
+    def test_two_saves_at_once_both_go_through(self):
+        import threading
+        settings, failed = Settings.load(self.path), []
+
+        def many(mark):                   # as the engine's worker saves, and a window's buttons
+            for n in range(300):
+                try:
+                    settings.set_model(f"{mark}{n}")
+                except Exception as e:
+                    failed.append(e)
+
+        both = [threading.Thread(target=many, args=(mark,)) for mark in "ab"]
+        for one in both:
+            one.start()
+        for one in both:
+            one.join()
+        self.assertEqual(failed, [])
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["settings.json"])
+        self.assertIn(self.saved()["model"], ("a299", "b299"))
+
+    def test_each_save_writes_beside_the_file_under_a_name_of_its_own(self):
+        import threading
+        from unittest import mock
+        settings, real, beside = Settings.load(self.path), os.replace, []
+
+        def replace(source, target):
+            beside.append(source)
+            return real(source, target)
+
+        with mock.patch("os.replace", replace):
+            settings.save()
+            other = threading.Thread(target=settings.save)   # another thread: as another program would be
+            other.start()
+            other.join()
+        self.assertEqual(len(set(beside)), 2)
+        self.assertTrue(all(os.path.dirname(name) == os.path.dirname(self.path) for name in beside))
+
+    def test_a_save_that_fails_leaves_the_settings_there_were_and_nothing_beside_them(self):
+        from unittest import mock
+        settings = Settings.load(self.path)
+        settings.set_model("small.en")
+        settings.model = "medium.en"
+        with mock.patch("os.replace", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                settings.save()
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["settings.json"])
+        self.assertEqual(Settings.load(self.path).model, "small.en")
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "links are made another way there")
+    def test_a_settings_file_that_is_a_link_stays_one_and_the_file_it_leads_to_is_written(self):
+        kept = os.path.join(tempfile.mkdtemp(), "kept", "settings.json")   # with the person's other settings
+        os.makedirs(os.path.dirname(kept))
+        self.path, link = kept, self.path
+        self.write({"states": {"scratch": False}, "model": "small.en"})
+        os.symlink(kept, link)
+        settings = Settings.load(link)
+        self.assertFalse(settings.enabled("scratch"))
+        settings.set_model("medium.en")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.saved()["model"], "medium.en")
+        self.assertEqual(os.stat(kept).st_mode & 0o077, 0)
+        self.assertEqual(os.listdir(os.path.dirname(link)), ["settings.json"])
+        self.assertEqual(os.listdir(os.path.dirname(kept)), ["settings.json"])
+        self.assertEqual(Settings.load(link).model, "medium.en")
+        # A link to a file that isn't there yet: the file is made where the link leads.
+        os.remove(kept)
+        os.rmdir(os.path.dirname(kept))
+        first = Settings.load(link)
+        self.assertTrue(first.first_time)
+        first.set_model("base.en")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.saved()["model"], "base.en")
+
+    def test_a_first_time_is_when_there_was_no_file_at_all(self):
+        self.assertFalse(Settings().first_time)
+        first = Settings.load(self.path)
+        self.assertTrue(first.first_time)
+        self.assertEqual((first.hotkey, first.shortcuts), ("", {}))
+        first.save()
+        self.assertFalse(Settings.load(self.path).first_time)
+        for damaged in ("", "not json", "[]", '{"states": 7'):       # there, though it can't be made out
+            self.write(damaged)
+            again = Settings.load(self.path)
+            self.assertFalse(again.first_time, damaged)
+            self.assertEqual((again.hotkey, again.shortcuts), ("", {}), damaged)
+
+    def test_the_key_that_switches_dictation_on_and_off_is_always_saved(self):
+        settings = Settings.load(self.path)
+        settings.save()
+        self.assertEqual(self.saved()["hotkey"], "")                 # even when there is none
+        settings.hotkey = "Pause"
+        settings.save()
+        self.assertEqual(self.saved()["hotkey"], "Pause")
+        self.assertEqual(Settings.load(self.path).hotkey, "Pause")
+        self.assertEqual(Settings(hotkey="F9").hotkey, "F9")
+        for odd in (None, 7, ["Pause"], {"a": 1}, True):
+            self.write({"states": {}, "hotkey": odd})
+            self.assertEqual(Settings.load(self.path).hotkey, "", odd)
+
+    def test_a_file_from_before_there_was_a_choice_of_key_has_the_one_there_always_was(self):
+        for states, key in (({}, "Number pad +"), ({"numpad_plus": True}, "Number pad +"),
+                            ({"numpad_plus": False}, ""), ({"scratch": False}, "Number pad +")):
+            self.write({"states": states, "model": ""})
+            settings = Settings.load(self.path)
+            self.assertEqual(settings.hotkey, key, states)
+            self.assertNotIn("numpad_plus", settings.states)         # that tick box is no more
+        # And only the once: with the key switched off and saved, it stays off.
+        self.write({"states": {}, "model": ""})
+        settings = Settings.load(self.path)
+        settings.hotkey = ""
+        settings.save()
+        self.assertEqual(Settings.load(self.path).hotkey, "")
+        self.write({"states": {"numpad_plus": False}, "hotkey": "Pause"})   # the key named is the key
+        self.assertEqual(Settings.load(self.path).hotkey, "Pause")
+        self.write({"states": [1], "model": ""})                     # no states to say otherwise
+        self.assertEqual(Settings.load(self.path).hotkey, "Number pad +")
+
+    def test_shortcuts_are_saved_when_there_are_any_and_only_text_is_read_back(self):
+        settings = Settings.load(self.path)
+        settings.save()
+        self.assertNotIn("shortcuts", self.saved())
+        settings.shortcuts = {"my address": "1 Long Road\nSmall Town", "sig": "Best wishes"}
+        settings.save()
+        self.assertEqual(self.saved()["shortcuts"], settings.shortcuts)
+        self.assertEqual(Settings.load(self.path).shortcuts, settings.shortcuts)
+        given = {"a": "b"}
+        made = Settings(shortcuts=given)
+        made.shortcuts["c"] = "d"
+        self.assertEqual(given, {"a": "b"})                          # its own, not the one handed in
+        self.write({"states": {}, "shortcuts": {"kept": "this", "number": 7, "list": ["x"], "none": None,
+                                                "nested": {"a": "b"}}})
+        self.assertEqual(Settings.load(self.path).shortcuts, {"kept": "this"})
+        for odd in ("text", [["a", "b"]], 7, None):
+            self.write({"states": {}, "shortcuts": odd})
+            self.assertEqual(Settings.load(self.path).shortcuts, {}, odd)
+
+
+class WhatEachIsFor(unittest.TestCase):
+    """Every tick box says, when the mouse rests on it, what it is for."""
+
+    def test_none_is_left_without_a_word_about_it(self):
+        from dictation.settings import HELP, help_for
+        for item in ITEMS:
+            about = help_for(item.key)
+            self.assertGreater(len(about), 20, item.key)
+            self.assertTrue(about.endswith((".", ")")), item.key)
+        self.assertEqual(sorted(set(HELP) - {item.key for item in ITEMS}), [])  # and none for nothing
+
+    def test_a_line_is_never_so_long_that_it_sets_the_width_of_the_window(self):
+        for item in ITEMS:
+            self.assertLessEqual(len(item.label), 115, item.key)
+
+
+class SaidOrSet(unittest.TestCase):
+    """In Settings, what you say is in quotes, and a setting is not."""
+
+    def test_every_command_and_punctuation_word_starts_with_what_you_say_in_quotes(self):
+        from dictation.settings import OPTIONS
+        for item in ITEMS:
+            if item.key in OPTIONS:
+                self.assertFalse(item.label.startswith('"'), item.key)
+            else:
+                self.assertTrue(item.label.startswith('"'), item.key)
+                said = item.label.split("  ")[0]
+                self.assertEqual(said.count('"') % 2, 0, item.key)   # every quote is closed

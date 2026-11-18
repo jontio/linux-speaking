@@ -1,0 +1,35 @@
+# The Python packages Linux Speaking runs on. Both installers install from this file
+# (install.sh on Linux, install.ps1 on Windows), so the two systems get the same ones.
+#
+# Each line allows a package's later fixes, but not its next big version, which may have
+# changed what the program leans on: the engine reaches into faster-whisper, for one.
+#
+# Last tried with, on Python 3.10 to 3.14:
+#   faster-whisper 1.2.1, ctranslate2 4.9.0, sherpa-onnx 2.0.1, onnxruntime 1.31.1,
+#   av 19.0.2, numpy 2.3.5, tokenizers 0.23.3, cryptography 46 to 50, PyQt6 6.10
+# The lower ends are what the packages ask of each other, or what is thought to be
+# enough: only the versions above have been tried. An older Python is given the newest
+# of each that still runs on it. When you have tried newer ones, bring this list up to date.
+
+# Whisper, and what it runs on.
+faster-whisper>=1.2,<2
+ctranslate2>=4.5,<5
+onnxruntime>=1.17,<2
+av>=11,<20
+tokenizers>=0.15,<1
+
+# Parakeet.
+sherpa-onnx>=2.0,<3
+
+# The link to another computer: what is sent there is encrypted.
+cryptography>=46,<51
+
+# On Linux numpy and PyQt6 are the distribution's own packages, which install.sh asks the
+# system for, so that the windows match the desktop. Windows has no such packages, and
+# needs a few things for its microphone, for Word and Outlook, and for other programs'
+# text boxes. (Those last three have had no particular versions noted.)
+numpy>=1.26,<3 ; sys_platform == "win32"
+PyQt6>=6.6,<7 ; sys_platform == "win32"
+sounddevice>=0.4,<1 ; sys_platform == "win32"
+pywin32>=306 ; sys_platform == "win32"
+comtypes>=1.2,<2 ; sys_platform == "win32"

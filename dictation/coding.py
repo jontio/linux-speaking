@@ -8,7 +8,8 @@ and spacing follows the usual C style: "x equals count plus one semicolon" becom
 It is aware of the file being edited. Names already in the file are recognised when spoken
 as words, so "buffer size" becomes buffer_size or bufferSize, whichever the file uses. A new
 name of several words is joined in the file's own style. Inside a string, words keep their
-spaces, and after "//" ordinary prose dictation takes over.
+spaces, and their capitals and apostrophes as the recogniser wrote them ("don't panic").
+After "//" ordinary prose dictation takes over, until a line break is said.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from .formatting import LINE, PARAGRAPH, Insertion
+from .formatting import LINE, PARAGRAPH, Insertion, fit
 
 LANGUAGES = ("c", "cpp")
 
@@ -97,8 +98,14 @@ SYMBOLS = _table("""
     minus equals => -=
     times equals | star equals => *=
     slash equals | divide equals => /=
+    percent equals | mod equals | modulo equals => %=
+    ampersand equals | and equals => &=
+    pipe equals | bar equals | or equals => |=
+    caret equals | xor equals => ^=
     shift left | left shift => <<
     shift right | right shift => >>
+    shift left equals | left shift equals => <<=
+    shift right equals | right shift equals => >>=
     underscore => _
     quote | double quote | quotes | quotation mark | open quote | close quote => "
     single quote | apostrophe => '
@@ -181,7 +188,8 @@ AS_NUMBER = {"to": "2", "too": "2", "for": "4", "fore": "4", "won": "1", "ate": 
 COMPARISONS = frozenset("< > <= >= == !=".split())
 # After one of these a value is expected.
 VALUE_AFTER = frozenset(
-    "= == != <= >= < > + - * / % && || ( , [ += -= *= /= << >> ? : ! & | ^".split())
+    "= == != <= >= < > + - * / % && || ( , [ += -= *= /= %= &= |= ^= <<= >>= << >> ? : ! & | "
+    "^".split())
 # After one of these the next name is being declared, so it is new: never corrected.
 DECLARING = frozenset("struct class enum union namespace define typedef typename using goto".split())
 # Phrases for brackets, matched loosely: "open racket" is "open bracket".
@@ -274,7 +282,7 @@ PROMPT = ("hash include open angle stdio dot h close angle new line int main ope
 
 _TOKEN = re.compile(
     r"\d+\.\d+|\d+[a-z0-9_]*|[a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)*"
-    r"|<<=|>>=|==|!=|<=|>=|&&|\|\||->|::|\+\+|--|\+=|-=|\*=|/=|<<|>>|//"
+    r"|<<=|>>=|==|!=|<=|>=|&&|\|\||->|::|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>|//"
     r"|[=+\-*/<>()\[\]{}#&|%^~\"\;:" + LINE + PARAGRAPH + "]")
 
 
@@ -298,7 +306,7 @@ def tokens(raw: str) -> list:
     s = re.sub(r"(?<=[a-z])'(?=[a-z])", "", s)         # "don't"
     s = re.sub(r"(?<=\d),(?=\d{3})", "", s)            # "1,000"
     s = re.sub(r"\.(?![a-z0-9_])|(?<![a-z0-9_])\.", " ", s)
-    s = re.sub(r"[,?!']", " ", s)
+    s = re.sub(r"[,?']|!(?!=)", " ", s)                # but "!=" is kept: it is a symbol
     out = []
     for token in _TOKEN.findall(s):
         if token in ALIASES:
@@ -310,6 +318,78 @@ def tokens(raw: str) -> list:
         else:
             out.append(token)
     return out
+
+
+def as_written(raw: str) -> tuple:
+    """(tokens, written, source, words) for what the recogniser wrote.
+
+    The tokens are as tokens() gives them. `words` are the words as they were written,
+    capitals, apostrophes, punctuation and all, and `source` says which of them each
+    token came from. `written` has, for each token, the written word if the token is
+    that one word and nothing else ("don't" for "dont"), and otherwise the token.
+
+    Code wants the tokens. A string and a comment want what was written: "don't panic",
+    not "dont panic".
+    """
+    words = raw.split()
+    toks, written, source = [], [], []
+    for at, word in enumerate(words):
+        found = tokens(word)
+        whole = len(found) == 1 and re.fullmatch(r"[a-z_][a-z0-9_]*", found[0])
+        toks += found
+        written += [word] if whole else found
+        source += [at] * len(found)
+    if toks != tokens(raw):  # not expected: every rule of tokens() works within a word
+        toks = tokens(raw)
+        return toks, list(toks), list(range(len(toks))), list(toks)
+    return toks, written, source, words
+
+
+def _spoken_number(toks: list, at: int) -> tuple:
+    """(how many tokens, the number as it is written in code) for a number said in
+    words at toks[at]: "twenty one" is 21, "one hundred" 100, "two hundred and fifty six"
+    256, "four thousand and ninety six" 4096, and "zero x f f" 0xff. (0, "") if there is
+    no number there."""
+    def under_hundred(i: int) -> tuple:
+        value = NUMBER_WORDS.get(toks[i]) if i < len(toks) else None
+        if value is None:
+            return 0, 0
+        if value >= 20 and i + 1 < len(toks) and 0 < NUMBER_WORDS.get(toks[i + 1], 0) < 10:
+            return 2, value + NUMBER_WORDS[toks[i + 1]]          # "twenty one"
+        return 1, value
+
+    def under_thousand(i: int) -> tuple:
+        count, value = under_hundred(i)
+        end = i + count
+        if count == 1 and 0 < value < 10 and toks[end:end + 1] == ["hundred"]:
+            value, end = value * 100, end + 1
+            skip = end + (toks[end:end + 1] == ["and"])
+            more, rest = under_hundred(skip)
+            if more:
+                value, end = value + rest, skip + more
+        return end - i, value
+
+    if toks[at] in ("zero", "0", "0x") and at + 1 < len(toks):
+        # A number in sixteens: "zero x" and then its figures, each said by itself.
+        digits, end = [], at + (1 if toks[at] == "0x" else 2)
+        while (toks[at] == "0x" or toks[at + 1] == "x") and end < len(toks):
+            said = toks[end]
+            digit = str(NUMBER_WORDS[said]) if NUMBER_WORDS.get(said, 10) < 10 else \
+                LETTER_NAMES.get(said, said)
+            if not re.fullmatch(r"[0-9a-f]+", digit):
+                break
+            digits.append(digit)
+            end += 1
+        if digits:
+            return end - at, "0x" + "".join(digits)
+    count, value = under_thousand(at)
+    end = at + count
+    if count and value and toks[end:end + 1] == ["thousand"]:
+        end += 1
+        skip = end + (toks[end:end + 1] == ["and"])
+        more, rest = under_thousand(skip)
+        value, end = value * 1000 + rest, (skip + more if more else end)
+    return end - at, str(value) if count else ""
 
 
 # ---- names in the file -----------------------------------------------------------------
@@ -373,21 +453,39 @@ def _longest(table: dict, toks: list, at: int, least: int = 1):
     return 0, None
 
 
+def _in_a_string(written: str, first: bool, last: bool) -> str:
+    """A word inside a string, as the recogniser wrote it, less what it adds to every
+    phrase whether asked to or not: the capital on the first word and the stop after
+    the last. The rest is kept: "don't", "Hello, World!"."""
+    word = written.lstrip("\"'“”‘’,.;:!?")
+    if (first and word[:1].isupper() and word[1:] == word[1:].lower()
+            and re.split(r"\W", word)[0] != "I"):
+        word = word[0].lower() + word[1:]      # not "I" or "I'm", and not "NASA"
+    return (word.rstrip(".,!?;:") if last else word) or written
+
+
 def parse(toks: list, known: dict, style: str, in_string: bool = False,
-          before: str = "", scope=None) -> list:
+          before: str = "", scope=None, said=None) -> list:
     """Turn tokens into (kind, text) items: "id" for names, keywords and numbers, "op" for
     symbols, "text" for words inside a string, "space" and "break".
 
     `scope` is what the language server says is in scope at the cursor, as name -> kind.
     With it, a word that is not a name here but sounds like one that is gets corrected.
+
+    `said` is the rest of what as_written() gives for the tokens: (written, source,
+    words). With it the words of a string and of a comment are put in as they were
+    written. Without it they are the tokens, in small letters and without apostrophes.
     """
     scope = scope or {}
+    written, source, words = said or (toks, list(range(len(toks))), toks)
     real = [n for n, kind in scope.items() if kind in ("variable", "function", "type", "namespace")]
     types = {n for n, kind in scope.items() if kind == "type"}
     items = []
     run = []          # plain words that may be one name
     wanted = None     # a case style asked for, for the next name
     capital = False
+    glue = False      # after "underscore": the next word goes straight on to the name
+    started_in_string = in_string
 
     def candidates():
         # Where a value is expected, a type name is not what was meant.
@@ -424,6 +522,15 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
             capital = True
             i += 1
             continue
+        if glue:
+            # "m underscore count" is m_count, and "x underscore one" x_1: one name.
+            glue = False
+            if re.fullmatch(r"[a-z0-9_]+", tok) and not _longest(SYMBOLS, toks, i)[0]:
+                run[-1] += (str(NUMBER_WORDS[tok]) if tok in NUMBER_WORDS
+                            else tok.capitalize() if capital else tok)
+                capital = False
+                i += 1
+                continue
         if items and items[-1] == ("op", "\\"):
             letter = escape_letter(tok, in_string)
             if letter:
@@ -447,6 +554,15 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
             continue
         if not size and not tok[0].isalnum() and tok[0] != "_":
             size, symbol = 1, tok                    # a symbol Whisper wrote itself
+        if size and symbol == "_" and not in_string:
+            # Part of a name, not a sign between two: it joins what is on either side.
+            if run:
+                run[-1] += "_"
+            else:
+                run.append("_")
+            glue = True
+            i += size
+            continue
         if size:
             flush()
             if symbol == SPACE:
@@ -454,14 +570,28 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
             elif symbol in (LINE, PARAGRAPH):
                 items.append(("break", symbol))
             elif symbol == "//" and not in_string:
-                # The rest of the phrase is the comment: ordinary words, not code.
-                rest = " ".join(toks[i + size:])
+                # The rest of the phrase is the comment: ordinary words, not code, so
+                # they are fitted as prose is, from what the recogniser wrote. A line
+                # break that is said ends the comment, and code goes on after it.
+                start = end = i + size
+                while end < len(toks) and _longest(SYMBOLS, toks, end)[1] not in (LINE, PARAGRAPH):
+                    end += 1
+                first = source[start] if start < len(toks) else len(words)
+                joined = [t for t, at in zip(toks[start:end], source[start:end])
+                          if at == source[start - 1]]   # written without a space: "//done"
+                last = source[end] if end < len(toks) else len(words)
+                rest = " ".join(joined + words[first + bool(joined):last])
                 items.append(("op", "//"))
                 if rest:
-                    items.append(("text", rest[:1].upper() + rest[1:]))
-                return items
+                    items.append(("text", fit(rest, "", "").text))
+                i = end
+                continue
             else:
                 if symbol == '"':
+                    if in_string and items and items[-1][0] == "text":
+                        # The recogniser's comma or stop before the closing mark is its
+                        # own phrasing, not part of what the string says.
+                        items[-1] = ("text", items[-1][1].rstrip(",.") or items[-1][1])
                     in_string = not in_string
                 items.append(("op", symbol))
             i += size
@@ -476,7 +606,8 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
                 i += 1
                 continue
         if (not in_string and not wanted and not run and (tok.isalpha() or tok == "4")
-                and (tok,) not in known):
+                and (tok,) not in known and not _longest(known, toks, i, least=2)[0]):
+            # (Unless a name in the file begins here: "to string" is to_string, not 2.)
             where_now = position(items, before)
             following = toks[i + 1] if i + 1 < len(toks) else ""
             if where_now == "start" and tok in AT_START and (
@@ -497,7 +628,9 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
                 i += 2
                 continue
         if in_string:                                # words in a string are just words
-            items.append(("text", word))
+            text = _in_a_string(written[i], first=i == 0 and started_in_string,
+                                last=i == len(toks) - 1)
+            items.append(("text", text[:1].upper() + text[1:] if word != tok else text))
             i += 1
             continue
         if not wanted and not run:
@@ -513,29 +646,49 @@ def parse(toks: list, known: dict, style: str, in_string: bool = False,
                 items.append(("id", name))
                 i += size
                 continue
-            if tok in NUMBER_WORDS:
-                value = NUMBER_WORDS[tok]
-                if value >= 20 and i + 1 < len(toks) and 0 < NUMBER_WORDS.get(toks[i + 1], 0) < 10:
-                    value += NUMBER_WORDS[toks[i + 1]]       # "twenty one"
-                    i += 1
+            size, number = _spoken_number(toks, i)       # "twenty one", "zero x f f"
+            if size:
                 flush()
-                items.append(("id", str(value)))
-                i += 1
+                items.append(("id", number))
+                i += size
                 continue
             if tok in KEYWORDS or tok[0].isdigit():
                 flush()
                 items.append(("id", tok))
                 i += 1
                 continue
-        if not wanted and not run and known.get((tok,)) in types:
+            if (tok in ("and", "or") and (tok,) not in known and i + 1 < len(toks)
+                    and not declaring(items, before, types) and _after_a_value(items, run, before)):
+                # "if a and b": between two values the words are the operators. In a new
+                # name that is being declared they are part of it: "bool black and white".
+                flush()
+                items.append(("op", "&&" if tok == "and" else "||"))
+                i += 1
+                continue
+        if not wanted and not run and (
+                known.get((tok,)) in types or (tok.endswith("_t") and len(tok) > 2)
+                or (tok in TYPE_WORDS and items[-1:] == [("op", "::")])):
             # A type's name stands alone: what follows it is the thing being declared.
-            items.append(("id", known[(tok,)]))
+            # So "uint8_t value" and "std::string name" are each two words.
+            items.append(("id", known.get((tok,), tok)))
             i += 1
             continue
         run.append(word)
         i += 1
     flush()
     return items
+
+
+def _after_a_value(items: list, run: list, before: str) -> bool:
+    """Whether the next word comes straight after a name, a number or a closing bracket:
+    in this phrase, or at the end of the line so far."""
+    if run:
+        return True
+    if items:
+        return items[-1][0] in ("id", "esc") and items[-1][1] not in KEYWORDS - VALUE_KEYWORDS \
+            or items[-1] in (("op", ")"), ("op", "]"), ("op", '"'), ("op", "'"))
+    return bool(re.search(r"[\w)\]\"']$", before.rstrip())) and not re.search(
+        r"\b(?:" + "|".join(KEYWORDS - VALUE_KEYWORDS) + r")$", before.rstrip())
 
 
 # ---- spacing ----------------------------------------------------------------------------
@@ -646,7 +799,7 @@ def _classify(kind: str, text: str, prev: _Tok | None, st: _State) -> _Tok:
 
 
 _OPERATORS = ("<<=", ">>=", "==", "!=", "<=", ">=", "&&", "||", "->", "::", "++", "--",
-              "+=", "-=", "*=", "/=", "<<", ">>")
+              "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>")
 
 
 def _tail(before: str, st: _State) -> _Tok | None:
@@ -714,10 +867,11 @@ def fit_code(raw: str, before: str, after: str, names=(), scope=None) -> Inserti
     place, _ = where(before)
     st = _State(before, place == "string")
     known = known_names([n for n, kind in scope.items() if kind != "keyword"] + names)
-    toks = tokens(raw)
+    toks, written, source, words = as_written(raw)
     if len(toks) == 1 and toks[0] in LETTER_NAMES and (toks[0],) not in known:
-        toks = [LETTER_NAMES[toks[0]]]  # one letter said on its own: "dee" is d
-    items = parse(toks, known, name_style(names), st.in_string, before, scope)
+        toks = written = words = [LETTER_NAMES[toks[0]]]  # one letter said on its own: "dee" is d
+    items = parse(toks, known, name_style(names), st.in_string, before, scope,
+                  (written, source, words))
     if not items:
         return Insertion("")
     # An angle bracket opened earlier on the line, in another phrase, is still open.

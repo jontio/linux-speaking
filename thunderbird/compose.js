@@ -13,9 +13,19 @@
   const MAX_CHOICES = 20;
   const CHOICE_MS = 25000;
   const WORD_CHAR = /[\p{L}\p{N}'\u2019]/u;
+  const LETTER = /[\p{L}\p{N}]/u;
+  // Whether the character at `i` is part of a word. An apostrophe is, between two
+  // letters ("don't"); beside a word it is a quote mark, and no part of it ('hello').
+  const inWord = (text, i) => LETTER.test(text[i]) ||
+    ((text[i] === "'" || text[i] === "\u2019") && i > 0 && i + 1 < text.length &&
+     LETTER.test(text[i - 1]) && LETTER.test(text[i + 1]));
 
   let history = [];    // the text of recent phrases, newest last
   let choices = null;  // { ranges, layer, timer } while numbers are showing
+  // After "correct ...": { mark, range, where }, the place the cursor was at, the words
+  // chosen, and whether the cursor was "before", "among" or "after" them, until something
+  // is said over them.
+  let correction = null;
 
   const ok = (extra) => Object.assign({ ok: true }, extra || {});
   const fail = (why) => ({ ok: false, why });
@@ -69,12 +79,50 @@
     for (let i = 0; i < count; i++) sel().modify("move", direction, "character");
   }
 
+  // ---- "correct ...": the cursor goes back afterwards --------------------------
+  // The place the cursor is at now, kept as the text around it changes.
+  function placeNow() {
+    const s = sel();
+    if (!s.rangeCount) return null;
+    const mark = s.getRangeAt(0).cloneRange();
+    mark.collapse(false);
+    return mark;
+  }
+
+  // Remember that the cursor was at `mark` when the words in `range` were chosen.
+  function chose(range, mark) {
+    correction = null;
+    if (!mark) return;
+    const where = mark.compareBoundaryPoints(Range.START_TO_START, range) <= 0 ? "before"
+      : mark.compareBoundaryPoints(Range.END_TO_END, range) >= 0 ? "after" : "among";
+    correction = { mark, range: range.cloneRange(), where };
+  }
+
+  // Where the cursor was before "correct ...", if the words it chose are still what is
+  // selected. Forgotten either way: the next thing said or done settles it.
+  function correcting() {
+    const was = correction;
+    correction = null;
+    const s = sel();
+    if (!was || !s.rangeCount || s.isCollapsed) return null;
+    const now = s.getRangeAt(0);
+    return now.compareBoundaryPoints(Range.START_TO_START, was.range) === 0 &&
+      now.compareBoundaryPoints(Range.END_TO_END, was.range) === 0 ? was : null;
+  }
+
+  function goTo(mark) {
+    const range = mark.cloneRange();
+    range.collapse(true);
+    setSelection(range);
+  }
+
   // ---- inserting ---------------------------------------------------------------
   function insert(m) {
     const s = sel();
     if (!s.rangeCount) return fail("no cursor");
     const text = m.text || "";
     if (!text && !m.delete_before && !m.delete_after) return ok({ text: "" });
+    const back = correcting();
     if (!s.isCollapsed) run("delete"); // dictating over a selection replaces it
     if (m.delete_before) { extend("backward", m.delete_before); run("delete"); }
     if (m.delete_after) { extend("forward", m.delete_after); run("delete"); }
@@ -100,7 +148,15 @@
       history.push(text);
       if (history.length > 20) history.shift();
     }
-    return ok({ text });
+    if (back && back.where !== "among" && s.rangeCount) {
+      // After "correct ...": back to where the cursor was before it. A place that was
+      // after the old words is never before the end of the new ones.
+      const now = s.getRangeAt(0);
+      if (back.where === "before" || back.mark.compareBoundaryPoints(Range.START_TO_START, now) > 0) {
+        goTo(back.mark);
+      }
+    }
+    return ok(back ? { text, back: true } : { text });
   }
 
   // ---- the last phrase ----------------------------------------------------------
@@ -150,7 +206,7 @@
   // Every whole-word match for the phrase, ignoring case and punctuation.
   function findAll(phrase) {
     const words = Array.from(phrase).map((c) => (WORD_CHAR.test(c) ? normChar(c) : " "))
-      .join("").split(" ").filter(Boolean);
+      .join("").split(" ").map((word) => word.replace(/^'+|'+$/g, "")).filter(Boolean);
     if (!words.length) return [];
     const needle = words.join(" ");
     const { flat, map } = textIndex();
@@ -160,7 +216,7 @@
     for (let i = 0; i < flat.length; i++) {
       const c = flat[i];
       if (c === "\n") { chars += "\n"; index.push(i); gap = true; }
-      else if (WORD_CHAR.test(c)) { chars += normChar(c); index.push(i); gap = false; }
+      else if (inWord(flat, i)) { chars += normChar(c); index.push(i); gap = false; }
       else if (!gap) { chars += " "; index.push(i); gap = true; }
     }
     const edge = (c) => c === undefined || c === " " || c === "\n";
@@ -201,27 +257,25 @@
     if (element && element.scrollIntoView) element.scrollIntoView({ block: "nearest" });
   }
 
-  function select(phrase, nearest) {
+  // `mark` is given for "correct ...": the place the cursor was at, to go back to.
+  function select(phrase, nearest, mark) {
     const s = sel();
+    correction = null;
     let matches = findAll(phrase);
     if (!matches.length) return fail("can't find that");
+    const take = (range) => { setSelection(range); chose(range, mark); return ok(); };
     const cursor = s.rangeCount ? s.getRangeAt(0).cloneRange() : null;
     if (cursor) {
       cursor.collapse(true);
       // Keep the matches closest to the cursor, in the order they appear.
       const ranked = matches.map((range, i) => ({ range, i, d: distance(range, cursor) }));
       ranked.sort((a, b) => a.d - b.d || a.i - b.i);
-      if (nearest) {
-        setSelection(ranked[0].range);
-        return ok();
-      }
+      if (nearest) return take(ranked[0].range);
       matches = ranked.slice(0, MAX_CHOICES).sort((a, b) => a.i - b.i).map((r) => r.range);
     }
-    if (matches.length === 1 || nearest) {
-      setSelection(matches[0]);
-      return ok();
-    }
+    if (matches.length === 1 || nearest) return take(matches[0]);
     showChoices(matches);
+    choices.mark = mark;
     return ok({ choices: matches.length });
   }
 
@@ -298,7 +352,15 @@
   }
 
   // ---- formatting -----------------------------------------------------------------
-  const TITLE = (t) => t.toLowerCase().replace(/(^|[^\p{L}'\u2019])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+  const TITLE = (t) => {
+    // A capital on each word. Capitals that are there already stay, so "the NASA report"
+    // is "The NASA Report", and so does the small first letter of a word spelled like
+    // "iPhone". Only text that is all in capitals is brought down first. (As title() in
+    // dictation/formatting.py, which Writer, Kate and typed-into boxes use.)
+    if (!/\p{Ll}/u.test(t)) t = t.toLowerCase();
+    return t.replace(/(?<![\p{L}\p{N}_'\u2019])\p{L}[\p{L}\p{N}_'\u2019]*/gu,
+      (word) => (/^\p{Ll}.*\p{Lu}/u.test(word) ? word : word.replace(/^\p{L}/u, (c) => c.toUpperCase())));
+  };
   const CASES = { cap: TITLE, all_caps: (t) => t.toUpperCase(), no_caps: (t) => t.toLowerCase() };
   const STYLES = { bold: "bold", italic: "italic", underline: "underline" };
 
@@ -309,14 +371,17 @@
       if (!selectLast()) return fail("nothing to format");
       last = true;
     }
+    // The last phrase was selected only to be worked on: the cursor goes back after it, or
+    // the next words would take its place.
     if (STYLES[name]) {
       if (!document.queryCommandState(STYLES[name])) run(STYLES[name]);
+      if (last) { s.collapseToEnd(); run(STYLES[name]); } // and what comes next is plain again
       return ok();
     }
     const changed = CASES[name](s.toString());
     run("insertText", changed);
-    extend("backward", Array.from(changed).length);
     if (last) history[history.length - 1] = changed;
+    else extend("backward", Array.from(changed).length);
     return ok();
   }
 
@@ -330,8 +395,10 @@
       const n = parseInt(m.arg, 10);
       if (!(n >= 1 && n <= choices.ranges.length)) return fail("no such number");
       const range = choices.ranges[n - 1];
+      const mark = choices.mark;
       clearChoices();
       setSelection(range);
+      chose(range, mark);
       return ok();
     }
     if (!s.rangeCount) return fail("no cursor");
@@ -349,9 +416,15 @@
         run("delete");
         return ok();
       case "select": return select(m.arg || "", Boolean(m.nearest));
+      case "correct": return select(m.arg || "", Boolean(m.nearest), placeNow());
       case "select_last": return selectLast() ? ok() : fail("nothing to select");
       case "select_all": s.selectAllChildren(document.body); return ok();
-      case "unselect": s.collapseToEnd(); return ok();
+      case "unselect": {
+        const back = correcting();
+        if (back) goTo(back.mark); // after "correct ...", where it was
+        else s.collapseToEnd();
+        return ok();
+      }
       case "line_end": s.modify("move", "forward", "lineboundary"); return ok();
       case "line_start": s.modify("move", "backward", "lineboundary"); return ok();
       case "word_left": case "word_right": {
@@ -390,6 +463,9 @@
     try {
       if (choices && (m.op === "insert" || (m.op === "command" && m.name !== "choose"))) {
         clearChoices(); // doing anything else takes the numbers away
+      }
+      if (m.op === "command" && !["correct", "unselect", "choose", "cancel_choices"].includes(m.name)) {
+        correction = null; // "correct ..." is only for what is said next
       }
       switch (m.op) {
         case "ping": return ok();

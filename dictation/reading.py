@@ -11,7 +11,9 @@ Nothing here retrains anything. These files are what a retraining would start fr
 """
 from __future__ import annotations
 
+import codecs
 import collections
+import locale
 import math
 import os
 import re
@@ -74,11 +76,34 @@ def sentences_from(text: str) -> tuple:
     return found, left_out
 
 
+def _text_of(path: str) -> str:
+    """What the text file at `path` says, however it was saved. Raises OSError.
+
+    A file need not be UTF-8. Word's "Plain Text" is in the Windows encoding, where a
+    curly apostrophe is one byte that means nothing in UTF-8, and its "Unicode" is
+    UTF-16. Read as UTF-8 the one loses every sentence with an apostrophe in it, and the
+    other has no sentences at all. So: UTF-16 if the file starts with its mark, UTF-8 if
+    the bytes are UTF-8, and otherwise this computer's own encoding, or Western Windows
+    where that is UTF-8 as well.
+    """
+    with open(path, "rb") as f:
+        data = f.read(4 * LONGEST_TEXT)
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", errors="replace")[:LONGEST_TEXT]
+    try:
+        # (Not finished off: a long file may have been cut in the middle of a letter.)
+        text = codecs.getincrementaldecoder("utf-8-sig")().decode(data)
+    except UnicodeDecodeError:
+        own = locale.getpreferredencoding(False)
+        own = "cp1252" if codecs.lookup(own).name in ("utf-8", "ascii") else own
+        text = data.decode(own, errors="replace")
+    return text[:LONGEST_TEXT]
+
+
 def own_text(folder: str = FOLDER) -> tuple:
     """The reader's own text, as sentences_from gives it. ([], 0) if none was chosen."""
     try:
-        with open(os.path.join(folder, OWN_TEXT), encoding="utf-8", errors="replace") as f:
-            return sentences_from(f.read(LONGEST_TEXT))
+        return sentences_from(_text_of(os.path.join(folder, OWN_TEXT)))
     except OSError:
         return [], 0
 
@@ -86,8 +111,7 @@ def own_text(folder: str = FOLDER) -> tuple:
 def choose_own_text(path: str, folder: str = FOLDER) -> tuple:
     """Take a copy of the text file at `path` as the reader's own text, if there is
     anything in it to read. Returns what sentences_from makes of it. Raises OSError."""
-    with open(path, encoding="utf-8", errors="replace") as f:
-        found, left_out = sentences_from(f.read(LONGEST_TEXT))
+    found, left_out = sentences_from(_text_of(path))
     if found:
         os.makedirs(folder, exist_ok=True)
         shutil.copyfile(path, os.path.join(folder, OWN_TEXT))
@@ -196,6 +220,9 @@ class Cutter:
         self._segmenter = Segmenter(made)
         self._warmup = made.warmup_ms // made.frame_ms    # frames spent measuring the room
         self._onset = made.start_ms // made.frame_ms      # frames of speech before it counts
+        # How much quiet is kept in front of a sentence not yet begun: a rest before
+        # reading is no part of the sentence, and doesn't count towards its being too long.
+        self._lead_most = LEAD_FRAMES + config.PREROLL_FRAMES + self._onset + 8
         self._boost = boost
         self._quiet = 0   # frames in a row without speech, up to now
         self._recent = collections.deque(maxlen=config.PREROLL_FRAMES)  # the latest frames
@@ -260,6 +287,8 @@ class Cutter:
             self._too_long = True
         elif not self._too_long:
             self._frames.append(frame)
+            if self._first is None and len(self._frames) > self._lead_most:
+                del self._frames[:len(self._frames) - self._lead_most]
             if event == START and self._first is None:
                 self._first = max(0, len(self._frames) - self._onset)
             if self._first is not None and loud and self._segmenter.in_phrase:
@@ -356,17 +385,20 @@ class Kept:
             return []
 
     def _lines(self, day: str) -> list:
-        """[(number, text)] for the sound files of a day that are still there."""
-        found = []
+        """[(number, text)] for the sound files of a day that are still there. Where a
+        number is listed twice, the later line is the one its sound goes with."""
+        found = {}
         try:
-            with open(os.path.join(self.folder, day, SAID), encoding="utf-8") as f:
+            with open(os.path.join(self.folder, day, SAID), encoding="utf-8",
+                      errors="replace") as f:
                 for line in f:
                     number, tab, text = line.rstrip("\n").partition("\t")
                     if tab and os.path.exists(os.path.join(self.folder, day, number + ".wav")):
-                        found.append((number, text))
-        except OSError:
+                        found.pop(number, None)
+                        found[number] = text
+        except (OSError, ValueError):
             pass
-        return found
+        return list(found.items())
 
     def texts(self) -> set:
         """Every text that has been read and kept, on any day."""
@@ -400,9 +432,12 @@ class Kept:
             said = {}
         said = said if isinstance(said, dict) else {}
         said[name] = max(1, int(rounds))
-        os.makedirs(self.folder, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(said, f)
+        try:
+            os.makedirs(self.folder, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(said, f)
+        except OSError:
+            pass  # a folder that can't be written: the sentences are simply not offered again
 
     def totals(self) -> tuple:
         """(how many sentences are kept, how many seconds of sound they come to)."""
@@ -423,6 +458,14 @@ class Kept:
         os.makedirs(folder, exist_ok=True)
         taken = [int(name[:-4]) for name in os.listdir(folder)
                  if name.endswith(".wav") and name[:-4].isdigit()]
+        # A number is never used twice, even one whose sound was deleted by hand: its
+        # line in the list would pair the new sound with the old words.
+        try:
+            with open(os.path.join(folder, SAID), encoding="utf-8", errors="replace") as f:
+                taken += [int(line.split("\t", 1)[0]) for line in f
+                          if line.split("\t", 1)[0].isdigit()]
+        except (OSError, ValueError):
+            pass
         number = f"{max(taken, default=0) + 1:03d}"
         path = os.path.join(folder, number + ".wav")
         with wave.open(path, "wb") as f:

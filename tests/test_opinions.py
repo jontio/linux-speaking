@@ -95,6 +95,26 @@ class OwnWords(unittest.TestCase):
                                 keep=keep), "Cheers, Jonti and the pool")
 
 
+class TheSameWordWrittenTwoWays(unittest.TestCase):
+    """How a word is written is not something recognisers differ on in what they heard."""
+
+    def test_a_title_long_or_short(self):
+        self.assertEqual(settle("Dr. Smith is here.", "Doctor Smith is here.", "Doctor Smith is here."),
+                         "Dr. Smith is here.")
+        self.assertTrue(same("Dr. Smith is here.", "doctor Smith is here"))
+
+    def test_a_british_and_an_american_spelling(self):
+        self.assertEqual(settle("The colour is red.", "The color is red.", "The color is red."),
+                         "The colour is red.")
+        self.assertTrue(same("I realise that", "I realize that."))
+        self.assertFalse(same("the colour is red", "the collar is red"))
+
+    def test_a_shortenings_stop_is_not_handed_to_the_word_that_replaces_it(self):
+        self.assertEqual(settle("St. John is here.", "Saint John is here.", "Saint John is here."),
+                         "Saint John is here.")
+        self.assertEqual(settle("Fill the pole.", "fill the pool", "fill the pool"), "Fill the pool.")
+
+
 class Checked(unittest.TestCase):
     def ask(self, hearings):
         self.asked = []

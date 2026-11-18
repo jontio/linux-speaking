@@ -185,6 +185,60 @@ def run(word, doc):
     check("choose with nothing showing", ask(op="command", name="choose", arg="1").get("why"),
           "nothing to choose from")
 
+    # ---- "correct ...": as "select", and the cursor goes back once the words are replaced
+    reset("the quick brown cat jumps")
+    reply = ask(op="command", name="correct", arg="cat", nearest=True)
+    check("correct chooses the words", (reply.get("ok"), selection.Text), (True, "cat"))
+    check("and says the cursor went back", ask(op="insert", text="dog").get("back"), True)
+    ask(op="insert", text=" high")
+    check("correct: the cursor is back at the end", text(), "the quick brown dog jumps high")
+    ask(op="command", name="correct", arg="high", nearest=True)
+    ask(op="insert", text="higher")
+    ask(op="insert", text=" still")
+    check("correcting the word the cursor is right after", text(), "the quick brown dog jumps higher still")
+    selection.SetRange(0, 0)
+    ask(op="command", name="correct", arg="dog", nearest=True)
+    ask(op="insert", text="wolf")
+    ask(op="insert", text="See ")
+    check("back to a place before the words", text(), "See the quick brown wolf jumps higher still")
+    selection.SetRange(0, 0)
+    ask(op="command", name="correct", arg="see", nearest=True)
+    ask(op="insert", text="Look")
+    ask(op="insert", text="X")
+    check("correcting the word the cursor is right before", text(), "XLook the quick brown wolf jumps higher still")
+    ask(op="command", name="doc_end")
+    ask(op="command", name="correct", arg="quick", nearest=True)
+    ask(op="command", name="unselect")
+    check("unselect after correct goes back too", (bool(ask(op="insert", text="!").get("back")), text()),
+          (False, "XLook the quick brown wolf jumps higher still!"))
+    ask(op="insert", text=PARAGRAPH + "a hen and a hen")
+    reply = ask(op="command", name="correct", arg="hen")
+    check("correct shows numbers too", reply.get("choices"), 2)
+    ask(op="command", name="choose", arg="1")
+    check("a number chooses", selection.Text, "hen")
+    ask(op="insert", text="duck")
+    ask(op="insert", text=" done")
+    check("and the cursor goes back after that as well", text().split("\r")[-1], "a duck and a hen done")
+    ask(op="command", name="correct", arg="duck", nearest=True)
+    ask(op="command", name="select", arg="hen", nearest=True)
+    check("no going back if other words are selected by then",
+          (bool(ask(op="insert", text="goose").get("back")), text().split("\r")[-1]),
+          (False, "a duck and a goose done"))
+    ask(op="command", name="doc_end")
+    ask(op="command", name="correct", arg="duck", nearest=True)
+    ask(op="insert", text="swan")
+    ask(op="insert", text=" again")
+    check("only the next thing said goes back",
+          (bool(ask(op="insert", text=" twice").get("back")), text().split("\r")[-1]),
+          (False, "a swan and a goose done again twice"))
+    ask(op="command", name="doc_end")
+    ask(op="command", name="correct", arg="swan", nearest=True)
+    ask(op="command", name="all_caps")
+    check("another command in between ends it",
+          (bool(ask(op="insert", text="crane").get("back")), text().split("\r")[-1]),
+          (False, "a crane and a goose done again twice"))
+    check("correct, not there", ask(op="command", name="correct", arg="zebra").get("why"), "can't find that")
+
     # ---- formatting
     reset("plain ")
     ask(op="insert", text="bold words")
@@ -228,6 +282,14 @@ def run(word, doc):
     engine.handle_text("select hello", True)
     engine.handle_text("goodbye", True)
     check("engine: select and say", text(), "Goodbye there.\r\t")
+    ask(op="command", name="doc_end")
+    engine.handle_text("correct there", True)
+    engine.handle_text("everyone", True)
+    engine.handle_text("the end", True)
+    check("engine: correct, and the cursor goes back", text(), "Goodbye everyone.\r\tThe end")
+    engine.handle_text("correct me if I'm wrong", True)
+    check("engine: correct with words that aren't there is typed", text(),
+          "Goodbye everyone.\r\tThe end correct me if I'm wrong")
     check("engine: says where it is typing", engine.status.target, "Word")
 
 

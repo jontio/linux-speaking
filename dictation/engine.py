@@ -18,15 +18,15 @@ from .commands import (
 )
 from .commands import normalise as plain_words
 from .formatting import SPOKEN, fit
-from .mailbridge import MailBridge
+from .mailbridge import MailBridge, own_key
 from .targets import Targets
 from .vscode_target import VSCodeTarget
 from .words import Lexicon, repetitive
-from .settings import Settings, available_models
+from .settings import Settings, available_models, model_label
 from .segmenter import END, START, Segmenter, SegmenterConfig
 from .selecting import variants
-from . import (accessibility, audio, coding, endings, models, opinions, quick, remote, speech,
-               spelling, vocabulary, voicetest)
+from . import (accessibility, audio, coding, endings, models, money, opinions, quick, remote,
+               speech, spelling, training, vocabulary, voicetest)
 from .status import State, Status
 
 
@@ -132,6 +132,17 @@ def write_text(path: str, text: str) -> None:
         pass
 
 
+def from_pieces(result) -> str:
+    """The words a Parakeet model wrote, put together from its own pieces.
+
+    The library that runs the model joins the pieces into text itself, and leaves out a
+    space that the model wrote as a piece of its own. The models do that before a dollar
+    sign, so "I spent $120" came out as "I spent$120". Over some three hundred sentences
+    with each of three models, that was the only difference between the two."""
+    pieces = [str(piece) for piece in (getattr(result, "tokens", None) or ())]
+    return " ".join("".join(pieces).split()) or str(getattr(result, "text", "")).strip()
+
+
 def normalise(audio):
     """Turn a quiet phrase up so Whisper hears it at a normal level."""
     peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
@@ -213,16 +224,22 @@ class Transcriber:
         stream.accept_waveform(config.RATE, audio)
         recogniser.decode_stream(stream)
         result = stream.result
-        text = result.text.strip()
+        text = from_pieces(result)
+        each = voicetest.word_sureness(list(result.tokens), getattr(result, "ys_log_probs", None))
+        self.measured = None  # for a phrase of a word or two: what was measured of it
         if text and (getattr(self, "speech_only", True) if speech_only is None else speech_only):
-            why = speech.not_speech(text, audio)
+            least = min((how for _, how in each), default=None) if each else None
+            numbers = {"seconds": round(len(audio) / config.RATE, 1)}
+            why = speech.not_speech(text, audio, sure=least, numbers=numbers)
+            if len(numbers) > 1:
+                self.measured = numbers
             if why:
-                log(f"a sound of {len(audio) / config.RATE:.1f} s left out, {len(text)} characters: {why}")
+                log(f"a sound of {len(audio) / config.RATE:.1f} s left out, {len(text)} characters: {why}"
+                    + speech.told(numbers))
                 return voicetest.heard_as("", []) if sure else ""
         if not sure:
             return text
-        return voicetest.heard_as(text, voicetest.word_sureness(
-            list(result.tokens), getattr(result, "ys_log_probs", None)))
+        return voicetest.heard_as(text, each)
 
     def use(self, name: str) -> None:
         """Switch the dictation model. Raises if it can't be loaded, leaving the old one."""
@@ -244,7 +261,7 @@ class Transcriber:
                 exact = bool(header.get("exact", False))
                 if awake and exact and self._is_transducer(model):
                     model = self.wake_name  # what leans on the prompt is Whisper's work
-                wanted = header.get("speech_only")  # an older guest doesn't say: ours, then
+                wanted = header.get("speech_only")  # not said: this computer's own choice, then
                 wanted = None if wanted is None else bool(wanted)
                 if awake and header.get("sure") and not exact:  # for a voice test
                     text = self.hear_with(model, audio, str(header.get("prompt", "")),
@@ -305,6 +322,17 @@ class Transcriber:
             with _Scoring(self._model(name)) as scoring:
                 text = self._transcribe(audio, True, prompt, name, quick)
             return voicetest.heard_as(text, scoring.sureness(text), scoring.seconds)
+
+    def renewed(self, name: str) -> bool:
+        """The files of the model `name` have been made again (it was retrained under the
+        same name). What is loaded of it is the old one: it is let go, and loaded afresh
+        if it is the one in use. True if anything was loaded of it."""
+        with self.lock:
+            if self._loaded.pop(name, None) is None:
+                return False
+            if name in (self.dictation_name, *self._guests):
+                (self._transducer if self._is_transducer(name) else self._model)(name)
+            return True
 
     def release(self, name: str) -> None:
         """Forget a model loaded by hear_with, unless it is one in use."""
@@ -437,14 +465,38 @@ class Engine:
     def __init__(self, on_change=lambda: None, transcriber=None):
         self.status = Status()
         self.on_change = on_change
-        self.on_event = lambda name: None  # "ready", "wake", "sleep" or "off", for notices
+        self.on_event = lambda name: None  # "ready", "wake", "sleep", "off"...: see _events
+        # Something to tell the person at once, in a sentence: (text, "info" or "problem").
+        self.on_notice = lambda text, kind="info": None
+        self._told = {}            # when each notice was last given, so none is repeated at once
         self.on_level = lambda: None  # the level meter changed
         self.boost = config.DEFAULT_BOOST
         self.settings = Settings.load()
-        mail = MailBridge(config.MAIL_PORT) if config.MAIL else None
+        if getattr(self.settings, "first_time", False) and os.path.exists(config.STATE_FILE):
+            # No settings were ever saved, but dictation has been switched on or off here
+            # before: this is an install from before the settings were kept at once, and
+            # not a newcomer's. It is not shown the welcome, and on Windows it keeps the
+            # key it has always had, which a newcomer has to choose.
+            self.settings.first_time = False
+            if config.WINDOWS and not self.settings.hotkey:
+                self.settings.hotkey = "Number pad +"
+            try:
+                self.settings.save()
+            except OSError:
+                pass
+        key = own_key(config.MAIL_KEY_FILE) if config.MAIL else ""
+        mail = MailBridge(config.MAIL_PORT, key) if key else None
+        self._standing = {}        # what is wrong and stays wrong, by what it is about
+        if config.MAIL and not key:
+            log("the key for Thunderbird's add-on can't be kept: dictation into Thunderbird is off")
+            self._standing["mail"] = ("Dictation into Thunderbird is off: its key couldn't be "
+                                      "kept in the settings folder.")
         if mail is not None and not mail.start():
             log(f"port {config.MAIL_PORT} is in use: dictation into Thunderbird is off")
+            self._standing["mail"] = (f"Dictation into Thunderbird is off: another program is "
+                                      f"using port {config.MAIL_PORT} on this computer.")
             mail = None
+        self._mail = mail
         editor = None
         if config.EDITOR:
             try:
@@ -459,6 +511,8 @@ class Engine:
                 office = WordTarget()
             except Exception as e:
                 log(f"dictation into Word and Outlook is off: {e}")
+                self._standing["office"] = ("Dictation into Word and Outlook is off: a part "
+                                            "it needs is missing. Run the installer again.")
         other = None
         if config.OTHER:
             try:
@@ -484,6 +538,10 @@ class Engine:
         self._choice_timer = None
         self._explained_at = -60.0
         self._selected_that = False  # the last thing done was "select that" or "correct that"
+        self._heard_sound = None  # the last phrase heard awake: (sound, words, model, measures)
+        self._typed_sound = None  # and, if its words were typed, that with (when, taken back)
+        self._where_typed = ""  # the program the last words went into
+        self._load_tried = 0.0  # when loading the speech model was last tried and failed
         self._held = ""  # "awake" or "asleep" while listening is stopped for a recording
         self._holds = 0  # how many windows are recording
         self._names_at = 0.0
@@ -497,23 +555,115 @@ class Engine:
         self._apply_remote()
         self._apply_sharing()
         self.apply_accessibility()
+        self._vscode_switch()
+        speech.for_its_owner_alone(config.NOISE_DIR)   # kept noises: nobody else's to hear
+        self._problems()
         threading.Thread(target=self._work, daemon=True).start()
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    # ---- telling the person ---------------------------------------------
+    def tell(self, text: str, kind: str = "info", every: float = 0.0, logged: str = "") -> None:
+        """Show the person a sentence now. `every` is how many seconds must pass before
+        the same one is shown again: a thing that goes wrong with every phrase is said
+        once, not with every phrase. `logged` is what the log is given in its place,
+        where the sentence has words in it that were said or written: those never go
+        in the log."""
+        now = time.monotonic()
+        if every and now - self._told.get(text, -1e9) < every:
+            return
+        self._told[text] = now
+        log(f"told: {logged or text}")
+        self.on_notice(text, kind)
+
+    def _problems(self) -> None:
+        """Bring the list of what is wrong up to date: see Status.problems."""
+        found = dict(self._standing)
+        said = getattr(self._mail, "problem", "")
+        if said:
+            found["mail"] = said
+        said = getattr(self.targets.other, "problem", "")
+        if said:
+            found["keys"] = said
+        if self.share_problem:
+            found["share"] = "Other computers can't use this one for recognition: " + self.share_problem
+        now = list(found.values())
+        if now != self.status.problems:
+            self.status.problems = now
+            self.on_event("problems")
+            self.on_change()
+
+    def _watch(self) -> None:
+        """While awake and idle, look every few seconds at which program is in front, so
+        that the tray's tip says where the words will go before they are said. The
+        looking is done on the worker, in its turn: the programs' links are not all safe
+        to use from two threads at once."""
+        while self._running:
+            time.sleep(config.LOOK_SECONDS)
+            if self.status.state is State.AWAKE and self._phrases.empty() and not self._holds:
+                self._phrases.put(("call", self._look))
+            elif not self.status.awake and self.status.target_known:
+                self.status.target_known = False   # nobody is keeping it true now
+                self.on_change()
+            self._problems()
+
+    def _look(self) -> None:
+        if self.status.state is not State.AWAKE:
+            return
+        self.targets.pick()
+        was = (self.status.writer_ready, self.status.target, self.status.target_known)
+        self.status.writer_ready = bool(self.targets.name)
+        self.status.target, self.status.target_known = self.targets.name, True
+        if was != (self.status.writer_ready, self.status.target, True):
+            self.on_change()
 
     # ---- on / off -------------------------------------------------------
-    def turn_on(self, awake: bool = False) -> None:
+    def turn_on(self, awake: bool = False, quietly: bool = False) -> bool:
+        """Open the microphone. False if it couldn't be: the person is told why, unless
+        `quietly` (a try made by the program itself, which will be made again)."""
+        chosen = self.settings.microphone
         with self._lock:
             if self._recorder is not None:
-                return
+                return True
             try:
-                self._recorder = audio.open_microphone(self.settings.microphone)
+                self._recorder = audio.open_microphone(chosen)
             except Exception as e:
+                why = str(e) if isinstance(e, audio.MicrophoneError) else (
+                    f"The microphone can't be opened: {e}.")
                 log(f"could not open the microphone: {e}")
-                self.status.last_heard = f"(could not open the microphone: {e})"
-                self.on_change()
-                return
+                self._standing["microphone"] = why
+                self._problems()
+                if not quietly:
+                    self.tell(why, "problem")
+                return False
             recorder = self._recorder
+        if not quietly and self._standing.pop("microphone", None):
+            self._problems()
+        if chosen and config.WINDOWS and chosen not in audio.microphones():
+            self.tell(f"The microphone chosen in Settings, \"{chosen}\", isn't connected: "
+                      "Windows' own choice is being used.", "problem", every=600)
+        if getattr(self, "_drops", None) and not quietly:
+            self._drops = []              # switched on by hand: a clean slate
         self._set(State.AWAKE if awake else State.ASLEEP)
         threading.Thread(target=self._listen, args=(recorder,), daemon=True).start()
+        return True
+
+    def microphones(self) -> list:
+        """The recording devices as they are now, for Settings (Windows). The list can
+        only be read again while nothing is being recorded, so if dictation is on and
+        nobody is speaking, the microphone is closed for the moment that takes."""
+        if not config.WINDOWS:
+            return []
+        if self.status.state in (State.ASLEEP, State.AWAKE) and not self._holds:
+            awake = self.status.awake
+            self.turn_off(remember=False)
+            found = audio.microphones(fresh=True)
+            if not self.turn_on(awake=awake):
+                # It was open a moment ago. Said (turn_on has), and tried again until it
+                # opens, as for one that stopped by itself.
+                self.on_event("off")
+                threading.Thread(target=self._come_back, daemon=True).start()
+            return found
+        return audio.microphones(fresh=True)
 
     def turn_off(self, remember: bool = True) -> None:
         """Stop listening. `remember` is off when it is only for a moment (the microphone
@@ -526,12 +676,17 @@ class Engine:
         if recorder is not None:
             recorder.close()
         self._set(State.OFF, remember)
+        if remember:
+            # Switched off by the person: nothing is waiting to come back by itself.
+            if self._standing.pop("microphone", None):
+                self._problems()
         if remember and was_on:
             self.on_event("off")
 
     def wake(self) -> None:
         if self.status.state is State.OFF:
-            self.turn_on(awake=True)
+            if not self.turn_on(awake=True):
+                return                    # no microphone: it has been said, and nothing is awake
         else:
             self._set(State.AWAKE)
         self.on_event("wake")
@@ -557,10 +712,16 @@ class Engine:
         self.on_change()
 
     def _save(self) -> None:
+        """Keep whether dictation is on or off, for the next start. Written only when
+        it changes: waking and sleeping are both "on", and need nothing written."""
+        now = "off" if self.status.state is State.OFF else "on"
+        if now == getattr(self, "_kept_state", None):
+            return
         try:
             os.makedirs(os.path.dirname(config.STATE_FILE), exist_ok=True)
             with open(config.STATE_FILE, "w") as f:
-                f.write("off" if self.status.state is State.OFF else "on")
+                f.write(now)
+            self._kept_state = now
         except OSError:
             pass
 
@@ -619,8 +780,44 @@ class Engine:
             # Not the person's doing, so it isn't kept as their choice. When the service
             # is stopped the recorder is stopped first, and keeping "off" then meant
             # dictation came back switched off after every restart.
+            why = ""
+            try:
+                why = recorder.why()
+            except Exception:
+                pass
             self.turn_off(remember=False)
+            if not self._running:
+                return
             self.on_event("off")
+            said = "The microphone stopped" + (f": {why}" if why else ".")
+            log(said)
+            # One that stops again and again is not tried for ever.
+            now = time.monotonic()
+            self._drops = [at for at in getattr(self, "_drops", []) if now - at < 60] + [now]
+            again = len(self._drops) < config.MICROPHONE_DROPS
+            self._standing["microphone"] = said.rstrip(".") + (
+                ". Dictation will come back asleep when it can be opened again." if again
+                else ". It keeps stopping: click the icon to try it again.")
+            self._problems()
+            self.tell(self._standing["microphone"], "problem", every=60)
+            if again:
+                threading.Thread(target=self._come_back, daemon=True).start()
+
+    def _come_back(self) -> None:
+        """After the microphone stopped by itself (unplugged, the sound system restarted):
+        try it every couple of seconds for a few minutes, and come back asleep when it
+        works, so that somebody dictating without their hands can say "wake up" and carry
+        on. Nobody is told anything until it really is back."""
+        for _ in range(config.MICROPHONE_TRIES):
+            time.sleep(config.MICROPHONE_WAIT)
+            if not self._running or self.status.state is not State.OFF or self._holds \
+                    or "microphone" not in self._standing:
+                return                    # switched on, or off, by somebody meanwhile
+            if audio.works(self.settings.microphone) and self.turn_on(awake=False, quietly=True):
+                if self._standing.pop("microphone", None):
+                    self._problems()
+                self.on_event("sleep")
+                return
 
     def _hearing(self, on: bool) -> None:
         if on and self.status.state is State.AWAKE:
@@ -643,11 +840,14 @@ class Engine:
                 elif self.status.state is not State.OFF:
                     self.handle_audio(item)
             except Exception as e:  # keep listening whatever happens
-                self.status.last_heard = f"(error: {e})"
-                self.on_change()
+                log(f"a phrase went wrong: {type(e).__name__}: {e}")
+                self.tell("Something went wrong with that phrase, and it was not typed. The "
+                          "log says more.", "problem", every=30)
+                self._back_to_awake()
 
-    def _load(self, model: str) -> None:
-        """Load the speech models, or switch the dictation model. Runs on the worker."""
+    def _load(self, model: str, before: str | None = None) -> None:
+        """Load the speech models, or switch the dictation model. Runs on the worker.
+        `before` is the choice that was in force, to go back to if the new one won't load."""
         self.status.ready = False
         self.on_change()
         try:
@@ -660,13 +860,32 @@ class Engine:
                     log(f"could not load {model}: {e}; using the default")
                     self.settings.set_model("")
                     self._transcriber = Transcriber()
+                    self.tell(f"{named(model)} could not be loaded, so "
+                              f"{named(self._transcriber.dictation_name)} is being used.", "problem")
+                    self.on_event("model")
             else:
-                self._transcriber.use(model or config.AWAKE_MODEL)
+                try:
+                    self._transcriber.use(model or config.AWAKE_MODEL)
+                except Exception as e:
+                    # The one in use is still loaded: stay with it, and say so, and put
+                    # the choice back so that Settings doesn't name a model that isn't used.
+                    log(f"could not load {model}: {e}; staying with "
+                        f"{self._transcriber.dictation_name}")
+                    if before is not None:
+                        self.settings.set_model(before)
+                    self.tell(f"{named(model or config.AWAKE_MODEL)} could not be loaded. Still "
+                              f"using {named(self._transcriber.dictation_name)}.", "problem")
+                    self.on_event("model")
             log(f"ready, dictation model {self._transcriber.dictation_name}")
+            self.status.failed = ""
             self.on_event("ready")
         except Exception as e:
-            self.status.last_heard = f"(could not load the speech model: {e})"
-            log(f"loading failed: {e}")
+            log(f"loading failed: {type(e).__name__}: {e}")
+            self._load_tried = time.monotonic()
+            failed = no_model(e)
+            if failed != self.status.failed:
+                self.status.failed = failed
+                self.on_event("failed")
         self.status.ready = self._transcriber is not None
         self.on_change()
 
@@ -674,6 +893,26 @@ class Engine:
         """Called when a tick box in Settings is changed."""
         if key == "other_apps":
             self.apply_accessibility()
+            self._vscode_switch()
+
+    def _vscode_switch(self) -> None:
+        """VS Code only shows its panels to other programs when started with a switch for
+        that. It is put in when "other programs" is ticked, and not at install, so nobody
+        has it who never wanted this; and looked at again at each start, for a VS Code
+        that was first run after the box was ticked."""
+        if not (config.WEB and self.settings.enabled("other_apps")):
+            return
+        try:
+            from . import vscode_args
+            changed = [line for line in vscode_args.switch_on() if "switched on" in line]
+        except Exception as e:
+            changed = []
+            log(f"VS Code's start-up switch could not be set: {e}")
+        for line in changed:
+            log(line)
+        if changed:
+            self.tell("To dictate into VS Code's panels, close VS Code and open it "
+                      "again: it has been set to show them to this program.", "info")
 
     def apply_accessibility(self) -> None:
         """Other programs only show their text boxes while desktop accessibility is on."""
@@ -684,12 +923,26 @@ class Engine:
 
     def set_model(self, model: str) -> None:
         """Choose the dictation model. It is loaded in the background."""
+        before = self.settings.model
         self.settings.set_model(model)
         if self._offload is not None:
             self._offload.otherwise = self._otherwise()
         self.status.ready = False
         self.on_change()
-        self._phrases.put(("call", lambda: self._load(model)))
+        self._phrases.put(("call", lambda: self._load(model, before)))
+
+    def model_renewed(self, name: str) -> None:
+        """A training run has made the model `name` again. If it is loaded, the new one
+        takes its place: otherwise dictation would go on with the old until a restart."""
+        def renew():
+            ears = self._transcriber
+            try:
+                if ears is not None and hasattr(ears, "renewed") and ears.renewed(name):
+                    log(f"model {name} was retrained: the new one is loaded")
+            except Exception as e:
+                log(f"the retrained {name} could not be loaded: {e}")
+
+        self._phrases.put(("call", renew))
 
     def set_microphone(self, name: str) -> None:
         """Choose the recording device (Windows). Listening restarts on the new one."""
@@ -760,8 +1013,8 @@ class Engine:
 
     def check_remote(self) -> dict:
         """Ask the other computer what it offers. Waits for the answer, so not for the
-        thread that draws the windows. {"ok": True, "models": [[name, label], ...],
-        "model": its own choice} or {"ok": False, "why": ...}."""
+        thread that draws the windows. {"ok": True, "version": ..., "models": [[name,
+        label], ...], "model": its own choice} or {"ok": False, "why": ...}."""
         chosen = self.settings.remote
         if not chosen["address"] or not chosen["key"]:
             return {"ok": False, "why": "Fill in the address and the key first."}
@@ -797,8 +1050,10 @@ class Engine:
         try:
             server.start()
         except OSError as e:
-            # The port is taken, or at login the network isn't up yet. Keep trying.
-            problem = f"can't answer on port {config.SHARE_PORT}: {e.strerror or e}"
+            # The port is taken, at login the network isn't up yet, or nothing can be
+            # encrypted here (which says so itself). Keep trying.
+            problem = (f"can't answer on port {config.SHARE_PORT}: {e.strerror}"
+                       if e.strerror else str(e))
             if problem != self.share_problem:
                 log(f"sharing the recogniser: {problem}")
             self.share_problem = problem
@@ -900,9 +1155,36 @@ class Engine:
         """Run something on the worker, after anything already heard. For the tray's buttons."""
         self._phrases.put(("call", action))
 
+    def _only_breath(self, audio) -> bool:
+        """Whether a phrase is to be left out because there is too little voice in it: a
+        whisper, or a noise. Only asked where the person wants whispering left out. What
+        was measured goes in the log, as figures, so that the line can be drawn from
+        what is really said and whispered at this microphone. See speech.voiced."""
+        if not self.settings.enabled("aloud"):
+            return False
+        share = speech.voiced(audio)
+        long = len(audio) / config.RATE
+        if share >= speech.VOICED:
+            if share < 2 * speech.VOICED:  # near the line: worth knowing about
+                log(f"a sound of {long:.1f} s taken for speech: voice in {share:.0%} of it")
+            return False
+        log(f"a sound of {long:.1f} s left out, a whisper or a noise: voice in {share:.0%} of it")
+        if self.status.awake:
+            self.status.last_heard = "(a whisper or a noise: left out)"
+        self._back_to_awake()
+        return True
+
     def handle_audio(self, audio) -> None:
+        if self._only_breath(audio):
+            return
         if self._transcriber is None:
-            self._transcriber = Transcriber(self.settings.model)
+            # No speech model could be loaded when the program started. One may have been
+            # installed since: try again, but now and then, not with every sound.
+            if time.monotonic() - self._load_tried < config.LOAD_AGAIN:
+                return
+            self._load(self.settings.model)
+            if self._transcriber is None:
+                return
         awake = self.status.awake
         prompt = hint = before = ""
         prose = False
@@ -933,20 +1215,34 @@ class Engine:
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         sound = normalise(audio)
         ears = self._ears()
+        # What is measured of a short phrase belongs to this hearing and no other: a
+        # Whisper hearing measures nothing, and must not be left with the figures of
+        # whatever a Parakeet model last heard (an earlier phrase, a second opinion, a
+        # voice test, another computer's phrase).
+        if getattr(self._transcriber, "measured", None) is not None:
+            self._transcriber.measured = None
         text = ears.transcribe(sound, awake, hint + prompt, **exact)
-        if hint and vocabulary.mentions(text, self.settings.words):
+        measured = getattr(ears, "measured", None)
+        # The person's codes, such as part numbers, are put in as they spelled them wherever
+        # their letters and figures were written: there is no doubt about those to settle.
+        names = vocabulary.names(self.settings.words)
+        if hint and text:
+            text = vocabulary.spell_codes(text, self.settings.words)
+        if hint and vocabulary.mentions(text, names):
             # The hint is strong enough to turn an ordinary word into one of the person's
             # own. Hear it again without, and keep their word only where it fits.
-            plain = ears.transcribe(sound, awake, prompt)
-            settled = vocabulary.settle(text, plain, before, self.settings.words, self.lexicon)
+            plain = vocabulary.spell_codes(ears.transcribe(sound, awake, prompt),
+                                           self.settings.words)
+            settled = vocabulary.settle(text, plain, before, names, self.lexicon)
             log("own word heard: " + ("kept" if vocabulary.mentions(
-                settled, self.settings.words) else "an ordinary word after all"))
+                settled, names) else "an ordinary word after all"))
             text = settled
-        elif hint and text:
+        elif hint and text and not isinstance(
+                interpret(text, True, self.settings.disabled_commands()), Command):
             # The hint brought none of the person's words: a recogniser that can't take a
             # hint, or one that didn't follow it. Put one in where what was written
-            # sounds like it and a name fits.
-            text = vocabulary.by_sound(text, before, self.settings.words, self.lexicon)
+            # sounds like it and a name fits. Never in a command: "Undo." is not "Andy".
+            text = vocabulary.by_sound(text, before, names, self.lexicon)
         if prose and text and not self.status.choosing and self.settings.enabled("second_opinions"):
             text = self._checked(text, sound, prompt)
         if prose and endings.only_signs(text):
@@ -962,6 +1258,10 @@ class Engine:
                 f"{self.status.voice_db} dB above background, "
                 + (f"heard {heard!r}" if len(heard.split()) <= 3 else f"{len(heard)} characters")
                 + f"{note}, {likely:.0%} likely not speech")
+        # Kept until the next phrase, in memory only, in case this one turns out to have
+        # been a noise and is said to be: see "that was a noise".
+        self._heard_sound = (sound, text, getattr(ears, "dictation_name", ""),
+                             measured) if awake and text else None
         self.handle_text(text, awake)
 
     def _checked(self, text: str, sound, prompt: str) -> str:
@@ -972,7 +1272,11 @@ class Engine:
         there = offload is not None and bool(offload.there)
         first = (offload.model_there if there else "") or getattr(
             self._transcriber, "dictation_name", "")
-        said = sorted((phrase.split() for phrase, _ in SPOKEN), key=len, reverse=True)
+        # The spoken signs that are switched on are not for the opinions to argue over.
+        # (One that is switched off is only words, like any others.)
+        off = set(self.settings.spoken_off())
+        said = sorted((phrase.split() for phrase, _ in SPOKEN if phrase not in off),
+                      key=len, reverse=True)
         started = time.monotonic()
         text, outcome = opinions.checked(
             text, first, lambda name: self._hear_by(name, sound, prompt, there), said,
@@ -1049,13 +1353,40 @@ class Engine:
             self.status.last_heard = said if said in SHORT_COMMANDS else long
             (self.wake if action.name == "wake" else self.sleep)()
             return
+        typed = self._shortcut(text) if awake else None
+        if typed is not None:
+            # One of the person's own shortcuts: said by itself, it types their text,
+            # exactly as they wrote it, fitted to what is before it like anything else.
+            self.status.last_heard = text
+            first, _, rest = typed.partition("\n")
+            reply = self._dictate(first, exact=True, as_written=True,
+                                  then="\u2028" + rest.replace("\n", "\u2028") if rest else "")
+            self._note(reply)
+            self._typed_sound = None
+            log(f"shortcut, {len(typed)} characters: {outcome(reply)}")
+            self._back_to_awake()
+            return
+        if isinstance(action, Command) and action.name == "app":
+            # For this program's own windows. "Close that window" with none of them open
+            # is only words, and is typed.
+            if action.arg == "close" and not self.status.own_windows:
+                action = Dictation(text)
+            else:
+                self.status.last_heard = text
+                log(f"command app {action.arg}")
+                self.on_event("app:" + action.arg)
+                self._back_to_awake()
+                return
         if isinstance(action, Command):
             self.status.last_heard = text
+            self._last_typed = None       # a command in between: see _dictate
             # "Press enter" is the Enter key: a new paragraph. So is "enter" by itself,
             # where that has been switched on.
             name = "press_enter" if action.name == "enter" else action.name
             reply = {"why": "unknown request"}
-            if name == "delete_words":
+            if name == "noise":
+                reply = self._was_noise()
+            elif name == "delete_words":
                 reply = self._delete_words(int(action.arg))
             elif name == "space":
                 # The space bar, as many times as asked. Every program can do this, as it
@@ -1072,18 +1403,38 @@ class Engine:
                     {"op": "move", "steps": move_steps(name, before, after, count)})
                 if name == "delete_line" and reply.get("ok"):
                     # Where the line could only be selected, deleting it is a second step.
-                    reply = self.targets.request({"op": "command", "name": "delete"})
+                    # An empty line selects nothing, and "delete" with nothing selected
+                    # would take out the last phrase said: there the line itself goes.
+                    chosen = self.targets.request({"op": "context"}).get("selected")
+                    reply = self.targets.request({"op": "command", "name": "delete"} if chosen
+                                                 else {"op": "command", "name": "backspace",
+                                                       "arg": "1"})
             if reply.get("why") == "unknown request":  # not a move, or an older extension
                 reply = self.targets.request({
                     "op": "command", "name": name, "arg": action.arg,
                     "nearest": not self.settings.enabled("choose_numbers"),
                 })
-            if (name == "select" and reply.get("why") == "can't find that"
+            older = name == "correct" and reply.get("why") == "unknown command"
+            if older:
+                # A program whose link was made before "correct": the words are
+                # highlighted all the same, and the cursor stays with them.
+                name = "select"
+                reply = self.targets.request({
+                    "op": "command", "name": name, "arg": action.arg,
+                    "nearest": not self.settings.enabled("choose_numbers"),
+                })
+            if (name in ("select", "correct") and reply.get("why") == "can't find that"
                     and not reply.get("sounds_tried")):
                 # A program that looks for the words itself looks for exactly those. Ask
                 # again for the same numbers written the other way and for words that
                 # sound the same: "two" may be "2" in the document.
-                for other in variants(action.arg):
+                # Initials first, where the recogniser wrote them with dots. "U.S." is the
+                # one word "us" by now, but a program that looks for the words itself
+                # takes the dots for breaks between words, and finds it only as "u s".
+                dotted = interpret(text.replace(".", " "), awake, self.settings.disabled_commands())
+                dotted = [dotted.arg] if (isinstance(dotted, Command) and dotted.name == action.name
+                                          and dotted.arg != action.arg) else []
+                for other in dotted + variants(action.arg):
                     again = self.targets.request({
                         "op": "command", "name": name, "arg": other,
                         "nearest": not self.settings.enabled("choose_numbers"),
@@ -1091,28 +1442,91 @@ class Engine:
                     if again.get("ok"):
                         reply = again
                         break
+            tab = {"op": "command", "name": "tab"}
             if name == "tab" and reply.get("why") == "unknown command":
                 # Where there is no Tab command, a tab character does the same job.
-                reply = self.targets.request({"op": "insert", "text": "\t"})
+                tab = {"op": "insert", "text": "\t"}
+                reply = self.targets.request(tab)
+            if name == "tab" and reply.get("ok") and action.arg.isdigit():
+                # "Tab three times": the key again, the same way, for the rest of the count.
+                for _ in range(int(action.arg) - 1):
+                    if not self.targets.request(tab).get("ok"):
+                        break
             if name == "press_enter" and reply.get("why") == "unknown command":
                 # Where Enter isn't known as a command, it is a new paragraph.
                 reply = self.targets.request({"op": "command", "name": "new_paragraph"})
-            if reply.get("choices", 0) > 1:
-                self._start_choosing(reply["choices"])
-            self._selected_that = action.name == "select_last" and bool(reply.get("ok"))
-            self._note(reply)
-            log(f"command {action.name}: {outcome(reply)}")
-        elif isinstance(action, Dictation):
+            if action.name in ("select", "correct") and reply.get("why") == "can't find that":
+                # Words that aren't there to be selected: most likely a sentence that
+                # begins with "Select" or "Correct". It is typed like any other, as
+                # Dragon does.
+                log(f"command {action.name}: can't find that, so it is typed")
+                action = Dictation(text)
+            else:
+                if reply.get("choices", 0) > 1:
+                    self._start_choosing(reply["choices"])
+                self._selected_that = action.name == "select_last" and bool(reply.get("ok"))
+                self._note(reply)
+                self._say_how_it_went(action, text, reply)
+                typed = getattr(self, "_typed_sound", None)
+                if typed and reply.get("ok") and action.name in ("scratch", "undo", "delete"):
+                    self._typed_sound = (*typed[:5], True, *typed[6:])  # taken back already
+                if older and reply.get("ok"):
+                    self.status.last_heard += ("  (the cursor will stay there: this program's "
+                                               "Linux Speaking extension is an older one)")
+                log(f"command {action.name}: {outcome(reply)}"
+                    + (", as select: the program's extension is older" if older else ""))
+        if isinstance(action, Dictation):
             self.status.last_heard = text
             reply = self._dictate(action.text)
             self._note(reply)
-            log(f"dictation, {len(action.text)} characters: "
-                f"{outcome(reply)}")
+            # The sound these words were written for, and whether they are still there.
+            self._typed_sound = (*self._heard_sound, time.monotonic(), False, self.targets.name) \
+                if reply.get("ok") and getattr(self, "_heard_sound", None) else None
+            if reply.get("too_far"):
+                self.status.last_heard += "  (too far to go back: the cursor is after the new words)"
+            log(f"dictation, {len(action.text)} characters: {outcome(reply)}"
+                + speech.told(self._typed_sound[3] if self._typed_sound else None)
+                + (", and the cursor went back" if reply.get("back") else "")
+                + (", and the cursor stayed: too far to go back" if reply.get("too_far") else ""))
         if self.status.state in (State.THINKING, State.HEARING):
             self.status.state = State.AWAKE
         self.on_change()
 
     # ---- choosing between numbered matches ----------------------------------
+    def _say_how_it_went(self, action, text: str, reply: dict) -> None:
+        """A word on the screen about a command that leaves nothing to see, or failed.
+        A change to the text shows itself; these don't."""
+        said = plain_words(text)
+        if reply.get("ok"):
+            if reply.get("choices", 0) > 1:
+                self.tell(f"Say a number, 1 to {reply['choices']}, or \"cancel\".")
+            elif action.name in ("select", "correct"):
+                self.tell(f"Selected: {action.arg}",
+                          logged=f"Selected: ({len(action.arg)} characters)")
+            return
+        why = reply.get("why", "")
+        if why in NOWHERE:
+            return                        # said already: see _note
+        # (In the log the command goes by its name: what was said may have words of the
+        # document in it, as "select the black cat" has.)
+        if why == "unknown command":
+            self.tell(f"{self.targets.name or 'This program'} can't do \"{said}\".", "problem",
+                      logged=f"{self.targets.name or 'this program'} can't do {action.name}")
+        elif why:
+            self.tell(f"\"{said}\" couldn't be done: {why}.", "problem",
+                      logged=f"{action.name} couldn't be done: {why}")
+
+    def _shortcut(self, text: str):
+        """The text one of the person's own shortcuts types, if `text` is one: or None."""
+        mine = getattr(self.settings, "shortcuts", None)
+        if not mine:
+            return None
+        said = plain_words(text)
+        for phrase, typed in mine.items():
+            if plain_words(phrase) == said:
+                return typed
+        return None
+
     def _start_choosing(self, count: int) -> None:
         self.status.choosing = count
         self.status.last_heard += f"  (say a number, 1 to {count}, or \"cancel\")"
@@ -1134,6 +1548,20 @@ class Engine:
         """Handle a phrase said while numbers are showing. True if it picked one."""
         n = choice(text, self.status.choosing)
         if n is None:
+            if (not is_cancel(text) and len(plain_words(text).split()) <= config.CHOICE_WORDS
+                    and self._shortcut(text) is None
+                    and not isinstance(interpret(text, True, self.settings.disabled_commands()),
+                                       Command)):
+                # One word that is neither a number nor a command: most likely the number
+                # was misheard ("to", "for", "tree"). Typing it into the document, over
+                # what the numbers are showing on, would be worse than asking again.
+                # Anything longer is somebody carrying on, and is typed as it always was.
+                count = self.status.choosing
+                self.status.last_heard = text + f"  (say a number, 1 to {count}, or \"cancel\")"
+                self.tell(f"That wasn't a number. Say a number, 1 to {count}, or \"cancel\".")
+                log("a single word said while numbers were showing: not typed")
+                self._back_to_awake()
+                return True
             self._stop_choosing()  # anything else cancels, then is handled as usual
             if not is_cancel(text):
                 return False
@@ -1173,6 +1601,33 @@ class Engine:
                            if isinstance(item, dict) and "name" in item}
             self._names_at = now
         return self._names_list
+
+    def _was_noise(self) -> dict:
+        """ "That was a noise": what was last written was no speech. It is taken back,
+        unless it already has been, and its sound is kept (speech.keep_noise) so that
+        the rules for telling noise from speech can be tried on it."""
+        typed, self._typed_sound = getattr(self, "_typed_sound", None), None
+        if typed is None or time.monotonic() - typed[4] > config.NOISE_SECONDS:
+            return {"ok": False, "why": "nothing was just written"}
+        sound, text, model, measured, _, gone = typed[:6]
+        where = typed[6] if len(typed) > 6 else ""
+        # "Scratch that" takes back the last thing said in whichever program is in front
+        # now. If that is no longer the one the noise was written in, its last phrase
+        # was real, and is left: the sound is kept all the same.
+        self.targets.pick()
+        elsewhere = bool(where) and not gone and self.targets.name != where
+        if elsewhere:
+            self.tell(f"That sound is kept. What it was written as is in {where}: take it "
+                      "out there.")
+        reply = {"ok": True} if gone or elsewhere else self.targets.request(
+            {"op": "command", "name": "scratch"})
+        try:
+            speech.keep_noise(config.NOISE_DIR, sound, text, model, measured)
+            log(f"kept as a noise: a sound of {len(sound) / config.RATE:.1f} s that "
+                f"{len(text)} characters were written for" + speech.told(measured))
+        except OSError as e:
+            log(f"the noise could not be kept: {e}")
+        return reply
 
     def _delete_words(self, count: int) -> dict:
         """Delete the last words before the cursor, using the backspace command."""
@@ -1227,8 +1682,12 @@ class Engine:
             log("spelling cancelled")
         self._back_to_awake()
 
-    def _dictate(self, raw: str, exact: bool = False) -> dict:
-        """Fit a phrase to the text around the cursor, then have Writer insert it.
+    def _dictate(self, raw: str, exact: bool = False, then: str = "",
+                 as_written: bool = False) -> dict:
+        """Fit a phrase to the text around the cursor, then have the program in front
+        insert it. `then` is more text to go straight after it, exactly as it is.
+        `as_written` keeps every letter of the phrase as it was given, small or capital,
+        wherever it lands: for a shortcut, whose text may be an address.
 
         The fitting is done here, not in the extension, so changes to the rules and
         settings never need LibreOffice to be restarted.
@@ -1239,14 +1698,31 @@ class Engine:
             return context
         before, after = context.get("before", ""), context.get("after", "")
         place, comment = coding.where(before) if self._coding(context) and not exact else ("", "")
+        plain = not place and not exact and not then   # ordinary dictated prose
         if place in ("code", "string"):
             # Source code has its own rules, and knows the names already in the file.
             ins = coding.fit_code(raw, before, after, self._names(), self._scope)
         else:
             # Prose, including a comment in a source file, which starts after its "//".
+            #
+            # Whether the last sentence end was said aloud is remembered from one phrase
+            # to the next, because the text can't tell: "at 3 p.m." ends the same whether
+            # "full stop" was said after it or the speaker only paused. Said, the next
+            # phrase starts a sentence; not said, it carries on. It is only trusted while
+            # the text before the cursor still ends with what was last typed here.
+            if not exact and self.settings.enabled("money"):
+                raw = money.in_figures(raw, before)   # sums of money one way: see money.py
+            last = getattr(self, "_last_typed", None)   # (program, the end of what was typed, said)
+            carried = None
+            if (plain and last and last[0] == self.targets.name
+                    and before.rstrip(" ").endswith(last[1])):
+                carried = last[2]
             ins = fit(raw, comment if place == "comment" else before, after,
-                      self.lexicon, keep_final=self.keep_final, spoken_off=spoken_off,
-                      greeting_comma=exact or not self.settings.enabled("no_greeting_comma"))
+                      self.lexicon, spoken_off=spoken_off, names=self.settings.words,
+                      keep_final=self.keep_final or exact or self.settings.enabled("keep_final"),
+                      greeting_comma=exact or not self.settings.enabled("no_greeting_comma"),
+                      after_said_end=carried)
+            # (A word that was spelled keeps its last full stop: "e.g." was spelled so.)
         text = ins.text
         replacing_last, self._selected_that = self._selected_that, False
         edges = context.get("selected_edges")
@@ -1270,16 +1746,29 @@ class Engine:
                     text = text.rstrip(" ")
             else:
                 text = text.strip(" ")
-        if exact and any(c.isupper() for c in raw):
+        if exact and (as_written or any(c.isupper() for c in raw)):
             at = text.lower().find(raw.lower())  # keep the capitals exactly as spelled
             if at >= 0:
                 text = text[:at] + raw + text[at + len(raw):]
+        if then:
+            text = text.rstrip(" ") + then
+        said_end = bool(getattr(ins, "said_end", False))
+        if plain and not text and said_end and not (
+                ins.delete_before or ins.delete_after or ins.capitalise_next):
+            # "Full stop" said by itself where a stop already stands ("at 3 p.m."): that
+            # one does for both, nothing is typed, and it is remembered as said.
+            last = getattr(self, "_last_typed", None)
+            self._last_typed = (self.targets.name, last[1] if last else before.rstrip(" ")[-40:], True)
+            return {"ok": True}
         reply = self.targets.request({
             "op": "insert", "text": text, "delete_before": ins.delete_before,
             "delete_after": ins.delete_after, "capitalise_next": ins.capitalise_next,
         })
         if reply.get("why") == "unknown request":  # an extension from before "insert"
             reply = self.targets.request({"op": "dictate", "text": raw, "spoken_off": spoken_off})
+        typed = text.rstrip(" ")[-40:]
+        self._last_typed = ((self.targets.name, typed, said_end)
+                            if plain and typed and reply.get("ok") else None)
         return reply
 
     def _typing_into(self, name: str) -> None:
@@ -1288,21 +1777,66 @@ class Engine:
         self.status.target = name
 
     def _note(self, reply: dict) -> None:
-        self.status.writer_ready = bool(reply.get("ok")) or reply.get("why") not in (
-            "writer not running", "writer not focused", "no writer document",
-            "mail not running", "mail not focused", "mail not answering",
-            "editor not focused",
-        )
+        nowhere = not reply.get("ok") and reply.get("why") in NOWHERE
+        self.status.writer_ready = not nowhere
+        self.status.target_known = True
         self._typing_into(self.targets.name)
-        if not reply.get("ok") and reply.get("why"):
-            self.status.last_heard += f"  ({reply['why']})"
-        if reply.get("why") in ("writer not running", "writer not focused", "no writer document"):
-            # Nothing was in front to type into. Say what each program answered, at most
-            # twice a minute, so the log shows why.
+        if nowhere:
+            # Nothing was in front to type into, and the words are gone: say so where it
+            # will be seen, once a minute at most, and say what would work.
+            self.status.last_heard += "  (nothing to type into)"
+            self.tell(nothing_to_type_into(self.settings.enabled("other_apps")), "problem",
+                      every=60)
+            # And what each program answered, at most twice a minute, so the log shows why.
             now = time.monotonic()
             if now - self._explained_at > 30:
                 self._explained_at = now
                 log("nothing to type into. " + self.targets.describe())
+        elif not reply.get("ok") and reply.get("why"):
+            why = reply["why"]
+            if why == "error" and reply.get("error"):
+                # The program refused, and said why: a document that can't be changed.
+                why = f"{self.targets.name or 'the program'} wouldn't take it: {brief(reply['error'])}"
+            self.status.last_heard += f"  ({why})"
+
+
+# What a program answers when it isn't there to be typed into.
+NOWHERE = ("writer not running", "writer not focused", "no writer document",
+           "mail not running", "mail not focused", "mail not answering",
+           "editor not focused")
+
+
+def nothing_to_type_into(others_too: bool) -> str:
+    """What to tell somebody whose words had nowhere to go: where they can go."""
+    known = "Word, Outlook or VS Code" if config.WINDOWS else "Writer, Thunderbird, Kate or VS Code"
+    return (f"Nothing to type into. Click in {known}"
+            + (", or in a text box of another program." if others_too else
+               ", or tick \"Dictate into other programs' text boxes\" in Settings."))
+
+
+def brief(text, most: int = 120) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= most else text[:most - 3] + "..."
+
+
+def named(model: str) -> str:
+    """A speech model by the name people know it by: "Small", "Parakeet Unified"."""
+    try:
+        given = training.label(config.MODEL_DIR, model)   # one retrained here has a name of its own
+    except OSError:
+        given = ""
+    return (given or model_label(model)[1]).split(":")[0].split("  (")[0].strip() or model
+
+
+def no_model(error) -> str:
+    """Why there is no speech model to recognise with, and what to do, in plain words."""
+    press = "Open Settings and press \"Install or remove models\u2026\"."
+    if isinstance(error, ImportError):
+        return (f"A part the recogniser needs is missing ({getattr(error, 'name', '') or error}). "
+                "Run the installer again.")
+    if not available_models(config.MODEL_DIR):
+        return "No speech model is installed. " + press
+    return f"The speech model could not be loaded ({brief(error, 80)}). " + press
 
 
 def outcome(reply: dict) -> str:

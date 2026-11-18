@@ -17,7 +17,7 @@ import time
 
 from .formatting import LINE, PARAGRAPH, fit
 from .editor_target import words_left, words_right
-from .selecting import find_all, find_exact
+from .selecting import back_to, find_all, find_exact
 from .words import Lexicon
 
 # Word's own numbers for things.
@@ -98,6 +98,10 @@ class WordTarget:
         self.lexicon = Lexicon.load_default()
         self.history = []             # Word ranges of recent phrases, newest last
         self._choices = None          # (window handle, [ranges]) while numbers are showing
+        self._choices_mark = None     # and where the cursor was, if they are for "correct ..."
+        # After "correct ...": (window handle, a range where the cursor was, the range of
+        # the words chosen), until something is said over them.
+        self._correction = None
         self._outlook = None
         self._jobs: queue.Queue = queue.Queue()
         threading.Thread(target=self._run, daemon=True).start()
@@ -133,10 +137,12 @@ class WordTarget:
     def _answer(self, message: dict) -> dict:
         import pythoncom
         for attempt in range(8):
+            held = self._correction
             try:
                 return self._handle(message)
             except pythoncom.com_error as e:
                 if e.hresult in BUSY and attempt < 7:
+                    self._correction = held   # as it was, for the next try
                     time.sleep(0.2)       # Word is in the middle of something: try again
                     continue
                 self._outlook = None
@@ -236,6 +242,9 @@ class WordTarget:
         if self._choices and (op in ("insert", "move") or (
                 op == "command" and m.get("name") != "choose")):
             self._clear_choices()         # doing anything else takes the numbers away
+        if op == "move" or (op == "command" and m.get("name") not in (
+                "correct", "unselect", "choose")):
+            self._correction = None       # "correct ..." is only for what is said next
         if op == "context":
             before, after, selected = self._around(front)
             reply = {"ok": True, "before": before, "after": after}
@@ -303,12 +312,38 @@ class WordTarget:
                 except Exception:
                     pass
 
+    def _correcting(self, front):
+        """Where the cursor was before "correct ...", with the start and end of the words
+        it chose, if those words are still what is selected. Forgotten either way: the
+        next thing said or done settles it."""
+        correction = self._correction
+        if correction is None:
+            return None
+        handle, mark, chosen = correction
+        found = None
+        try:
+            here = front.selection.Range
+            if (handle == front.handle and chosen.InStory(here) and mark.InStory(here)
+                    and (here.Start, here.End) == (chosen.Start, chosen.End)
+                    and here.Start != here.End):
+                found = mark.Start, chosen.Start, chosen.End
+        except Exception as e:
+            if getattr(e, "hresult", None) in BUSY:
+                raise                     # Word is busy: it is asked again, with this to do still
+            # Its document has been closed.
+        self._correction = None
+        return found
+
     def _insert(self, front, text, delete_before, delete_after, capitalise_next) -> dict:
         if not text and not delete_before and not delete_after:
             return {"ok": True, "text": ""}
+        back = self._correcting(front)
+
+        went = []
 
         def change():
             at = front.selection.Range
+            length = at.StoryLength if back is not None else 0
             if at.Start != at.End:
                 at.Text = ""              # dictating over a selection replaces it
             if delete_before:
@@ -329,13 +364,18 @@ class WordTarget:
                             letter.SetRange(at.End + units(rest[:i]), at.End + units(rest[:i + 1]))
                             letter.Case = UPPER_CASE
                         break
+            if back is not None:
+                # After "correct ...": back to where the cursor was before it.
+                to = back_to(*back, spoken.Start, spoken.End, at.StoryLength - length)
+                at.SetRange(to, to)
+                went.append(to)
             at.Select()
             if text:
                 self.history.append(spoken)
                 del self.history[:-HISTORY]
 
         self._record(front, "Dictation", change)
-        return {"ok": True, "text": text}
+        return {"ok": True, "text": text, **({"back": True} if went else {})}
 
     def _last(self, front):
         """The newest remembered phrase that is still in this document, or None."""
@@ -396,8 +436,13 @@ class WordTarget:
                 at.Text = ""
             self._record(front, "Backspace", erase)
             return {"ok": True}
-        if name == "select":
-            return self._select(front, arg, take_nearest or self.show_numbers is None)
+        if name in ("select", "correct"):
+            self._correction = None
+            mark = None
+            if name == "correct":
+                mark = selection.Range    # it keeps its place as the text around it changes
+                mark.Collapse(COLLAPSE_END)
+            return self._select(front, arg, take_nearest or self.show_numbers is None, mark)
         if name == "choose":
             return self._choose(arg)
         if name == "select_last":
@@ -419,7 +464,11 @@ class WordTarget:
             selection.WholeStory()
             return {"ok": True}
         if name == "unselect":
-            selection.Collapse(COLLAPSE_END)
+            back = self._correcting(front)
+            if back is not None:
+                selection.SetRange(back[0], back[0])  # after "correct ...", where it was
+            else:
+                selection.Collapse(COLLAPSE_END)
             return {"ok": True}
         if name == "line_end":
             selection.EndKey(LINE_UNIT, MOVE)
@@ -552,20 +601,25 @@ class WordTarget:
             return None                   # scrolled out of view
         return tuple(place) if isinstance(place, tuple) and len(place) == 4 else None
 
-    def _select(self, front, phrase: str, take_nearest: bool) -> dict:
+    def _take(self, front, match, mark) -> dict:
+        """Select one match. `mark` is where the cursor was, if this is for "correct ..."."""
+        match.Select()
+        if mark is not None:
+            self._correction = (front.handle, mark, match)
+        return {"ok": True}
+
+    def _select(self, front, phrase: str, take_nearest: bool, mark=None) -> dict:
         matches, best = self._matches(front, phrase, as_heard_first=take_nearest)
         if not matches:
             return {"ok": False, "why": "can't find that", "sounds_tried": True}
         if len(matches) == 1 or take_nearest:
-            matches[best].Select()
-            return {"ok": True}
+            return self._take(front, matches[best], mark)
         # Numbers go over the matches that can be seen. Any others are left out.
         seen = [(match, place) for match in matches
                 for place in [self._place(front, match)] if place is not None]
         if len(seen) < 2:
-            (seen[0][0] if seen else matches[best]).Select()
-            return {"ok": True}
-        self._choices = (front, [match for match, _ in seen])
+            return self._take(front, seen[0][0] if seen else matches[best], mark)
+        self._choices, self._choices_mark = (front, [match for match, _ in seen]), mark
         self.show_numbers([(n, *place) for n, (_, place) in enumerate(seen, start=1)])
         return {"ok": True, "choices": len(seen)}
 
@@ -576,13 +630,13 @@ class WordTarget:
         n = int(arg or 0)
         if not 1 <= n <= len(matches):
             return {"ok": False, "why": "no such number"}
+        front, mark = self._choices[0], self._choices_mark
         self._clear_choices()
-        matches[n - 1].Select()
-        return {"ok": True}
+        return self._take(front, matches[n - 1], mark)
 
     def _clear_choices(self) -> None:
         if self._choices:
-            self._choices = None
+            self._choices = self._choices_mark = None
             if self.show_numbers is not None:
                 self.show_numbers([])
 

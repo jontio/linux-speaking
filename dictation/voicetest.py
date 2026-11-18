@@ -10,6 +10,7 @@ The recording is kept, so the same test can be run again after anything changes.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 import math
 import os
@@ -235,9 +236,11 @@ def rescore(result) -> None:
 def own_wrong(result, shared: list) -> int:
     """How many words a recogniser got wrong by itself: its count without the slips that
     every recogniser made alike, which were the reader's. `shared` is from shared_slips()."""
-    mine = set(map(tuple, result.slips))
-    return result.wrong - sum(score(words(said), words(heard))[0]
-                              for said, heard in shared if (said, heard) in mine)
+    # Each shared slip is taken off as often as this recogniser made it, and no oftener
+    # than all of them did.
+    mine = Counter(map(tuple, result.slips))
+    return result.wrong - sum(score(words(said), words(heard))[0] * min(times, mine[said, heard])
+                              for (said, heard), times in Counter(map(tuple, shared)).items())
 
 
 def shared_slips(results: list) -> list:
@@ -247,10 +250,15 @@ def shared_slips(results: list) -> list:
     fair = [r for r in results if not r.problem and r.total and r.wrong <= 0.2 * r.total]
     if len(fair) < 3:
         return []
-    shared = set(map(tuple, fair[0].slips))
+    shared = Counter(map(tuple, fair[0].slips))
     for result in fair[1:]:
-        shared &= set(map(tuple, result.slips))
-    return [list(pair) for pair in fair[0].slips if tuple(pair) in shared]
+        shared &= Counter(map(tuple, result.slips))  # as often as the one that made it least
+    found = []
+    for pair in map(tuple, fair[0].slips):  # in the order they came, each as often as shared
+        if shared[pair] > 0:
+            shared[pair] -= 1
+            found.append(list(pair))
+    return found
 
 
 def compare(said: list, heard: list) -> tuple:
@@ -518,19 +526,42 @@ def try_one(candidate: Candidate, sounds: list, said: list, hear, progress=lambd
     return result
 
 
-def suggestion(results: list) -> str:
-    """Which of them to use: the quickest of those nearly as accurate as the best.
+def suggested(results: list):
+    """Which of them to use: the quickest of those nearly as accurate as the best. The
+    result itself, for the window's button that puts it to use, or None.
 
     Nearly means within a word or two. Every recogniser heard the same recording, so a
     word more is a real difference, but one word is too little to choose by."""
     # Several working together aren't a model to choose: they are a tick box in Settings.
     tried = [r for r in results if not r.problem and r.total and r.where != "team"]
     if not tried:
-        return ""
+        return None
     best = min(r.wrong for r in tried)
     near = [r for r in tried if r.wrong <= best + max(1, round(0.005 * r.total))]
-    pick = min(near, key=lambda r: (r.seconds, r.wrong))
-    return pick.title
+    return min(near, key=lambda r: (r.seconds, r.wrong))
+
+
+def suggestion(results: list) -> str:
+    """The name of the one to use, as the results show it, or ""."""
+    pick = suggested(results)
+    return pick.title if pick is not None else ""
+
+
+# A recording ends by itself, for somebody who can't reach the button: once the passage
+# has had time to be read by the quickest of readers, a long enough quiet is the end of it.
+READ_WORDS_A_SECOND = 4.0  # quicker than anybody reads aloud
+QUIET_END = 8.0            # seconds with nothing said, after that, that end the recording
+
+
+def least_seconds() -> float:
+    """The least time the passage takes to read aloud."""
+    return len(words(" ".join(PASSAGE))) / READ_WORDS_A_SECOND
+
+
+def read_out(seconds: float, quiet: float) -> bool:
+    """Whether a recording can be taken as finished: it has gone on for `seconds`, and
+    nothing has been said for the last `quiet` of them."""
+    return seconds >= least_seconds() and quiet >= QUIET_END
 
 
 def _fingerprint() -> str:

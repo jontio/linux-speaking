@@ -2,6 +2,567 @@
 
 ## Unreleased
 
+After updating to this version, these are left for you to do by hand:
+
+- **Another computer doing the recognising: both computers need this version.** The
+  way the two talk has changed, so a computer with an earlier version is told to
+  update, and Settings says under the address which of the two it is. Until both are
+  updated, each does its own listening.
+- **Thunderbird: add the add-on again from its file.** In Thunderbird choose Add-ons
+  and Themes, the gear, Install Add-on From File, and pick
+  `linux-speaking-thunderbird.xpi` in the install folder. Then open a new message. The
+  add-on from an earlier version is no longer answered, and nothing is typed into
+  Thunderbird until the new one is in. The tray icon's tip says so while the old one
+  is asking.
+- **Visual Studio Code: close it and open it again**, so that it loads the new
+  extension.
+- **LibreOffice: if it was open while you updated, close it once**, for ten seconds or
+  so. Its new extension goes in while it is closed, and a notice says when Writer is
+  ready.
+
+For newcomers:
+
+- The first time it starts, a "Getting started" window opens in place of Settings. It
+  shows whether the microphone hears you, says what to do in four steps, and has a box
+  to try dictating into before any other program is involved. It opens by itself that
+  once only, and "Getting started" in the tray icon's menu opens it again. An install
+  from an earlier version is not shown it.
+- That window has a button that downloads Parakeet Unified, the recommended speech
+  model, and switches dictation to it when it has arrived. On Windows it also asks
+  which key, if any, should switch dictation on and off, and whether to start when you
+  sign in.
+- "What can I say?", in the tray icon's menu or said aloud, opens a list of everything
+  that can be said, with a box to narrow it down. It says which are switched off.
+- A click on the tray icon wakes dictation when it is asleep or off, and switches it off
+  when it is awake.
+- The tray icon has a shape for each state as well as a colour: a "z" when asleep, and
+  a grey disc with a yellow "!" when no speech model could be loaded.
+- Where the desktop has no system tray, as GNOME as it comes has none, a small window
+  stands in for the icon, with the menu's entries as buttons. It does not take the
+  keyboard when it appears.
+- Dictation is English only, and the README now says so in its first lines. It also
+  says at the top that it runs on Windows.
+- The README is short: what it is, what you need, installing, the first minute and the
+  commonest problems. The rest is in pages under `docs/`.
+
+Telling you what is wrong:
+
+- When you speak and no program that can be typed into is in front, a notice says so
+  and names the programs that would do, at most once a minute. The tray icon's tip says
+  "(nothing to type into)" after the words.
+- The tip says where your words will go only while dictation is awake, and looks every
+  few seconds, so it is no longer out of date. Asleep, it says: Dictation: Asleep. Say
+  "wake up" to dictate.
+- A microphone that can't be opened: a notice gives the reason in plain words, and on
+  Windows names the privacy switch. The notice "Awake" is no longer shown when nothing
+  is listening.
+- A microphone that stops by itself, as when a headset is unplugged: a notice says so,
+  and dictation comes back asleep by itself when the microphone works again. It is
+  tried every two seconds for three minutes, and is left for you to try after three
+  stops within a minute.
+- No speech model, or one that won't load: the state is "No speech model", with what to
+  do, where it said "Loading…" for ever. It tries again by itself once a model has been
+  installed.
+- A model chosen in Settings that won't load: dictation stays with the one in use, the
+  choice goes back to it, and a notice says so.
+- Things that stay wrong are listed in the tray icon's tip and at the top of Settings,
+  each with what to do: Thunderbird's add-on being an older one, the desktop refusing
+  key presses, the port for Thunderbird being in use, a part missing for Word and
+  Outlook, a microphone that stopped, other computers not being able to use this one
+  for recognition.
+- "Open the log", in the tray icon's menu, shows what the program has written down
+  since it started. "Copy all" there takes it for a report, with the version and the
+  model in use. As ever, nothing that was said is in it: a notice is written there
+  without its words, as "Selected: (12 characters)".
+- A click on the tray icon, the key or "toggle" does not wake dictation while a reading
+  or a voice-test recording has the microphone: a notice says to pause or stop the
+  recording first.
+- A Writer extension that can't be put into LibreOffice is reported once, with the
+  reason, where it was tried every five seconds with nothing said. A notice says
+  "Writer is ready" when it is in.
+- On Windows, a key that Windows won't give, because another program has it, is said
+  beside the chooser and at the top of Settings.
+- If something goes wrong with a phrase inside the program, a notice says that it was
+  not typed.
+
+Dictating and commands:
+
+- Notices for commands that leave nothing to see: "Selected:" and the words after
+  "select" or "correct"; the program's name and "can't do" where the program in front
+  has no such command; and "Say a number, 1 to 3, or "cancel"." when the words are in
+  several places.
+- While numbers show, a single word that is neither a number nor a command is no longer
+  typed into the document: it is most likely a number misheard, so the numbers stay and
+  a notice asks again. Two words or more take the numbers away and are typed, as they
+  always were. "Second", "the second one", "2nd" and "three please" pick a number, and
+  "none" or "neither" takes the numbers away.
+- Commands take "please" at either end, and an "um", "uh", "er", "erm", "oh" or "OK" in
+  front when two or more words follow: "OK, scratch that". A "no" in front is passed
+  over only where you paused after it, which the recogniser writes as a comma: "No,
+  scratch that". "And" is not passed over: "And select all" is typed.
+- "The" may be said or left out: "go to the beginning of the line", "go to the end of
+  the document". A phrase that ends with "the" is the start of a sentence, and is not
+  taken for a command: "New paragraph. The" keeps its "The". "Down the line" is typed
+  too. (What follows "select" or "correct" is another matter: "select the" still looks
+  for a "the".)
+- More ways of saying commands: "capitalize that", "deselect that", "delete that line",
+  "select that line", "comment that line", "indent that line", "press the tab key",
+  and "newline" as one word, said by itself.
+- "Tab 3", "tab three times" and "tab twice" press the Tab key that many times, 20 at
+  most.
+- Counts can be said in words up to ninety-nine: "go to line forty two". A count bigger
+  than a command takes is taken as the most it takes: "backspace 100" removes 99.
+- A command said twice in one breath, "scratch that, scratch that", is done once.
+- A sentence that begins with "Select" or "Correct" is typed, and not taken for the
+  command, when the recogniser wrote punctuation straight after that word or more than
+  eight words follow. "Select Save." is still the command where "save" is near the
+  cursor, and the notice says what was selected.
+- "Select" finds more of what is there: "1,250" by "1250", "21" by "twenty one", "U.S."
+  by "US", "p.m." by "pm", "Dr." by "doctor", "colour" by "color", "dog's" by "dogs" and
+  "café" by "cafe". Visual Studio Code and Thunderbird look for exactly the words. They
+  find "U.S." and "p.m." when the recogniser writes what you said with the dots, but not
+  when it writes "US", and they don't find a word that differs by an apostrophe or an
+  accent.
+- "Delete last word" takes a whole price, number or address: after "costs $25.50" it
+  leaves "costs".
+- "Cap that" keeps acronyms and words like "iPhone": "the NASA report" becomes "The
+  NASA Report". That is so in Writer, Kate, typed-into boxes, Visual Studio Code and
+  Thunderbird. In Word it is still Word's own title case, which lowers them.
+- Asleep, "make up", "woke up", "take up", "walk up" and "wake me up" no longer wake it.
+  "Wake up" misheard as "wake app", "wake op" or "weak up" still does.
+- Commands for the app's own windows: "what can I say", "open dictation settings",
+  "show microphone level" and "close that window". They are one tick box, on to begin
+  with. "Close that window" with none of the app's windows open is typed as words.
+- "Keep the full stop or question mark the recogniser writes at the end of a phrase", a
+  new tick box under Formatting, off to begin with. It suits short messages said in one
+  go.
+- Still not done: "redo" is not a command; a tab can't be said inside a phrase, only by
+  itself; and words put in front of a sentence that is already there leave that
+  sentence's capital where it was. Two phrases still come out wrong: "A colon the first
+  option", at the start of a phrase, keeps the word "colon", and "The house number sign
+  fell off" types a "#".
+
+Punctuation and capitals:
+
+- A sum of money is always typed in figures. The recognisers write "one hundred and
+  twenty dollars" as $120 but leave "a hundred and fifty dollars" in words, so the same
+  kind of thing came out two ways from one sentence to the next. Now both are $120 and
+  $150, and so with cents ($20.50), thousands ($2,500), millions ($1.5 million) and
+  "twenty or thirty dollars" ($20 or $30). Whose dollars is kept, in two letters: NZ$100,
+  AU$300, US$50, CA$20. Euros are written €100. Pounds are written £100 where they are
+  said to be money ("UK pounds", "British pounds", "pounds sterling"), with pence after
+  the point: "a hundred pounds" alone may be a weight and stays in words. A number said
+  straight after a money sign is in figures too: with the 5 of "$5" selected, "six"
+  makes "$6". A tick box under Formatting in Settings, on to begin with, leaves sums as
+  written instead.
+- The space before a dollar sign is no longer lost with a Parakeet model: "I spent $120"
+  was typed "I spent$120". The models write that space as a piece by itself, and the
+  library that joins their pieces into text left it out; the text is now put together
+  from the pieces here.
+- More punctuation can be said by name, on to begin with: "open paren" and "close
+  paren", "open square bracket" and "close square bracket", "open curly bracket" and
+  "close curly bracket" (or "brace"), "open single quote" and "close single quote", "em
+  dash", "en dash", "forward slash", "backslash", "apostrophe", "at sign", "ampersand",
+  "percent sign", "hash sign" or "number sign", "dollar sign" and "euro sign". Each has
+  a tick box in Settings.
+- Off to begin with, because they are everyday words too: "dash" (an en dash with a
+  space either side), "slash", and "quote" with "unquote" or "end quote". "Quote" opens
+  a quotation, or closes one that is open.
+- A punctuation word after "a", "an", "the" or "the word" stays a word, as in "put a
+  comma there" and "press the comma key". So do "colon cancer" and "at sign in".
+  ("Comma key" without "the" has a comma in it.)
+- After "a" or "the", these are signs all the same: a hyphen inside a word made with
+  hyphens ("state hyphen of hyphen the hyphen art" gives "state-of-the-art"), and an
+  opening quote or bracket whose closing one comes later in the phrase.
+- "Newline" as one word inside a sentence is the word, as in "strip the trailing
+  newline". Said by itself it is the command.
+- A backslash has a space before it, as in "ends with \n", except inside a file path.
+- "Hello. Comma. How are you?", which is how the recogniser writes a comma said after a
+  pause, gives "Hello, how are you".
+- The full stop of "p.m.", "U.S.", "etc." and "Ph.D." stays at the end of a phrase, and
+  before punctuation that is said. What comes after it goes by what you said. If you
+  only paused, the next phrase carries on in small letters: "at 3 p.m." and then "On
+  Tuesday" gives "at 3 p.m. on Tuesday". If you said "full stop", the next phrase starts
+  a sentence, and no second stop is typed.
+- In the middle of a sentence, the first word of a phrase loses the capital the
+  recogniser gave it, also when the next word has one: "I will see you" and then "Next
+  Monday" gives "next Monday". A name keeps it: "Mark Jones", "in May", and a word
+  that names begin with, as in "New Zealand", "Uncle Bob" and "Lake Taupo".
+- An everyday word that is also a name loses that capital: "the report" and then
+  "States that" gives "states that", and "Thanks" and then "Will do" gives "will do".
+  Known and left: "Will Mark be there?" in the middle of a sentence keeps "Will", and
+  "Windows" keeps its capital.
+- "Hello, Monday works" and "Hi, OK, …" keep their comma with "No comma after Hello or
+  Hi" ticked.
+- No space is put after `**`, `_` or a backtick typed by hand where it opens, nor after
+  a "$", "€", "@" or "\" typed by hand.
+- A word spelled the American way is an everyday word with a British dictionary, and
+  the other way about: "Color" in the middle of a sentence loses the capital the
+  recogniser gave it.
+
+The spelling box:
+
+- "B for bravo" and "B as in boy" give one b, and "all caps N A S A" gives capitals.
+- "Double U" is the letter W, however the recogniser writes it. Say "U U" for two of
+  the letter u.
+- Accented letters can be spelled, and an accent can be said after its letter: "e
+  acute", "a macron".
+- More signs: comma, colon, semicolon, slash, backslash, ampersand, plus, equals, hash,
+  percent, dollar, asterisk, brackets, question mark and exclamation mark.
+
+In C and C++:
+
+- Strings keep their apostrophes and capitals: "quote don't panic quote" types `"don't
+  panic"`.
+- A comment is written as a sentence, with its capitals and apostrophes, and ends at a
+  spoken "new line", with code after it.
+- "Pipe equals" and the other operators that end in equals: `|=`, `%=`, `^=`, `&=`,
+  `<<=` and `>>=`.
+- "M underscore count" types `m_count`.
+- "One hundred", "two hundred and fifty six", and "zero x f f" for `0xff`.
+- "A and b" between two values types `a && b`, and "a or b" types `a || b`.
+- "uint8_t value" and "std::string name" are two words.
+
+Your own words and shortcuts:
+
+- **My shortcuts**, a new box in Settings: `what is said = what is typed`, one to a
+  line. Said by itself, the phrase types the text exactly as written, capitals and all,
+  also at the start of a sentence: an email address stays in small letters. A line that
+  starts with a space carries on the one above as a new line of it, which is how an
+  address is written.
+- A name in My words keeps its capital at the start of a phrase: with "Rose" listed, "I
+  spoke to" and then "Rose" gives "I spoke to Rose".
+- By sound, a listed name takes the place of another spelling that sounds the same,
+  also one the dictionary knows: with "Sarah" listed, "Sara" becomes Sarah, and with
+  "Jon", "John" becomes Jon. It goes by the consonants, the kind of the first vowel
+  and the number of syllables.
+- By sound, a listed name no longer takes the place of a name that only resembles it
+  (Dan for Don or Dean, Tom for Tim, Mary for Maria), or swallows the word beside it.
+- Two words heard for one listed word are joined: "Libre Office" becomes "LibreOffice".
+  At the very start of a sentence that is done only where the first of the two is no
+  everyday word.
+- A listed name said by itself is put in, and so is one said after "Best wishes," or
+  "Love,".
+- "Hi team," and "Thanks, done." are not turned into listed names.
+- Part numbers of three characters work: "MP3", "CO2", "B12".
+- Everyday words are no longer turned into a part number that has the same letters and
+  figures: with "A380" listed, "a 380 pound gorilla" stays as it is, and with "Win11",
+  so does "we win 11 games".
+- A word on the list with letters and figures in it, such as a part number ("vLR5340",
+  "vLR54H20"), is now put in as you spelled it wherever the recogniser wrote the same
+  letters and figures: "VLR5340", "VLR 5340", "VLR-5340", "V L R 54 H 20", or said as
+  words, "V L R fifty three forty". Before, its figures were thrown away when it was
+  looked for by its sound, so every such word sounded like every other: "VLR 5340" came
+  out as "vLR54H20 5340".
+- A word that is written with a small first letter and a capital later ("vLR5340",
+  "iPhone", "eBay") keeps its small letter at the start of a sentence, where it was given
+  a capital.
+
+The app's windows:
+
+- The About window, the README and the welcome window no longer say that nothing is
+  sent anywhere, which stopped being true when another computer of your own could be
+  given the recognising. They say what is true either way: nothing you say goes to the
+  cloud, and there is no account or service behind the program. About then says how it
+  is set now: all on this computer, or which computer of yours the sound goes to,
+  encrypted. The reading window says the same of the sentences read aloud.
+- In Settings a tip is shown for whatever is tabbed to, as it is for whatever the mouse
+  rests on, so that the help can be read without a mouse. Alt and an underlined letter
+  jumps to a group or presses a button.
+- The mouse wheel no longer changes a chooser as the page scrolls past it, and the arrow
+  keys open its list: a speech model is no longer loaded by scrolling. Choosing the
+  model that is already in use loads nothing.
+- In the app's windows the Escape key closes the window, and Enter presses the button
+  that has the keyboard. Where a window asks before deleting something, "No" is the
+  answer that Enter gives.
+- "Start when I sign in" is a tick box in Settings, on Linux and on Windows.
+- On Linux, a key of your own can switch dictation: Settings shows, under Keyboard, a
+  command to bind it to in your desktop's shortcut settings, with a button to copy it.
+- Only one copy of the app runs, on Linux as on Windows. Starting it again shows
+  Settings.
+- In the tray icon's menu, "Show level meter" is now "Microphone level…", and "Turn on"
+  and "Turn off" are "Turn microphone on" and "Turn microphone off". "What can I say?",
+  "Getting started" and "Open the log" are new.
+- The microphone level window closes by itself after a minute with nothing heard, and
+  counts down for the last fifteen seconds. Dictation is off while it is open, so
+  somebody working by voice alone could not get it back.
+- On Windows, "Look again" beside the microphone chooser reads the list afresh, for a
+  headset plugged in later. Windows allows that only while nothing is being recorded,
+  so listening stops for a moment; if the microphone can't then be opened again, that is
+  said, and it is tried again. A chosen microphone that is not connected is shown as
+  "(not connected now)".
+- On Windows the microphone chooser shows each name whole. The names were cut off at 31
+  letters ("Microphone (Realtek High Defini"), however wide the window: that is all
+  Windows' simplest sound interface, the one recorded through, gives. The rest is now
+  looked up from the newer interfaces. Your choice is kept as it was.
+- Long lines in Settings no longer make the window wider than a small screen: what they
+  said in brackets has moved to the help. Settings is never bigger than the screen, and
+  the sizes of text follow the system's.
+- A tick box that would do nothing as things stand is grey and says "(no effect at
+  present)". It can still be reached with the keyboard, so that the help can say why.
+- The reading window's instructions are in the ordinary colour of text, and are told
+  apart from the sentence to read by being smaller and slanted.
+
+Models:
+
+- Parakeet Unified is the recommended model: the best so far, quick and with the fewest
+  words wrong. Settings, the models window and the welcome window say so, and Settings
+  has a "Get Parakeet Unified…" button while it isn't installed.
+- In the choosers the models are named "Parakeet Unified: recommended, the best so
+  far", "Parakeet v2: quick and accurate, not Whisper" and "Small: good, and quick
+  enough for most computers".
+- A download can be paused: "Pause" keeps what has arrived, "Carry on" goes on from
+  there, and "Discard" asks first. A download that finishes, or fails, is announced
+  whichever windows are open, and every window shows the same download.
+
+The voice test, reading and training:
+
+- The voice test's recording ends by itself when you have read the passage and been
+  quiet for eight seconds. A test goes on if the window is closed, and a notice says
+  when it is done. "Use it for dictation" puts the suggested model to use.
+- Reading aloud: a sentence that the model twice won't take for the right one can be
+  kept as you read it, with the space bar. Speaking counts as being there, so the window
+  doesn't pause itself while you read.
+- A text of your own to read aloud that Windows saved as "Plain Text" or "Unicode" is
+  read properly.
+- The reading and training windows say, when they open, if the computer has less free
+  memory than a training run wants.
+- Training: "Stop" while a run is still getting ready, fetching its model, stops it at
+  once. The install of the training tools and the download of Parakeet v2 can be
+  stopped too. A run that failed has an "Open the log" button, and says what to try. A
+  run started on a system without the login service can be stopped cleanly as well.
+- Training: putting the computer's clock forward no longer makes a run that is going
+  look as if it had failed. A run whose notes were lost appears under "Clear stopped
+  runs".
+
+Installing and removing:
+
+- Both installers install the Python packages from one list, `requirements.txt`, which
+  allows each package's fixes but not its next big version.
+- Both installers fetch the speech models with the app's own downloader, which shows
+  how far it has got, carries on where it stopped, and uses the system's proxy and
+  certificates. The models can be copied in by hand where the download isn't allowed.
+- Both installers check that the packages and models load before they say "Done", and
+  the closing lines say what was and wasn't set up.
+- Both installers stop if they are run from the folder they install into, and refuse a
+  folder with other things in it.
+- Both uninstallers ask before removing recordings, kept noises and retrained models,
+  find the install folder themselves, remove only what was installed, and say what they
+  could not remove.
+- An update keeps your choice about starting when you sign in. `LS_NO_AUTOSTART=1` and
+  `LS_NO_START=1` install without setting it to start at sign-in, or without starting
+  it now.
+- Linux: the installer uses the system's Python whatever comes first on PATH, prints
+  its version, and stops below 3.10. `LS_PYTHON` names another.
+- Linux: it lists the system packages before asking for the password, carries on if the
+  package lists can't all be refreshed, and checks disk space first.
+- Linux: on a system without systemd it carries on, and the menu entry starts the
+  program itself.
+- Linux: after a distribution upgrade the installer rebuilds its Python packages.
+- Linux: a LibreOffice from Flatpak or Snap is noticed and said to be out of reach.
+- Linux: the installer no longer changes VS Code's `argv.json`. The app adds its line
+  when "Dictate into other programs' text boxes" is ticked, and uninstalling takes it
+  out.
+- Linux: a Kate or KWrite launcher of your own is changed in place, with a copy kept,
+  and put back on uninstalling.
+- Linux: `scripts/launch.sh toggle` (also `wake`, `sleep`, `off`, `settings`) for a
+  keyboard shortcut of your own, and `start`, `stop`, `restart`.
+- Linux: uninstalling puts back the desktop's accessibility switch if the app turned it
+  on, and removes extra settings added to the login service.
+- Windows: the installer accepts only a 64-bit Python from 3.10 to 3.14, and says what
+  it found otherwise. `LS_PYTHON` names one.
+- Windows: an install outside your user folder is closed to the PC's other accounts.
+- Windows: an install whose Python has been removed is set up afresh by running the
+  installer again.
+- Windows: the uninstaller is kept with the install and has a Start menu entry,
+  "Uninstall Linux Speaking".
+- Windows: the installer says whether the VS Code extension went in, and tries VS Code
+  Insiders and VSCodium too.
+
+Noises written as words:
+
+- A noise is written with less conviction than a word that was said, and that is now
+  used. One of the words Parakeet makes of a noise ("yeah", "okay", "hmm") stands by
+  itself only if the recogniser was sure of it, even where the voice detector hears a
+  voice, as it does in a sneeze or a sigh. A word or two of any other kind, with no clear
+  speech behind it, stands only if the recogniser was sure: a model retrained on your
+  own voice writes "hit", "back" or "hey" for a noise where the stock one writes "yeah".
+  On recorded coughs, sneezes and laughs, what was still written fell from 9 to between
+  2 and 4, for one more lost of 364 spoken one-word commands.
+- **"That was a noise."** Say it when a rustle or a click has been written as a word. The
+  word is taken back and the sound is kept on your computer, in `noises` in the state
+  folder, so that the rules can be tried against the noises you really make. It has a
+  tick box under Hearing in Settings, off to begin with, and beside it a line says how
+  many sounds are kept, with buttons to open their folder and to delete them all.
+- "That was a noise" leaves the words alone if another program has come to the front
+  since they were written, and a notice says which program they are in. The sound is
+  kept all the same.
+- The voice detector that tells speech from other sounds is asked again after it fails.
+  One failure used to switch it off until the app was started again; now it is given up
+  only after five failures running.
+- **Leave out whispering**, a new tick box under Hearing, off to begin with. A whisper
+  is breath without a voice, and with this ticked a phrase that is mostly breath is left
+  out before it reaches the recogniser: so something can be said under the breath without
+  being written. With any model. The tray icon's tip says when a phrase was left out.
+- In Settings, every voice command and punctuation word is shown in quotes, as what you
+  say, so that it can be told from the settings beside it. Rest the mouse on any line
+  for more about it; the four buttons for speech models each say what they do.
+- For a phrase of a word or two the log now says how long it was, how much clear speech
+  the detector found in it and how sure the recogniser was. No words, as ever.
+
+Made safer:
+
+- **Another computer doing the recognising: what is sent is now encrypted.** The sound,
+  the text before the cursor and the words that come back are sealed with a key the two
+  computers agree afresh for each run of phrases. That key is never sent and is then
+  forgotten, so what was overheard can't be read later, even by someone who has since got
+  hold of the key in Settings. It needs the `cryptography` package, which the installers
+  now fetch; without it the link is not used at all, and nothing is sent in the clear.
+- Each computer also proves to the other that it holds the key before any sound is sent,
+  so one that merely answers at the same address is given nothing. Every answer is signed, and one that isn't is not believed:
+  nothing it says is typed or obeyed. A request is good once, so one that was overheard
+  can't be sent again. Both computers need this version: an older one is told to update,
+  and meanwhile each does its own listening.
+- Sharing a recogniser: a computer without the key can no longer use up the sharing
+  computer. Eight callers are attended to at once, each has a few seconds to show that
+  it holds the key, and nothing more of a request is read until it has. A long phrase
+  over a slow link is then given time in keeping with its length, up to 55 seconds.
+- An address for the other computer that could not be one, such as one with a space in
+  it, is refused when it is entered, with "That isn't an address…". It used to be taken,
+  and every phrase was then lost.
+- If the other computer stalls, or something else answers at its address, the phrase is
+  heard on this computer instead: after five seconds at most for the hello, and a
+  minute for a phrase. The tray icon's tip says that the other computer can't be
+  reached, and Settings says why under the address: "The other computer took too long
+  to answer."
+- **Thunderbird.** The add-on and the engine prove themselves to each other with a key
+  made for your computer and built into the add-on's file, so that another person's
+  program, or one that is kept apart from your files, can't pass itself off as either
+  one: read what you dictate, or reach into the message you are writing. The add-on has to be installed again from the new file
+  (Add-ons and Themes, the gear, Install Add-on From File); the old one is told nothing,
+  and the tray icon's tip and the top of Settings say what to do.
+- Thunderbird: an add-on from before the key no longer keeps Thunderbird and the app
+  busy asking each other thousands of times a second. An add-on made for another key
+  than this computer has now is noticed too, and the tip says so. The tip's line goes
+  as soon as the right add-on connects. After the add-on has been loaded again, the
+  first thing asked of it is no longer lost.
+- **Thunderbird keeps nothing of the exchanges in its cache any more.** The app says so
+  with every answer, and the add-on asks without caching. Before, Thunderbird kept a
+  file on the disk for every exchange between the two: an older add-on asking without
+  a pause made over a million of them in a day.
+- **VS Code on Windows.** Before anything is sent to VS Code's extension, the link is
+  checked to be yours: Windows is asked who owns it, and whether it was made by a
+  program that Windows keeps apart from your own. (If Windows won't answer the second
+  question, the first decides, and the log says so once.) Another account on the same
+  computer could have taken the extension's name and been sent what you dictated.
+- Sounds kept with "that was a noise" are for your own account only to read, and a
+  folder of them from an earlier version is closed to other accounts when the program
+  starts. Only the app's own sound files in that folder are counted, pruned or deleted,
+  and new ones are named by a count and the time, as in
+  `noise-000123-20261118T051809Z.wav`.
+- Settings that are a link to a file kept elsewhere stay a link when they are saved,
+  and two saves at the same moment both go through.
+
+Put right after a review of the whole program:
+
+- One of your own words is no longer put in place of an everyday word because it sounds
+  like it: with "Dan" among them, "I'm done" stays "I'm done". It still goes in where the
+  recogniser wrote a name or a word it didn't know, and by itself after a greeting or a
+  sign-off ("Cheers," and then your name).
+- "And do that" is words again. It was taken for "undo that".
+- No space is put before a straight quote mark that closes: with the cursor between a
+  pair, as programs often leave it, the words go in as "come here" and not "come here ".
+- A word that is spelled out keeps its last full stop: "e.g." and "etc.".
+- In C and C++, a name in the file that begins with "to", "for" or "in" is that name:
+  "to string" is `to_string`, where the "to" was taken for a 2.
+- On Windows, changing the look while a model is downloading no longer leaves the
+  download's window behind, where a second one could start the same download or throw it
+  away. The download goes on by itself, and the window made in the new look shows it.
+- "Train on my voice": answering yes to fetching Parakeet v2 and then closing the window
+  no longer leaves the run unstarted. It starts when the model is here.
+- Reading aloud: a rest before reading a sentence is no part of it. After more than 36
+  seconds of quiet the sentence was lost as "too long".
+- The voice test: a second recording given up by closing the window no longer takes the
+  place of the one that was kept.
+- A model that is retrained while it is loaded (chosen for dictation after the run began,
+  or a run that was carried on) is loaded afresh when the run ends, where dictation went
+  on with the old one until the app was restarted.
+- "Train on my voice" has a button to clear what stopped runs have kept, 2.4 GB or more
+  each, and says how much that is.
+- `uninstall.ps1` stops a training run or an install of the training tools that is under
+  way before it removes the folder, leaves a folder alone that isn't Linux Speaking's,
+  and says so if not everything could be removed. It asks before the recordings made
+  for training go too: see "Installing and removing".
+- A name the dictionary lists as a name keeps its capital in the middle of a sentence:
+  "I think James said so", where it was "james" (taken for "jam" with an ending).
+- Inside a phrase, a shortening's own full stop no longer gives the next word a capital:
+  "the U.S. government", "at 5 p.m. tomorrow". The next word is left as the recogniser
+  wrote it, with a capital or without. (After a pause, how the next phrase starts goes
+  by whether "full stop" was said: see "Punctuation and capitals".)
+- After the mark of a list item, a heading or a quotation at the start of a line ("- ",
+  "# ", "> "), the first word gets its capital in every program, not only in VS Code.
+- "Select" and "correct" find a word that has a quote mark beside it: hello in 'hello',
+  boys in "the boys' toys".
+- "Cap that" leaves the letter after an apostrophe small in Kate, Writer and typed-into
+  boxes: "Don't Stop", where it was "Don'T Stop".
+- "Delete 3 lines" removes three in Writer and in typed-into boxes, where it removed one.
+  In Writer, "delete line" on an empty line takes that line away, where it took out the
+  last phrase you had said. "Delete one line" and "go to line 1,250" are understood.
+- One of your own words is never put in place of a command because it sounds like it:
+  with "Andy" among them, "undo" is still "undo".
+- In C and C++, "!=" written by the recogniser is kept, where it became "=".
+- Thunderbird: "bold that" and "cap that" on the last phrase no longer leave it selected,
+  where the next words took its place.
+- Text with a face or other such character in it no longer throws the cursor out by one
+  in Notepad and other Windows edit boxes, or "select" in a web page's text box on Linux.
+- The app writes an unexpected error to its log and goes on, where it could close. A list
+  of recordings saved by an editor in another encoding no longer stops the reading and
+  training windows opening.
+- Settings are saved whole or not at all, so a full disk can't leave half a file, and on
+  Linux only your own account can read them (they may hold the keys for sharing a
+  recogniser). A
+  settings file with the wrong things in it gives the usual settings and the app starts.
+- Reading aloud: a recording deleted by hand no longer lets the next one be kept under
+  its number and so with its words; a newly chosen text of your own starts at its first
+  reading.
+- The voice test no longer shows fewer than no words wrong when a slip every recogniser
+  made was made twice by one of them.
+- Training: on Linux an install or a run that has ended is no longer shown as still
+  going. An install that stopped part of the way is offered again, where the window took
+  the tools for installed and every run failed. On Windows a run no longer fails when the
+  window reads its notes at the moment they are written, and a model name with an accent
+  in it no longer stops the trainer. The install is no longer ended by restarting the app.
+- Two windows can no longer fetch the same model at once into the same folder.
+- The other computer: a caller who sends a malformed key gets "wrong key" and nothing is
+  written to the log; the server no longer says which version it is to a caller without
+  the key.
+- Thunderbird's link: a request that was given up on is not carried out when Thunderbird
+  comes back to life, and Thunderbird closing is noticed sooner.
+- The installer stops if it is run from inside its own install folder, as a clone made in
+  the home folder under the project's name is: it copied the program into itself, and
+  uninstalling deleted the clone. The README now clones into another name. The uninstaller
+  leaves a folder that holds a git repository. Only your own LibreOffice counts as open.
+  The line added to VS Code's `argv.json` no longer breaks the file when the last setting
+  has a comment after it. The Writer extension starts on a system with no dictionary.
+- On Windows, an install put somewhere other than the usual folder is found again after
+  signing in, where the app started with nothing.
+
+- "Correct *words*" selects words as "select *words*" does, for putting a mistake right
+  further up without losing your place. Say what should stand there and it takes the
+  place of the old words, then the cursor goes back to where it was before. "Unselect
+  that" goes back as well, leaving the words as they were. Any other command in between
+  leaves the cursor with the words ("space" is taken for words: it stands in their place). It works in every program dictated into. In Writer,
+  Thunderbird and VS Code the cursor goes back once their extension is the one from this
+  version; with an older one the words are selected, the cursor stays with them, and the
+  tray icon's tooltip says so beside what it heard. (Thunderbird's add-on has to be the
+  new one before anything at all is dictated there: see "Made safer".) In a text box that is typed into, the way back is by arrow keys, so a
+  cursor more than 3,000 characters away stays where the new words are (300 in a program
+  that takes keys one at a time), and the tooltip says that too. It can be switched off
+  in Settings.
+- A phrase that begins with "select" or "correct" is that command when the words after it
+  are found near the cursor. When they aren't, it is now typed like anything else, so
+  "Correct me if I'm wrong" and "Select the best option" are still sentences. Before, a
+  "select" that found nothing typed nothing.
 - Runs on Windows 10 and 11, dictating into Microsoft Word, classic Outlook and Visual
   Studio Code. `install.ps1` installs it and `uninstall.ps1` removes it.
 - On Windows, a microphone chooser in Settings, and small numbers shown on screen over the
@@ -20,8 +581,10 @@
 - On Linux, the "other programs" setting now covers VS Code's panels (an assistant's chat
   box, the terminal) and other programs built from a web browser. Their text boxes are
   read through the accessibility interface and typed into with key presses, which the
-  desktop asks you to allow once. The installer switches on VS Code's
-  `force-renderer-accessibility` so that its panels can be read.
+  desktop asks you to allow once. Ticking the setting switches on VS Code's
+  `force-renderer-accessibility` so that its panels can be read, and a notice says to
+  restart VS Code. The installer leaves VS Code's settings alone, and uninstalling takes
+  the line out again.
 - On Linux, dictation no longer comes back switched off after the service is restarted
   while it was on.
 - A notice says when dictation is switched off, as it already did for awake and asleep.
@@ -33,8 +596,9 @@
   second.
 - On Windows, Notepad++ can be dictated into. Its editing area is asked for its text by
   message, since it offers nothing through the accessibility interface.
-- "Second opinions", a tick box and a trial: each phrase is also heard by Whisper Small,
-  and by Medium where the two differ, and the two that agree win. The voice test tries
+- "Second opinions", a tick box and a trial: each phrase is also heard by a second model,
+  and by a third where the two differ, and the two that agree win. They are Small and
+  Medium; if you dictate with one of those, the other one and Parakeet v2. The voice test tries
   the same three together. A computer that shares its recogniser keeps three models
   loaded for guests, so that being asked for three in turn doesn't reload them each time.
 - The Distil models are no longer shown the text before the cursor. It made them lose
@@ -43,7 +607,7 @@
   Word, which takes its space with it, is replaced without the space being lost.
 - On Windows the installer fetches English dictionaries, so that an ordinary word in the
   middle of a sentence loses the capital the recogniser gave it.
-- "Test them on my voice": read a passage once and see, for every installed recogniser,
+- "Test the models on my voice": read a passage once and see, for every installed recogniser,
   how many words it got wrong on your own voice and how long it took. The window has a
   tab for each step: reading, choosing what to try, and the results. Half of the passage
   is words easily taken for others ("better" and "beta"), and slips that every recogniser
@@ -77,7 +641,7 @@
 - "Train on my voice", a trial: retrains Parakeet (Unified or v2) on the sentences read aloud, from
   a window that asks for the folder, the model to start from and a name for the result.
   It learns from the sentences and from single words cut out of them, runs by itself
-  for half an hour or more, can be stopped and carried on, tests the result on sentences
+  for about an hour, can be stopped and carried on, tests the result on sentences
   and single words kept out of the training, and puts it among the speech models. It needs
   training tools of about 2 GB, which the window installs with one button on Linux and
   on Windows.
@@ -90,8 +654,12 @@
   sends it each phrase over the network and carries on by itself if it can't be reached.
 - Speech models can be installed and removed from Settings: nine of them, from Tiny to
   Large, downloaded from Hugging Face and checked before use.
-- On Windows, the number pad's + key switches dictation between off and awake, whichever
-  program is in front. A setting turns this off and gives the key back.
+- On Windows, a key switches dictation between off and awake, whichever program is in
+  front. It is chosen in the welcome window or under Keyboard in Settings: the number
+  pad's +, Pause, Scroll Lock, F9, Ctrl+Alt+D or Ctrl+Alt+Space. No key is taken until
+  one is chosen, because Windows hands the key to this program alone while it is
+  taken, and "None" gives it back. An install from before there was a choice keeps the
+  number pad's +, which is what it had.
 - A full stop, question mark or exclamation mark said after a short pause is no longer
   lost now and then. The last words of such a phrase are listened to again by themselves.
 - On Windows the program's windows carry its own name and icon on the taskbar, also

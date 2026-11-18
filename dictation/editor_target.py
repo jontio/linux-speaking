@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 import re
 
-from .formatting import LINE, PARAGRAPH
-from .selecting import find_nearest
+from .formatting import LINE, PARAGRAPH, title
+from .selecting import back_to, find_nearest
 
 APPS = ("kate", "kwrite")
 # Programs reached a better way, through their own add-on or extension.
@@ -132,9 +132,13 @@ class EditorTarget:
         self.name = ""
         self._object = None
         self._app = None
+        self._seen = None      # the text box last found, in front or not
         self._utf16 = True     # Qt counts in UTF-16 units; GTK counts characters
         self._one_line = False
         self.history = []  # {"start", "text", "edits"} for recent phrases, newest last
+        # After "correct ...": (where the cursor was, start and end of the words chosen,
+        # the words), until something is said over them.
+        self.correction = None
 
     # ---- finding the text box ---------------------------------------------------
     def _wanted(self, app) -> bool:
@@ -196,7 +200,9 @@ class EditorTarget:
             if found is not None:
                 if self._app is None or app.get_process_id() != self._app.get_process_id():
                     self.history = []
-                self._object, self._app = found, app
+                if found is not self._seen:
+                    self.correction = None   # another text box than the words were chosen in
+                self._object, self._app, self._seen = found, app, found
                 name = app.get_name() or "another program"
                 self.name = NAMES.get(name.lower(), name[:1].upper() + name[1:])
                 self._utf16 = (app.get_toolkit_name() or "").lower().startswith("qt")
@@ -239,6 +245,19 @@ class EditorTarget:
         if self.T.get_n_selections(o) > 0:
             self.T.remove_selection(o, 0)
         self.T.add_selection(o, start, end)
+
+    # ---- "correct ...": the cursor goes back afterwards --------------------------
+    def _correcting(self, o, start: int, end: int):
+        """Where the cursor was before "correct ...", with the start and end of the words
+        it chose, if those words are still what is selected. Forgotten either way: the
+        next thing said or done settles it."""
+        correction, self.correction = self.correction, None
+        if correction is None:
+            return None
+        mark, first, last, words = correction
+        if (start, end) != (first, last) or self.T.get_text(o, start, end) != words:
+            return None
+        return mark, first, last
 
     # ---- requests ---------------------------------------------------------------
     def request(self, message: dict) -> dict:
@@ -287,6 +306,8 @@ class EditorTarget:
         if not text and not delete_before and not delete_after:
             return {"ok": True, "text": ""}
         start, end = self._span(o)
+        back = self._correcting(o, start, end)
+        length = self.T.get_character_count(o) if back is not None else 0
         edits = 0
         if start != end:  # dictating over a selection replaces it
             self._place(o, start)
@@ -315,11 +336,16 @@ class EditorTarget:
                         self._put(o, after + i, c.upper())
                         edits += 2
                     break
-        self._place(o, after)
+        if back is not None:
+            # After "correct ...": back to where the cursor was before it.
+            grew = self.T.get_character_count(o) - length
+            self._place(o, back_to(*back, position, after, grew))
+        else:
+            self._place(o, after)
         if text:
             self.history.append({"start": position, "text": text, "edits": edits})
             del self.history[:-HISTORY]
-        return {"ok": True, "text": text}
+        return {"ok": True, "text": text, **({"back": True} if back is not None else {})}
 
     # ---- the last phrase ------------------------------------------------------------
     def _last(self, o):
@@ -383,6 +409,8 @@ class EditorTarget:
     # ---- commands -----------------------------------------------------------------------
     def _command(self, o, name: str, arg: str) -> dict:
         T = self.T
+        if name not in ("correct", "unselect", "choose", "cancel_choices"):
+            self.correction = None        # "correct ..." is only for what is said next
         start, end = self._span(o)
         caret = T.get_caret_offset(o)
         count = T.get_character_count(o)
@@ -407,13 +435,17 @@ class EditorTarget:
             self.E.delete_text(o, start, end)
             self._place(o, start)
             return {"ok": True}
-        if name == "select":
+        if name in ("select", "correct"):
             # There is nowhere to draw choice numbers here, so take the nearest match.
+            self.correction = None
             lo = max(0, caret - WINDOW)
             found = find_nearest(T.get_text(o, lo, min(count, caret + WINDOW)), caret - lo, arg)
             if found is None:
                 return {"ok": False, "why": "can't find that", "sounds_tried": True}
-            self._select(o, lo + found[0], lo + found[1])
+            first, last = lo + found[0], lo + found[1]
+            self._select(o, first, last)
+            if name == "correct":
+                self.correction = (caret, first, last, T.get_text(o, first, last))
             return {"ok": True}
         if name == "select_last":
             found = self._last(o)
@@ -430,7 +462,8 @@ class EditorTarget:
             self._select(o, 0, count)
             return {"ok": True}
         if name == "unselect":
-            self._place(o, end)
+            back = self._correcting(o, start, end)
+            self._place(o, back[0] if back else end)  # after "correct ...", where it was
             return {"ok": True}
         if name == "line_end":
             self._place(o, caret + len(T.get_text(o, caret, min(count, caret + WINDOW)).split("\n", 1)[0]))
@@ -483,7 +516,7 @@ class EditorTarget:
                     return {"ok": False, "why": "nothing to format"}
                 start, end = found
             old = T.get_text(o, start, end)
-            new = {"cap": old.title(), "all_caps": old.upper(), "no_caps": old.lower()}[name]
+            new = {"cap": title(old), "all_caps": old.upper(), "no_caps": old.lower()}[name]
             if self._count(new) == self._count(old) and new != old:
                 self._place(o, start)
                 self.E.delete_text(o, start, end)

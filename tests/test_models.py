@@ -281,6 +281,21 @@ class Catalogue(unittest.TestCase):
     def test_free_space_of_a_folder_not_made_yet(self):
         self.assertGreater(models.free_space(os.path.join(tempfile.mkdtemp(), "not", "yet")), 0)
 
+    def test_room_is_asked_about_before_a_download_is_started(self):
+        with tempfile.TemporaryDirectory() as folder:
+            known = models.Known("medium.en", "Someone/medium", 1500)
+            plenty, little = 1500e6 + models.SPARE + 1, 1500e6 + models.SPARE - 1
+            self.assertEqual(models.room_problem(folder, known, free=plenty), "")
+            problem = models.room_problem(folder, known, free=little)
+            self.assertIn("enough free disk space", problem)
+            self.assertIn("1.5 GB", problem)
+            # What has arrived already doesn't have to fit a second time.
+            os.makedirs(os.path.join(folder, "medium.en" + models.PART))
+            with open(os.path.join(folder, "medium.en" + models.PART, "model.bin"), "wb") as f:
+                f.truncate(1_000_000_000)
+            self.assertEqual(models.room_problem(folder, known, free=600e6 + models.SPARE), "")
+            self.assertTrue(models.room_problem(folder, known, free=400e6 + models.SPARE))
+
 
 class ScoringWhisper(unittest.TestCase):
     """A Whisper model is asked how sure it was only if it has the layers its own
@@ -332,6 +347,23 @@ class ScoringWhisper(unittest.TestCase):
             with open(os.path.join(folder, "m", "model.bin"), "r+b") as f:
                 f.truncate(40)
             self.assertIsNone(models.whisper_layers(folder, "m"))             # cut short
+
+
+class TwoAtOnce(unittest.TestCase):
+    def test_a_model_being_fetched_is_not_fetched_a_second_time_beside_it(self):
+        folder = tempfile.mkdtemp()
+        first = models.Download(KNOWN, folder, opener=Site(), free=lambda _: 10 ** 12)
+        seen = []
+        first._run = lambda: seen.append(models.fetching(KNOWN.name)) or "there"
+        with models._FETCHING_LOCK:
+            models._FETCHING.add(KNOWN.name)
+        try:
+            with self.assertRaises(models.Failed):
+                first.run()
+        finally:
+            with models._FETCHING_LOCK:
+                models._FETCHING.discard(KNOWN.name)
+        self.assertEqual((first.run(), seen, models.fetching(KNOWN.name)), ("there", [True], False))
 
 
 if __name__ == "__main__":

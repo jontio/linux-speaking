@@ -54,5 +54,39 @@ class Editing(unittest.TestCase):
         self.assertEqual((steps, unknown), (["a", "b"], ["banana"]))
 
 
+class MakingALetterClear(unittest.TestCase):
+    def test_the_word_that_says_which_letter_is_not_spelled(self):
+        self.assertEqual(spell("B for bravo")[0], "b")
+        self.assertEqual(spell("B as in boy, A like apple, T for tango.")[0], "bat")
+        self.assertEqual(parse("four for five"), (["4", "5"], ["for"]))   # not after a figure
+
+    def test_all_caps(self):
+        self.assertEqual(spell("N A S A")[0], "nasa")
+        self.assertEqual(spell("NASA")[0], "nasa")
+        self.assertEqual(spell("All caps N A S A")[0], "NASA")
+        self.assertEqual(spell("all caps NASA")[0], "NASA")
+        self.assertEqual(spell("all caps a b", "c")[0], "ABc")   # for the one phrase
+
+    def test_letters_with_marks_on_them(self):
+        self.assertEqual(parse("é"), (["é"], []))
+        self.assertEqual(spell("C A F É")[0], "café")
+        self.assertEqual(spell("capital M, a macron, o, r, i")[0], "Māori")
+        self.assertEqual(spell("e acute")[0], "é")
+
+    def test_double_u_is_the_letter_w_however_it_is_written(self):
+        self.assertEqual(spell("double-u", "Double you", "W", "Double U.")[0], "wwww")
+        self.assertEqual(spell("T O double U N")[0], "town")
+        self.assertEqual(spell("capital double U")[0], "W")
+        # Two of the letter u are said one by one, as the other doubled letters can be.
+        self.assertEqual(spell("V A C U U M")[0], "vacuum")
+        self.assertEqual(spell("double L")[0], "ll")
+        self.assertEqual(spell("B for bravo")[0], "b")
+
+    def test_more_signs(self):
+        self.assertEqual(spell("a comma b slash c colon d ampersand e plus f hash g")[0], "a,b/c:d&e+f#g")
+        self.assertEqual(spell("x forward slash y back slash z")[0], "x/y\\z")
+        self.assertEqual(spell("open bracket a close bracket question mark")[0], "(a)?")
+
+
 if __name__ == "__main__":
     unittest.main()

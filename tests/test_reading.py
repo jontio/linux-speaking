@@ -88,6 +88,29 @@ class OwnText(unittest.TestCase):
             self.assertEqual(reading.choose_own_text(source, training), ([], 1))
             self.assertEqual(reading.own_text(training), (["The cat sat on the mat."], 1))
 
+    def test_a_chosen_text_is_read_however_it_was_saved(self):
+        # Word's "Plain Text" is in the Windows encoding and its "Unicode" is UTF-16.
+        # Read as UTF-8, the one lost every sentence with a curly mark in it (one of
+        # these three was left) and the other had no sentences at all.
+        text = "The cat’s mat is here. “Is it?” she asked. A plain sentence with nothing odd in it."
+        wanted = (["The cat's mat is here.", "Is it? she asked.",
+                   "A plain sentence with nothing odd in it."], 0)
+        with tempfile.TemporaryDirectory() as folder:
+            for saved_as in ("utf-8", "utf-8-sig", "cp1252", "utf-16"):
+                source = os.path.join(folder, saved_as + ".txt")
+                with open(source, "wb") as f:
+                    f.write(text.encode(saved_as))
+                training = os.path.join(folder, "training-" + saved_as)
+                self.assertEqual(reading.choose_own_text(source, training), wanted, saved_as)
+                self.assertEqual(reading.own_text(training), wanted, saved_as)
+
+    def test_a_long_text_cut_in_the_middle_of_a_letter_is_still_utf_8(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = os.path.join(folder, "cut.txt")
+            with open(source, "wb") as f:
+                f.write("The café was shut today. Is it é".encode("utf-8")[:-1])
+            self.assertEqual(reading._text_of(source), "The café was shut today. Is it ")
+
 
 class ReadToTheEnd(unittest.TestCase):
     SAID = "Nothing important has changed, although the price went up a little in the autumn."
@@ -356,6 +379,25 @@ class Cutting(unittest.TestCase):
         take, = feed(cutter, (QUIET, 1))
         self.assertEqual(loud_frames(take), 60)
 
+    def test_a_rest_before_reading_is_no_part_of_the_sentence(self):
+        cutter = ready()
+        rest = reading.LONGEST_FRAMES + 200           # longer than any sentence may be
+        self.assertEqual(feed(cutter, (QUIET, rest), (LOUD, 100), (QUIET, 60)), [])
+        self.assertTrue(cutter.due)                   # it is asked about, as any other is
+        cutter.next()
+        take, = feed(cutter, (QUIET, 1))
+        self.assertEqual(take.problem, "")
+        self.assertEqual(loud_frames(take), 100)
+        self.assertEqual(len(take.samples) // config.FRAME,
+                         config.PREROLL_FRAMES + 100 + reading.TAIL_FRAMES)
+
+    def test_but_speech_that_runs_on_too_long_is_still_too_long(self):
+        cutter = ready()
+        feed(cutter, (QUIET, 300), (LOUD, reading.LONGEST_FRAMES + 50))
+        cutter.next()
+        take, = feed(cutter, (QUIET, reading.PAUSE_FRAMES + 1))
+        self.assertEqual(take.problem, reading.TOO_LONG)
+
 
 class Level(unittest.TestCase):
     """The bar beside the sentence: its length is the loudness, its colour the verdict."""
@@ -509,6 +551,52 @@ class Keeping(unittest.TestCase):
     def test_time_text(self):
         self.assertEqual(reading.time_text(42.7), "42 s")
         self.assertEqual(reading.time_text(605), "10 min 5 s")
+
+
+class KeepingAfterMeddling(unittest.TestCase):
+    """What happens when the folder has been changed by hand between sittings."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = os.path.join(self.temp.name, "training")
+        self.sound = np.arange(config.RATE, dtype=np.int16)
+
+    def test_a_number_is_not_used_again_after_its_sound_was_deleted(self):
+        kept = Kept(self.folder, "2026-01-02")
+        kept.keep(self.sound, "The cat sat.")
+        gone = kept.keep(self.sound, "It stayed there.")
+        os.remove(gone)
+        path = Kept(self.folder, "2026-01-02").keep(self.sound, "Then it left.")
+        self.assertTrue(path.endswith("003.wav"))
+        again = Kept(self.folder, "2026-01-02")
+        self.assertEqual(again.texts(), {"The cat sat.", "Then it left."})
+        self.assertEqual(again.totals()[0], 2)
+
+    def test_a_number_listed_twice_goes_with_its_later_line(self):
+        day = os.path.join(self.folder, "2026-01-02")
+        Kept(self.folder, "2026-01-02").keep(self.sound, "Old words.")
+        with open(os.path.join(day, "said.txt"), "a", encoding="utf-8") as f:
+            f.write("001\tNew words.\n")
+        self.assertEqual(Kept(self.folder, "2026-01-02").texts(), {"New words."})
+        from dictation import training
+        self.assertEqual([text for _, text in training.sentences(self.folder)], ["New words."])
+
+    def test_a_list_saved_in_another_encoding_is_read_as_far_as_it_can_be(self):
+        day = os.path.join(self.folder, "2026-01-02")
+        Kept(self.folder, "2026-01-02").keep(self.sound, "The cat sat.")
+        with open(os.path.join(day, "said.txt"), "ab") as f:
+            f.write("002\tCaf\u00e9.\n".encode("latin-1"))
+        self.assertEqual(Kept(self.folder, "2026-01-02").totals()[0], 1)
+        from dictation import training
+        self.assertEqual(len(training.sentences(self.folder)), 1)
+
+    def test_a_folder_that_cannot_be_written_does_not_stop_reading_again(self):
+        kept = Kept(os.path.join(self.temp.name, "a-file"), "2026-01-02")
+        with open(kept.folder, "w") as f:
+            f.write("not a folder")
+        kept.set_rounds("the sentences that come with it", 2)   # nothing raised
+        self.assertEqual(kept.rounds("the sentences that come with it"), 1)
 
 
 if __name__ == "__main__":

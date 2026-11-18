@@ -157,6 +157,87 @@ check("one match is selected straight away",
       (None, "third"))
 check("choose with nothing showing", send(op="command", name="choose", arg="1").get("why"), "nothing to choose from")
 
+# "Correct ...": the words are chosen as for "select", and once something has been said in
+# their place the cursor is back where it was.
+def put(words, **extra):
+    return send(op="insert", text=words, **extra)
+
+
+def correct(words, **extra):
+    return send(op="command", name="correct", arg=words, **extra)
+
+
+def end():
+    return doc().split("\n")[-1]
+
+
+send(op="command", name="doc_end")
+send(op="command", name="new_paragraph")
+put("the quick brown cat jumps")
+check("correct chooses the words", (correct("cat", nearest=True).get("ok"), send(op="text")["selected"]), (True, "cat"))
+check("and says the cursor went back", put("dog").get("back"), True)
+put(" high")
+check("correct: the cursor is back at the end", end(), "the quick brown dog jumps high")
+correct("high", nearest=True)
+put("higher")
+put(" still")
+check("correcting the word the cursor is right after", end(), "the quick brown dog jumps higher still")
+send(op="command", name="line_start")
+correct("dog", nearest=True)
+put("wolf")
+put("See ")
+check("back to a place before the words", end(), "See the quick brown wolf jumps higher still")
+send(op="command", name="line_start")
+correct("see", nearest=True)
+put("Look")
+put("X")
+check("correcting the word the cursor is right before", end(), "XLook the quick brown wolf jumps higher still")
+send(op="command", name="doc_end")
+correct("quick", nearest=True)
+send(op="command", name="unselect")
+check("unselect after correct goes back too", (bool(put("!").get("back")), end()),
+      (False, "XLook the quick brown wolf jumps higher still!"))
+send(op="command", name="new_paragraph")
+put("second line")
+correct("wolf", nearest=True)
+put("jackal")
+put(" end")
+check("back from another paragraph", doc().split("\n")[-2:],
+      ["XLook the quick brown jackal jumps higher still!", "second line end"])
+send(op="command", name="new_paragraph")
+put("a hen and a hen")
+r = correct("hen")
+check("correct shows numbers too", (r.get("choices"), send(op="text")["rubies"]), (2, ["1", "2"]))
+send(op="command", name="choose", arg="1")
+check("a number chooses", (send(op="text")["selected"], send(op="text")["rubies"]), ("hen", []))
+put("duck")
+put(" done")
+check("and the cursor goes back after that as well", end(), "a duck and a hen done")
+correct("duck", nearest=True)
+send(op="command", name="select", arg="hen", nearest=True)
+check("no going back if other words are selected by then", (bool(put("goose").get("back")), end()),
+      (False, "a duck and a goose done"))
+put("s")
+check("the cursor stays with them", end(), "a duck and a gooses done")
+send(op="command", name="doc_end")
+correct("duck", nearest=True)
+put("swan")
+put(" again")
+check("only the next thing said goes back", (bool(put(" twice").get("back")), end()),
+      (False, "a swan and a gooses done again twice"))
+correct("swan", nearest=True)
+send(op="dictate", text="heron")
+send(op="dictate", text="comma thrice")
+check("through the older dictate request too", end(), "a heron and a gooses done again twice, thrice")
+send(op="command", name="doc_end")
+correct("heron", nearest=True)
+send(op="command", name="all_caps")
+check("another command in between ends it", (bool(put("crane").get("back")), end()),
+      (False, "a crane and a gooses done again twice, thrice"))
+put("s")
+check("and the cursor is left with the words", end(), "a cranes and a gooses done again twice, thrice")
+check("correct, not there", correct("zebra").get("why"), "can't find that")
+
 send(op="command", name="select", arg="fox")
 check("numbers showing again", len(send(op="text")["rubies"]) > 1, True)
 time.sleep(3.5)  # the test runs with a 2 second limit

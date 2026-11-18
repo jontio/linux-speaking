@@ -14,6 +14,7 @@ import argparse
 import gc
 import json
 import os
+import signal
 import shutil
 import sys
 import time
@@ -404,6 +405,11 @@ def run(args, job: training.Job, base: training.Base) -> None:
 
 
 def main() -> int:
+    # A program started in the background by a shell script is started deaf to Ctrl+C,
+    # and passes that on to what it starts: the app, begun from its menu entry where
+    # there is no login service, and so this. Stopping a run asks with Ctrl+C first, so
+    # that what was unpacked is cleared away: it has to be heard.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     parser = argparse.ArgumentParser(prog="python -m dictation.trainer")
     parser.add_argument("--data", required=True)
     parser.add_argument("--base", required=True, choices=sorted(training.BY_KEY))

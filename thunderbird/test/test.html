@@ -127,6 +127,82 @@ function runTests() {
   cmd("select_all");
   check("select all", H({ op: "text" }).selected.replace(/\s+/g, " ").trim(), text().replace(/\s+/g, " ").trim());
   cmd("unselect");
+  // "Correct ...": the words are chosen as for "select", and once something has been said
+  // in their place the cursor is back where it was.
+  const end = () => text().split("\n").pop();
+  cmd("doc_end");
+  say(P + "the quick brown cat jumps");
+  check("correct chooses the words", [cmd("correct", "cat", { nearest: true }).ok, H({ op: "text" }).selected], [true, "cat"]);
+  check("and says the cursor went back", say("dog").back, true);
+  say(" high");
+  check("correct: the cursor is back at the end", end(), "the quick brown dog jumps high");
+  cmd("correct", "high", { nearest: true });
+  say("higher");
+  say(" still");
+  check("correcting the word the cursor is right after", end(), "the quick brown dog jumps higher still");
+  cmd("line_start");
+  cmd("correct", "dog", { nearest: true });
+  say("wolf");
+  say("See ");
+  check("back to a place before the words", end(), "See the quick brown wolf jumps higher still");
+  cmd("line_start");
+  cmd("correct", "see", { nearest: true });
+  say("Look");
+  say("X");
+  check("correcting the word the cursor is right before", end(), "XLook the quick brown wolf jumps higher still");
+  cmd("doc_end");
+  cmd("correct", "quick", { nearest: true });
+  cmd("unselect");
+  check("unselect after correct goes back too", [Boolean(say("!").back), end()], [false, "XLook the quick brown wolf jumps higher still!"]);
+  say(P + "second line");
+  cmd("correct", "wolf", { nearest: true });
+  say("jackal");
+  say(" end");
+  check("back from another paragraph", text().split("\n").slice(-2), ["XLook the quick brown jackal jumps higher still!", "second line end"]);
+  say(P + "a hen and a hen");
+  const offered = cmd("correct", "hen");
+  check("correct shows numbers too", [offered.choices, H({ op: "text" }).numbers], [2, 2]);
+  cmd("choose", "1");
+  check("a number chooses", [H({ op: "text" }).selected, H({ op: "text" }).numbers], ["hen", 0]);
+  say("duck");
+  say(" done");
+  check("and the cursor goes back after that as well", end(), "a duck and a hen done");
+  cmd("correct", "duck", { nearest: true });
+  cmd("select", "hen", { nearest: true });
+  check("no going back if other words are selected by then", [Boolean(say("goose").back), end()], [false, "a duck and a goose done"]);
+  say("s");
+  check("the cursor stays with them", end(), "a duck and a gooses done");
+  cmd("doc_end");
+  cmd("correct", "duck", { nearest: true });
+  say("swan");
+  say(" again");
+  check("only the next thing said goes back", [Boolean(say(" twice").back), end()], [false, "a swan and a gooses done again twice"]);
+  cmd("doc_end");
+  cmd("correct", "swan", { nearest: true });
+  cmd("all_caps");
+  check("another command in between ends it", [Boolean(say("crane").back), end()], [false, "a crane and a gooses done again twice"]);
+  check("correct, not there", cmd("correct", "zebra").why, "can't find that");
+  // "Bold that" and "cap that" with nothing selected work on the last phrase, and leave
+  // the cursor after it: what is said next must not take its place.
+  cmd("doc_end");
+  say(P + "meeting at noon");
+  cmd("bold");
+  check("bold that on the last phrase leaves nothing selected", H({ op: "text" }).selected, "");
+  say(" see you there");
+  check("and the next words follow it", end(), "meeting at noon see you there");
+  check("in plain letters again", doc.queryCommandState("bold"), false);
+  cmd("all_caps");
+  check("all caps that on the last phrase leaves nothing selected", [H({ op: "text" }).selected, end()], ["", "meeting at noon SEE YOU THERE"]);
+  say(" then");
+  check("and the next words follow that too", end(), "meeting at noon SEE YOU THERE then");
+  cmd("doc_end");
+  say(P + "He said 'hello' to the boys\u2019 dog, and don't forget");
+  check("a word with quote marks round it is found", [cmd("select", "hello", { nearest: true }).ok, H({ op: "text" }).selected], [true, "hello"]);
+  check("and one with the mark at its end", [cmd("select", "boys", { nearest: true }).ok, H({ op: "text" }).selected], [true, "boys"]);
+  check("an apostrophe inside a word is part of it",
+    [cmd("select", "don't", { nearest: true }).ok, H({ op: "text" }).selected, cmd("select", "don", { nearest: true }).why],
+    [true, "don't", "can't find that"]);
+  cmd("unselect");
   check("unknown request", H({ op: "move", steps: [] }).why, "unknown request");
   check("unknown command", cmd("fly").why, "unknown command");
 }

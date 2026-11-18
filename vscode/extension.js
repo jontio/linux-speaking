@@ -24,10 +24,19 @@ const BLOCK_PREFIX = /^\s*(?:(?:#{1,6}|[-*+]|\d+[.)]|>)\s+(?:\[[ xX]\]\s+)?)+/;
 const LIST_ITEM = /^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?/;
 const QUOTE = /^(\s*>\s?)/;
 const WORD_CHAR = /[\p{L}\p{N}'\u2019]/u;
+const LETTER = /[\p{L}\p{N}]/u;
+// Whether the character at `i` is part of a word. An apostrophe is, between two
+// letters ("don't"); beside a word it is a quote mark, and no part of it ('hello').
+const inWord = (text, i) => LETTER.test(text[i]) ||
+  ((text[i] === "'" || text[i] === "\u2019") && i > 0 && i + 1 < text.length &&
+   LETTER.test(text[i - 1]) && LETTER.test(text[i + 1]));
 const BLANK_LINE = /\n[ \t\r]*(?=\n)/;
 
 let history = [];    // { uri, start, text } for recent phrases, newest last
 let choices = null;  // { ranges, type, timer } while numbers are showing
+// After "correct ...": { uri, version, mark, range }, where the cursor was (counted from the
+// top of the file) and the words chosen, until something is said over them.
+let correction = null;
 let server = null;
 let socketPath = "";
 let queue = Promise.resolve();
@@ -204,10 +213,42 @@ function expandBreaks(editor, position, text) {
   return out;
 }
 
+// ---- "correct ...": the cursor goes back afterwards ------------------------------------
+// Remember that the cursor was at `mark` when the words in `range` were chosen.
+function chose(editor, range, mark) {
+  const doc = editor.document;
+  correction = mark === undefined ? null
+    : { uri: doc.uri.toString(), version: doc.version, mark, range };
+}
+
+// Where the cursor was before "correct ...", with the start and end of the words it chose,
+// if those words are still what is selected and nothing has been changed since. Forgotten
+// either way: the next thing said or done settles it.
+function correcting(editor) {
+  const was = correction;
+  correction = null;
+  const doc = editor.document;
+  if (!was || was.uri !== doc.uri.toString() || was.version !== doc.version) return null;
+  const sel = editor.selection;
+  if (sel.isEmpty || !sel.start.isEqual(was.range.start) || !sel.end.isEqual(was.range.end)) return null;
+  return { mark: was.mark, start: doc.offsetAt(sel.start), end: doc.offsetAt(sel.end) };
+}
+
+// Where the cursor goes back to: it was at `mark` when the words from `start` to `end`
+// were chosen. Other words now stand in their place, from `newStart` to `newEnd`, and all
+// that came after has moved along by `grew`. Before the words, it is where it was. After
+// them, it has moved along with the text. Among them, it is left at the end of the new ones.
+function backTo(mark, start, end, newStart, newEnd, grew) {
+  if (mark <= start) return Math.min(mark, newStart);
+  if (mark >= end) return Math.max(newEnd, mark + grew);
+  return newEnd;
+}
+
 // ---- inserting -------------------------------------------------------------------------
 async function insert(editor, m) {
   const doc = editor.document;
   const sel = editor.selection;
+  const back = correcting(editor);
   const deleteBefore = Math.max(0, m.delete_before | 0);
   const deleteAfter = Math.max(0, m.delete_after | 0);
   const text = expandBreaks(editor, sel.start, String(m.text || ""));
@@ -230,17 +271,24 @@ async function insert(editor, m) {
       capital = { range: new vscode.Range(from, from.translate(0, 1)), text: rest[at].toUpperCase() };
     }
   }
+  const oldEnd = doc.offsetAt(end);
   const done = await edit(editor, (builder) => {
     builder.replace(new vscode.Range(start, end), text);
     if (capital) builder.replace(capital.range, capital.text);
   });
   if (!done) return fail("could not edit");
-  await place(editor, endOf(start, text));
+  let after = endOf(start, text);
+  if (back) {
+    // After "correct ...": back to where the cursor was before it.
+    const newEnd = doc.offsetAt(after);
+    after = doc.positionAt(backTo(back.mark, back.start, back.end, doc.offsetAt(start), newEnd, newEnd - oldEnd));
+  }
+  await place(editor, after);
   if (text) {
     history.push({ uri: doc.uri.toString(), start, text });
     if (history.length > HISTORY) history.shift();
   }
-  return ok({ text });
+  return ok(back ? { text, back: true } : { text });
 }
 
 // ---- the last phrase -------------------------------------------------------------------
@@ -279,7 +327,7 @@ const normChar = (c) => (c === "\u2019" ? "'" : c.toLowerCase());
 // A match never runs across a line break.
 function findAll(text, phrase) {
   const words = Array.from(phrase).map((c) => (WORD_CHAR.test(c) ? normChar(c) : " "))
-    .join("").split(" ").filter(Boolean);
+    .join("").split(" ").map((word) => word.replace(/^'+|'+$/g, "")).filter(Boolean);
   if (!words.length) return [];
   const needle = words.join(" ");
   let chars = "";
@@ -288,7 +336,7 @@ function findAll(text, phrase) {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === "\n") { chars += "\n"; index.push(i); gap = true; }
-    else if (WORD_CHAR.test(c)) { chars += normChar(c); index.push(i); gap = false; }
+    else if (inWord(text, i)) { chars += normChar(c); index.push(i); gap = false; }
     else if (!gap) { chars += " "; index.push(i); gap = true; }
   }
   const edge = (c) => c === undefined || c === " " || c === "\n";
@@ -300,7 +348,8 @@ function findAll(text, phrase) {
   return found;
 }
 
-async function selectWords(editor, phrase, nearest) {
+// `mark` is given for "correct ...": where the cursor was, to go back to.
+async function selectWords(editor, phrase, nearest, mark) {
   const doc = editor.document;
   const cursor = doc.offsetAt(editor.selection.active);
   const base = Math.max(0, cursor - SEARCH_AROUND);
@@ -315,11 +364,13 @@ async function selectWords(editor, phrase, nearest) {
   const range = (m) => new vscode.Range(doc.positionAt(base + m.start), doc.positionAt(base + m.end));
   if (nearest || matches.length === 1) {
     await select(editor, range(matches[0]));
+    chose(editor, range(matches[0]), mark);
     return ok();
   }
   // The closest few, numbered in the order they appear.
   const shown = matches.slice(0, MAX_CHOICES).sort((a, b) => a.i - b.i).map(range);
   showChoices(editor, shown);
+  choices.mark = mark;
   return ok({ choices: shown.length });
 }
 
@@ -400,7 +451,15 @@ async function paragraphEdge(editor, toEnd) {
 }
 
 // ---- formatting ------------------------------------------------------------------------
-const TITLE = (t) => t.toLowerCase().replace(/(^|[^\p{L}'\u2019])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+const TITLE = (t) => {
+  // A capital on each word. Capitals that are there already stay, so "the NASA report"
+  // is "The NASA Report", and so does the small first letter of a word spelled like
+  // "iPhone". Only text that is all in capitals is brought down first. (As title() in
+  // dictation/formatting.py, which Writer, Kate and typed-into boxes use.)
+  if (!/\p{Ll}/u.test(t)) t = t.toLowerCase();
+  return t.replace(/(?<![\p{L}\p{N}_'\u2019])\p{L}[\p{L}\p{N}_'\u2019]*/gu,
+    (word) => (/^\p{Ll}.*\p{Lu}/u.test(word) ? word : word.replace(/^\p{L}/u, (c) => c.toUpperCase())));
+};
 const CASES = { cap: TITLE, all_caps: (t) => t.toUpperCase(), no_caps: (t) => t.toLowerCase() };
 const WRAPS = { bold: "**", italic: "*" };
 
@@ -454,8 +513,10 @@ async function command(editor, m) {
       const n = parseInt(m.arg, 10);
       if (!(n >= 1 && n <= choices.ranges.length)) return fail("no such number");
       const range = choices.ranges[n - 1];
+      const mark = choices.mark;
       clearChoices();
       await select(editor, range);
+      chose(editor, range, mark);
       return ok();
     }
     case "new_paragraph": return insert(editor, { text: PARAGRAPH });
@@ -491,7 +552,10 @@ async function command(editor, m) {
       await place(editor, range.start);
       return ok();
     }
-    case "select": return selectWords(editor, String(m.arg || ""), Boolean(m.nearest));
+    case "select": case "correct":
+      correction = null;
+      return selectWords(editor, String(m.arg || ""), Boolean(m.nearest),
+        m.name === "correct" ? doc.offsetAt(sel.end) : undefined);
     case "select_last": {
       const range = lastRange(editor);
       if (!range) return fail("nothing to select");
@@ -499,7 +563,11 @@ async function command(editor, m) {
       return ok();
     }
     case "select_all": await run("editor.action.selectAll"); return ok();
-    case "unselect": await place(editor, sel.end); return ok();
+    case "unselect": {
+      const back = correcting(editor);
+      await place(editor, back ? doc.positionAt(back.mark) : sel.end); // after "correct ...", where it was
+      return ok();
+    }
     case "line_end": await run("cursorEnd"); return ok();
     case "line_start": await run("cursorHome"); return ok();
     case "word_left": case "word_right": {
@@ -569,6 +637,9 @@ async function handle(m) {
   if (!editor) return fail("editor not focused");
   if (choices && (m.op === "insert" || (m.op === "command" && m.name !== "choose"))) {
     clearChoices(); // doing anything else takes the numbers away
+  }
+  if (m.op === "command" && !["correct", "unselect", "choose"].includes(m.name)) {
+    correction = null; // "correct ..." is only for what is said next
   }
   switch (m.op) {
     case "context": return ok(around(editor));

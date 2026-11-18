@@ -12,7 +12,14 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
+from .formatting import own_stop
+from .words import fold
+
 _EDGES = re.compile(r"^\W+|\W+$")
+# One word written two ways. Which way is not something recognisers differ on in what
+# they heard, so neither is put to the vote: "Dr. Smith" and "Doctor Smith" are the same.
+_SAME_WORD = {"dr": "doctor", "mr": "mister", "mrs": "missus", "prof": "professor",
+              "vs": "versus", "okay": "ok"}
 
 
 # Who is asked, in this order, leaving out whichever heard the phrase first.
@@ -122,6 +129,8 @@ def _in_place_of(old: list, new: list, starts: bool, bare: bool = False) -> list
     if not old:
         return new
     tail = re.search(r"\W*$", old[-1]).group()
+    if own_stop(old[-1]):
+        tail = tail[1:]  # the stop was that word's own: "St. John" is not "Saint. John"
     if tail and new[-1][-1:].isalnum() and not bare:
         new[-1] += tail
     was, now = _EDGES.sub("", old[0]), _EDGES.sub("", new[0])
@@ -131,8 +140,11 @@ def _in_place_of(old: list, new: list, starts: bool, bare: bool = False) -> list
 
 
 def _key(token: str) -> str:
-    """A word as it is compared: lower case, without the punctuation around it."""
-    return _EDGES.sub("", token.lower().replace("\u2019", "'"))
+    """A word as it is compared: lower case, without the punctuation around it, and
+    with one spelling for the words that have a British and an American one ("colour",
+    "color") or a long and a short one ("Doctor", "Dr.")."""
+    key = _EDGES.sub("", token.lower().replace("\u2019", "'"))
+    return fold(_SAME_WORD.get(key, key))
 
 
 def _keys(tokens: list, ignore=()) -> list:

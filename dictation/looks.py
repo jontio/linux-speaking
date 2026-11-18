@@ -48,9 +48,36 @@ def _slope(across: bool, *stops) -> str:
             + ", ".join(f"stop:{at} {colour}" for at, colour in placed) + ")")
 
 
+def text_scale() -> float:
+    """How much bigger than usual Windows has been asked to make text (Settings,
+    Accessibility, Text size): 1.0 for the usual size, up to 2.25. The looks give their
+    sizes in points, as the Windows they copy did, and are scaled by this so that somebody
+    who needs large text has it here too."""
+    if not config.WINDOWS:
+        return 1.0
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Accessibility") as key:
+            percent = int(winreg.QueryValueEx(key, "TextScaleFactor")[0])
+        return min(2.25, max(1.0, percent / 100.0))
+    except (OSError, ValueError, TypeError, ImportError):
+        return 1.0
+
+
+def _scaled(sheet: str, scale: float) -> str:
+    """A style sheet with every text size in it made `scale` times as big."""
+    if scale == 1.0:
+        return sheet
+    import re
+    return re.sub(r"font-size: (\d+(?:\.\d+)?)pt",
+                  lambda found: f"font-size: {float(found.group(1)) * scale:.1f}pt", sheet)
+
+
 class _Look:
     """What the two looks share. Each says its own sizes, colours and style sheet."""
     key = ""
+    points = 9           # the size of its ordinary text
+    greyed = "#838383"   # the colour of words that do nothing as things stand
     frame = 4            # the border, either side and underneath
     top = 0              # and above the title bar, where the bar doesn't reach the edge itself
     bar = 30             # the title bar
@@ -130,6 +157,7 @@ QCheckBox:disabled {{ color: {greyed}; }}"""
 # ---- Windows XP, in its blue "Luna" ---------------------------------------------------------
 class _XP(_Look):
     key = "xp"
+    points, greyed = 8, "#ACA899"
     frame, bar, radius, round_bottom = 4, 30, 8, False
     SAND = "#ECE9D8"
     window = "background: #0054E3;"
@@ -628,7 +656,18 @@ def _icon(p: QPainter, bar: QWidget, left: int) -> int:
 
 def menu(key: str) -> str:
     """The style sheet that gives a menu the look `key`: nothing, for Windows' own."""
-    return _LOOKS[key].menu if key in _LOOKS else ""
+    return _scaled(_LOOKS[key].menu, text_scale()) if key in _LOOKS else ""
+
+
+def points(key: str) -> float:
+    """The size of the look's ordinary text, in points: 0 for Windows' own look, where
+    the system's font is used as it is. For text that is to be so many times that size."""
+    return _LOOKS[key].points * text_scale() if key in _LOOKS else 0.0
+
+
+def greyed(key: str) -> str:
+    """The look's colour for words that do nothing as things stand: "" for Windows' own."""
+    return _LOOKS[key].greyed if key in _LOOKS else ""
 
 
 # ---- the title bar --------------------------------------------------------------------------
@@ -642,6 +681,9 @@ class _BarButton(QAbstractButton):
         self.setFixedSize(*(size[kind] if isinstance(size, dict) else size))
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setToolTip("Close" if kind == "close" else "Minimise")
+        # A picture and no words: a screen reader, or a tool that presses buttons by
+        # voice, needs to be told what it is.
+        self.setAccessibleName("Close this window" if kind == "close" else "Minimise this window")
 
     def enterEvent(self, event) -> None:
         self.update()
@@ -788,16 +830,19 @@ def dress(window: QWidget, key: str, minimise: bool = True, resizable: bool = Tr
                           | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinimizeButtonHint)
     window.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     window.setObjectName("lookWindow")
-    window.setStyleSheet(f"QWidget#lookWindow {{ {look.window} }}" + look.sheet())
+    window.setStyleSheet(f"QWidget#lookWindow {{ {look.window} }}"
+                         + _scaled(look.sheet(), text_scale()))
     window.look_frame = _Frame(window, look, resizable)  # kept alive with the window
     return QSize(2 * look.frame, look.top + look.bar + look.frame)
 
 
 def message(parent: QWidget, key: str, title: str, text: str, kind: str = "warning",
-            buttons=("OK",)) -> str:
+            buttons=("OK",), default: str = "") -> str:
     """Say something in a small window of the look `key`, and wait for an answer. Returns
     the button that was pressed, or "" if the window was closed. `kind` is "warning",
-    "information" or "question", for the picture beside the words."""
+    "information" or "question", for the picture beside the words. `default` is the
+    button that Enter presses and that has the keyboard to begin with: the first, unless
+    another is named (as "No" is, where "Yes" would delete something)."""
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
     layout = QVBoxLayout(dialog)
@@ -820,12 +865,19 @@ def message(parent: QWidget, key: str, title: str, text: str, kind: str = "warni
     answer = [""]
     foot = QHBoxLayout()
     foot.addStretch()
+    first = None
     for at, name in enumerate(buttons):
         button = QPushButton(name)
-        button.setDefault(at == 0)
+        if name == default or (at == 0 and default not in buttons):
+            button.setDefault(True)
+            first = button
+        else:
+            button.setAutoDefault(False)  # Enter is the default's, wherever the keyboard is
         button.clicked.connect(lambda _=False, name=name: (answer.__setitem__(0, name), dialog.accept()))
         foot.addWidget(button)
     layout.addLayout(foot)
+    if first is not None:
+        first.setFocus()
     dress(dialog, key, minimise=False, resizable=False)
     dialog.exec()
     return answer[0]

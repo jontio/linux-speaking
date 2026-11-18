@@ -15,16 +15,22 @@ import threading
 import time
 import unicodedata
 
-from .formatting import LINE, PARAGRAPH, fit
-from .selecting import find_nearest
+from .formatting import LINE, PARAGRAPH, fit, title
+from .selecting import back_to, find_nearest
 from .words import Lexicon
 
 HISTORY = 20
 READ = 1000        # how far around the cursor to read
+LEAD = 20          # how much before the words "correct ..." chose is checked to be the same
+# Going back after "correct ..." is by arrow keys. More of them than this are not pressed:
+# the program would still be working through them when the next phrase came.
+FAR = 3000
+FAR_PACED = 300    # where keys go one at a time, about a hundred a second
 WHOLE = 20000      # the most text looked through for "select ..."
 MOST = 400000      # the longest text an edit box is asked for whole, each time
 UP = 12            # how far out from the cursor the text box is looked for
 SLACK = 4          # screen pixels by which text before the cursor may seem to pass it
+SETTLE = 0.04      # seconds between two looks at a box, to see that typing into it has ended
 OBJID_CARET = 0xFFFFFFF8   # "give me this window's text cursor"
 INVISIBLE = 0x8000         # its state when there is none to be seen
 # Characters nobody sees, which some programs keep in a line with nothing on it.
@@ -39,7 +45,8 @@ KEYS = {"enter": 0x0D, "backspace": 0x08, "delete": 0x2E, "tab": 0x09, "home": 0
         "ctrl": 0x11, "shift": 0x10, "a": 0x41, "z": 0x5A}
 EXTENDED = {"delete", "home", "end", "left", "up", "right", "down"}
 
-# What each command is on the keyboard: (keys held together, how many times per count).
+# What each command is on the keyboard: the keys held together. Those in COUNTED are
+# pressed as many times as the command says.
 COMMAND_KEYS = {
     "press_enter": "enter", "undo": "ctrl+z", "select_all": "ctrl+a",
     "line_end": "end", "line_start": "home", "doc_top": "ctrl+home", "doc_end": "ctrl+end",
@@ -90,6 +97,54 @@ def steps_for_insert(text: str, delete_before: int, delete_after: int, selected:
     return steps + steps_for_text(text)
 
 
+def presses(text: str) -> int:
+    """How many presses of an arrow key take the cursor across `text`: one for each
+    character as it is seen. A line break is one however the program writes it, and so
+    is a letter with its accents, a face with its skin tone, a flag, or pictures joined
+    into one."""
+    count, joined, flag = 0, False, False
+    for c in text.replace("\r\n", "\n"):
+        if c == "\u200d":                               # joins the next picture to this one
+            joined = True
+            continue
+        if joined:
+            joined = False
+            continue
+        if (unicodedata.combining(c) or "\ufe00" <= c <= "\ufe0f"
+                or "\U0001f3fb" <= c <= "\U0001f3ff"):  # accents, variants, skin tones
+            continue
+        if "\U0001f1e6" <= c <= "\U0001f1ff":           # a flag is a pair of these
+            flag = not flag
+            if not flag:
+                continue
+        else:
+            flag = False
+        count += 1
+    return count
+
+
+def arrow_length(text: str) -> int:
+    """How many presses of an arrow key take the cursor back across `text` once it has
+    been typed."""
+    return sum(presses(step[1]) if step[0] == "type" else step[2]
+               for step in steps_for_text(text))
+
+
+def steps_back(mark: int, start: int, end: int, typed: int, delete_before: int = 0,
+               delete_after: int = 0) -> list:
+    """The arrow keys that take the cursor back to where it was before "correct ...",
+    from the end of what has just been typed over the words that command chose.
+
+    The cursor was at `mark` and the words ran from `start` to `end`, all counted in
+    presses of an arrow key from the top of the box. `typed` is how many presses long
+    the new words are.
+    """
+    new_start = max(0, start - delete_before)
+    new_end = new_start + typed
+    move = back_to(mark, start, end, new_start, new_end, new_end - end - delete_after) - new_end
+    return [("press", "right" if move > 0 else "left", abs(move))] if move else []
+
+
 def box_kind(window_class: str) -> str:
     """How a window can be asked for its text by message: "rich" or "plain" for Windows'
     own edit boxes, "bytes" for the editing area of Notepad++ and its like (Scintilla),
@@ -117,21 +172,29 @@ def placed(text: str, first: int, last: int, kind: str) -> tuple:
     """
     if kind == "rich":
         text = text.replace("\r\n", "\r")
-    elif kind == "bytes":
-        raw = text.encode("utf-8")
-        first, last = (len(raw[:place].decode("utf-8", "ignore")) for place in (first, last))
+    # A "bytes" box counts in bytes of UTF-8, the others in units of UTF-16: a face or
+    # other character from beyond the first 65,536 is two of those, and one here.
+    raw = text.encode("utf-8" if kind == "bytes" else "utf-16-le")
+    size = 1 if kind == "bytes" else 2
+    first, last = (len(raw[:place * size].decode("utf-8" if kind == "bytes" else "utf-16-le",
+                                                 "ignore")) for place in (first, last))
     first = max(0, min(first, len(text)))
     return text, first, max(first, min(last, len(text)))
 
 
 def place_in(text: str, at: int, kind: str) -> int:
     """Where character `at` of `text` is, as a box of this `kind` counts."""
-    return len(text[:at].encode("utf-8")) if kind == "bytes" else at
+    return len(text[:at].encode("utf-8")) if kind == "bytes" else units(text[:at])
 
 
 def around(text: str, first: int, last: int) -> tuple:
     """(before, after, selected), at most READ characters each side."""
     return text[max(0, first - READ):first], text[last:last + READ], text[first:last]
+
+
+def plain_breaks(text: str) -> str:
+    """`text` with every line break written the one way, to compare what two boxes hold."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def as_one_piece(text: str) -> str:
@@ -216,6 +279,10 @@ class KeysTarget:
         self.name = "another program"
         self.lexicon = Lexicon.load_default()
         self.history = []                 # what was typed lately, newest last
+        # After "correct ...": (where the cursor was, start and end of the words chosen,
+        # the words, what came just before them, more for a box asked by message), until
+        # something is said over them.
+        self._correction = None
         self.seen = ""                    # what last had the keyboard, for the log
         self._look = look                 # for tests: returns a Box or None
         self._press = press or self._type  # for tests: receives the list of steps
@@ -506,15 +573,95 @@ class KeysTarget:
         winapi.tap_shift(self._edit)      # or Notepad's cursor goes from the screen
         return True
 
+    # ---- "correct ...": the cursor goes back afterwards ----------------------------------
+    def _chose(self, text: str, mark: int, found: tuple, edit=None) -> None:
+        """Remember, for "correct ...", that the cursor was at `mark` in the box's `text`
+        when the words from found[0] to found[1] were selected. `edit` is (window, kind)
+        for a box that is asked by message, where the cursor can be put straight back."""
+        start, end = found
+        self._correction = (presses(text[:mark]), presses(text[:start]), presses(text[:end]),
+                            text[start:end], text[max(0, start - LEAD):start],
+                            edit and (*edit, text, mark, start, end))
+
+    def _correcting(self, box):
+        """Where the cursor was before "correct ...", with the start and end of the words
+        it chose, counted in presses of an arrow key, and what is kept for a box asked by
+        message, if those words are still what is selected. Forgotten either way: the
+        next thing said or done settles it."""
+        correction, self._correction = self._correction, None
+        if correction is None:
+            return None
+        mark, start, end, words, lead, edit = correction
+        if box.selected != words or not box.before.endswith(lead):
+            return None
+        return mark, start, end, edit
+
+    def _paced(self) -> bool:
+        """Whether keys go to the program in front one at a time, about a hundred a second."""
+        return self._as_keys
+
+    def _go_back(self, steps: list) -> bool:
+        """Press the arrow keys that take the cursor back. Not if there are too many of
+        them: then the cursor stays, and False is returned."""
+        if steps and steps[-1][2] > (FAR_PACED if self._paced() else FAR):
+            return False
+        if steps:
+            self._press(steps)
+        return True
+
+    def _back_in_edit(self, edit, new=None, delete_before: int = 0, delete_after: int = 0) -> bool:
+        """Put the cursor of a box that is asked by message straight back where it was
+        before "correct ...". No keys are pressed: in a long text the arrow keys would
+        take a while. False if it couldn't be done.
+
+        `new` is what has just been put in place of the words chosen, or None if they
+        were left as they were.
+        """
+        from . import winapi
+        window, kind, old, mark, start, end = edit
+        text = old
+        if new is not None:
+            if start < mark < end:
+                return True               # it was among the words: it stays after the new ones
+            # The keys just pressed may not all have been taken in yet. Wait until the box
+            # holds what it should, however it writes its line breaks.
+            first = max(0, start - delete_before)
+            wanted = plain_breaks(old[:first] + as_one_piece(new) + old[end + delete_after:])
+            for _ in range(50):
+                read = winapi.edit_text(window, MOST)
+                if read is None:
+                    return False
+                text, here, last = placed(*read, kind)
+                if here == last and plain_breaks(text) == wanted:
+                    break
+                time.sleep(SETTLE)
+            else:
+                return False              # something else went in: leave the cursor be
+            mark = back_to(mark, start, end, first, here, len(text) - len(old))
+        place = place_in(text, mark, kind)
+        if not winapi.select_in_edit(window, place, place):
+            return False
+        winapi.tap_shift(window)
+        return True
+
     def _insert(self, box, text: str, delete_before: int, delete_after: int) -> dict:
+        back = self._correcting(box)
         if not (text and not delete_before and not delete_after and self._hand_over(text)):
             steps = steps_for_insert(text, delete_before, delete_after, bool(box.selected))
             if steps:
                 self._press(steps)
+        reply = {"ok": True, "text": text}
+        if back is not None:
+            # After "correct ...": back to where the cursor was before it.
+            mark, start, end, edit = back
+            went = bool(edit) and self._back_in_edit(edit, text, delete_before, delete_after)
+            went = went or self._go_back(
+                steps_back(mark, start, end, arrow_length(text), delete_before, delete_after))
+            reply["back" if went else "too_far"] = True
         if text:
             self.history.append(text)
             del self.history[:-HISTORY]
-        return {"ok": True, "text": text}
+        return reply
 
     def _last(self, before: str):
         """The last phrase typed, if it is still what is just before the cursor."""
@@ -525,6 +672,8 @@ class KeysTarget:
 
     def _command(self, box, before: str, after: str, name: str, arg: str) -> dict:
         count = max(1, min(99, int(arg))) if str(arg).isdigit() else 1
+        if name not in ("correct", "unselect", "choose", "cancel_choices"):
+            self._correction = None       # "correct ..." is only for what is said next
         if name in ("new_paragraph", "new_line"):
             ins = fit(name.replace("_", " "), before, after, self.lexicon, spoken_off=())
             return self._insert(box, ins.text, ins.delete_before, ins.delete_after)
@@ -554,20 +703,31 @@ class KeysTarget:
             self._press([("press", "shift+left", typed_length(last))])
             return {"ok": True}
         if name == "unselect":
-            if box.selected:
-                self._press([("press", "right", 1)])
+            back = self._correcting(box)
+            if not box.selected:
+                return {"ok": True}
+            if back is not None and back[3] and self._back_in_edit(back[3]):
+                return {"ok": True}       # after "correct ...", where the cursor was before it
+            self._press([("press", "right", 1)])   # that puts the cursor at the selection's end
+            if back is not None and back[0] != back[2]:
+                self._go_back([("press", "right" if back[0] > back[2] else "left",
+                                abs(back[0] - back[2]))])
             return {"ok": True}
         if name in ("select_line", "delete_line"):
-            self._press([("press", "home", 1), ("press", "shift+end", 1)]
+            more = count - 1 if name == "delete_line" else 0   # "delete 3 lines": two more
+            self._press([("press", "home", 1)]
+                        + ([("press", "shift+down", more)] if more else [])
+                        + [("press", "shift+end", 1)]
                         + ([("press", "backspace", 1)] if name == "delete_line" else []))
             return {"ok": True}
-        if name == "select":
-            return self._select(box, arg)
+        if name in ("select", "correct"):
+            self._correction = None
+            return self._select(box, arg, name == "correct")
         if name in ("cap", "all_caps", "no_caps"):
             old = box.selected or self._last(before)
             if not old or PARAGRAPH in old or LINE in old:
                 return {"ok": False, "why": "nothing to format"}
-            new = {"cap": old.title(), "all_caps": old.upper(), "no_caps": old.lower()}[name]
+            new = {"cap": title(old), "all_caps": old.upper(), "no_caps": old.lower()}[name]
             if not box.selected:
                 self._press([("press", "backspace", typed_length(old))])
                 self.history[-1] = new
@@ -579,9 +739,10 @@ class KeysTarget:
             return {"ok": False, "why": "nothing to choose from"}
         return {"ok": False, "why": "unknown command"}
 
-    def _select(self, box, phrase: str) -> dict:
+    def _select(self, box, phrase: str, correcting: bool = False) -> dict:
         """Select the nearest match for `phrase`, where the program lets its text be
-        selected from outside."""
+        selected from outside. `correcting` is for "correct ...": where the cursor was
+        is remembered, to go back to."""
         if self._look is not None:
             return {"ok": False, "why": "can't select here"}
         if self._edit_text is not None:   # an edit box, asked by message
@@ -594,6 +755,8 @@ class KeysTarget:
                                          place_in(text, found[1], kind)):
                 return {"ok": False, "why": "can't select here"}
             winapi.tap_shift(window)
+            if correcting:
+                self._chose(text, cursor, found, (window, kind))
             return {"ok": True}
         whole = self._whole               # the box's own text, not the page around it
         if whole is None:                 # an empty box: only its hint is there
@@ -603,7 +766,9 @@ class KeysTarget:
         text = whole.GetText(WHOLE) or ""
         lead = whole.Clone()
         lead.MoveEndpointByRange(end, self._here, start)
-        found = find_nearest(text, len(lead.GetText(WHOLE) or ""), phrase)
+        led = lead.GetText(WHOLE) or ""
+        cursor = len(led)
+        found = find_nearest(text, cursor, phrase)
         if found is None:
             return {"ok": False, "why": "can't find that", "sounds_tried": True}
         match = whole.Clone()
@@ -613,6 +778,8 @@ class KeysTarget:
         if (match.GetText(-1) or "") != text[found[0]:found[1]]:
             return {"ok": False, "why": "can't select here"}    # it counts differently
         match.Select()
+        if correcting and cursor < WHOLE and text.startswith(led):
+            self._chose(text, cursor, found)   # only where the cursor's place is sure
         return {"ok": True}
 
 
