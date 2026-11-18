@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 After updating to this version, these are left for you to do by hand:
 
