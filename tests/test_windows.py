@@ -191,6 +191,62 @@ if HAVE_QT and ALONE:
             self.assertEqual(window.models.currentIndex(), before)
             self.assertEqual(engine.asked, [])  # and no model was loaded
 
+    class WakeUpOnTheOtherComputer(unittest.TestCase):
+        """The tick box for "wake up" being listened for on the other computer: ticked
+        and greyed where this computer has no speech model, free to choose where it has
+        one, and unticked to begin with."""
+
+        def have(self, models):
+            """Say which speech models are on this computer."""
+            for where in (tray, settings_module):
+                was = where.available_models
+                where.available_models = lambda folder, models=models: list(models)
+                self.addCleanup(setattr, where, "available_models", was)
+
+        def window(self, models, wake=False):
+            self.have(models)
+            engine = Engine()
+            engine.settings.remote.update(on=True, address="office-pc", key="k", model="", wake=wake)
+            engine.set_remote = lambda on, address, key, model, wake: engine.asked.append(("remote", wake))
+            self.engine = engine
+            window = tray.SettingsWindow(engine)
+            self.addCleanup(window.close)
+            return window
+
+        def test_with_no_model_here_it_is_ticked_and_greyed_and_stays_ticked(self):
+            window = self.window([])
+            box = window.remote_wake
+            self.assertTrue(box.isChecked())
+            self.assertIn("it has to", box.text())
+            self.assertIn("color", box.styleSheet())                  # greyed
+            self.assertIn("no speech model of its own", box.toolTip())
+            box.click()                                               # it can't be unticked
+            self.assertTrue(box.isChecked())
+            self.assertNotIn(("remote", True), self.engine.asked)
+            # What was chosen is kept as it was, for when a model is installed here.
+            window.apply_remote()
+            self.assertEqual(self.engine.asked[-1], ("remote", False))
+
+        def test_with_a_model_here_it_is_unticked_to_begin_with_and_can_be_ticked(self):
+            window = self.window([("small.en", "Small")])
+            box = window.remote_wake
+            self.assertFalse(box.isChecked())
+            self.assertEqual((box.text(), box.styleSheet()), ('Listen for "wake up" there too', ""))
+            box.click()
+            self.assertTrue(box.isChecked())
+            self.assertEqual(self.engine.asked[-1], ("remote", True))
+
+        def test_with_a_model_here_a_tick_that_was_chosen_is_kept(self):
+            self.assertTrue(self.window([("small.en", "Small")], wake=True).remote_wake.isChecked())
+
+        def test_it_follows_the_models_as_they_come_and_go(self):
+            window = self.window([])
+            self.assertTrue(window.remote_wake.isChecked())
+            self.have([("small.en", "Small")])
+            window.refill_models()                                    # as when one is installed
+            self.assertFalse(window.remote_wake.isChecked())
+            self.assertEqual(window.remote_wake.styleSheet(), "")
+
     class TextInAPageThatScrolls(unittest.TestCase):
         """Scrolling down Settings, the wheel stays with the page when the pointer comes
         to rest on a box of text."""
@@ -1184,6 +1240,78 @@ if HAVE_QT and ALONE:
             self.assertIn("enough free disk space", fetches.start("tiny.en"))
             self.assertEqual(fetches.name, "")
             self.assertTrue(fetches.start("no-such-model"))
+
+        def downloads_that_only_pretend(self, here):
+            """The downloads, with nothing really fetched: `here` is what is installed,
+            and grows as each "arrives". Returns (the downloads, what was started, what
+            was said)."""
+            fetches, started, said = tray.downloads(), [], []
+
+            class Pretend:
+                cancelled = False
+
+                def __init__(self, known, folder, progress=None):
+                    started.append(known.name)
+
+            class NoThread:
+                def __init__(self, target=None, daemon=None):
+                    pass
+
+                def start(self):
+                    pass
+
+            for where, name, stand_in in (
+                    (models, "Download", Pretend), (tray.threading, "Thread", NoThread),
+                    (models, "free_space", lambda folder: 10 ** 12),
+                    (models, "is_installed", lambda folder, name: name in here),
+                    (fetches, "announce", lambda text, kind="info": said.append((text, kind)))):
+                self.addCleanup(setattr, where, name, getattr(where, name))
+                setattr(where, name, stand_in)
+            self.addCleanup(setattr, fetches, "name", "")
+            self.addCleanup(setattr, fetches, "after", "")
+            self.addCleanup(setattr, fetches, "download", None)
+            return fetches, started, said
+
+        def test_a_parakeet_brings_small_with_it_where_small_is_not_here(self):
+            # A computer installed with no models: a Parakeet leans on Small, so Small is
+            # fetched first, and the Parakeet when that is in.
+            here = set()
+            fetches, started, said = self.downloads_that_only_pretend(here)
+            self.assertEqual(fetches.start(tray.RECOMMENDED), "")
+            self.assertEqual((started, fetches.name, fetches.after),
+                             ([config.WAKE_MODEL], config.WAKE_MODEL, tray.RECOMMENDED))
+            self.assertIn("Small is fetched first", said[0][0])
+            here.add(config.WAKE_MODEL)
+            fetches.on_over(config.WAKE_MODEL, "")           # Small has arrived
+            self.assertEqual((started, fetches.name, fetches.after),
+                             ([config.WAKE_MODEL, tray.RECOMMENDED], tray.RECOMMENDED, ""))
+            fetches.on_over(tray.RECOMMENDED, "")
+            self.assertEqual((len(started), fetches.name), (2, ""))
+
+        def test_with_small_here_a_parakeet_is_fetched_by_itself(self):
+            fetches, started, said = self.downloads_that_only_pretend({config.WAKE_MODEL})
+            self.assertEqual(fetches.start(tray.RECOMMENDED), "")
+            self.assertEqual((started, fetches.after, said), ([tray.RECOMMENDED], "", []))
+
+        def test_a_whisper_model_is_fetched_by_itself_too(self):
+            fetches, started, said = self.downloads_that_only_pretend(set())
+            self.assertEqual(fetches.start("medium.en"), "")
+            self.assertEqual((started, fetches.after), (["medium.en"], ""))
+
+        def test_small_paused_or_failed_leaves_the_parakeet_for_another_time(self):
+            for problem in (tray.Downloads.PAUSED, "The download site could not be reached."):
+                fetches, started, said = self.downloads_that_only_pretend(set())
+                fetches.start(tray.RECOMMENDED)
+                fetches.on_over(config.WAKE_MODEL, problem)
+                self.assertEqual((started, fetches.name, fetches.after), ([config.WAKE_MODEL], "", ""))
+
+        def test_the_first_model_to_arrive_is_handed_to_the_engine(self):
+            told = []
+            handler = SimpleNamespace(engine=SimpleNamespace(model_installed=told.append))
+            tray.Tray.on_model_installed(handler, "small.en", "")
+            tray.Tray.on_model_installed(handler, "medium.en", "The download site could not be reached.")
+            self.assertEqual(told, ["small.en"])
+            tray.Tray.on_model_installed(SimpleNamespace(engine=Engine()), "small.en", "")   # an engine that isn't asked
 
         def test_the_voice_test_goes_on_with_its_window_closed(self):
             hub, said = tray.Hub(), []

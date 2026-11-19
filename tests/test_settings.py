@@ -164,6 +164,19 @@ class Effects(unittest.TestCase):
         self.assertEqual(move_steps("para_start", "", "rest")[0][1], "gotoPreviousParagraph")
         self.assertEqual(move_steps("line_end", "", ""), MOVES["line_end"])
 
+    def test_wake_up_is_heard_on_the_other_computer_when_there_is_no_model_here(self):
+        from unittest import mock
+        from dictation.settings import wake_there
+        with mock.patch("dictation.settings.available_models", return_value=[]):
+            # It has to be, whatever was chosen.
+            self.assertEqual(wake_there({"wake": False}, "models"), (True, True))
+            self.assertEqual(wake_there({"wake": True}, "models"), (True, True))
+        with mock.patch("dictation.settings.available_models", return_value=[("small.en", "Small")]):
+            # With a model here it is as it was chosen: not, to begin with.
+            self.assertEqual(wake_there({"wake": False}, "models"), (False, False))
+            self.assertEqual(wake_there({}, "models"), (False, False))
+            self.assertEqual(wake_there({"wake": True}, "models"), (True, False))
+
     def test_redo_that_and_how_it_gets_written(self):
         for heard in ("Redo that.", "Redo.", "Redo it.", "Re-do that.", "OK, redo that, please."):
             self.assertEqual(interpret(heard, True), Command("redo"), heard)

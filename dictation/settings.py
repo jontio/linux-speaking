@@ -595,6 +595,16 @@ def available_models(model_dir: str) -> list:
             for n in sorted(names, key=lambda n: (model_label(n)[0], n))]
 
 
+def wake_there(remote: dict, model_dir: str) -> tuple:
+    """(whether the other computer listens for "wake up" as well, whether it has to).
+
+    It has to where this computer has no speech model of its own: there is nothing here
+    to hear "wake up" with. With a model here it is as it was chosen, which is not to,
+    to begin with: then nothing is sent while dictation is asleep."""
+    forced = not available_models(model_dir)
+    return forced or bool(remote.get("wake")), forced
+
+
 def without_effect(chosen: str, remote: dict, model_dir: str) -> dict:
     """{setting: why it would do nothing as things stand}, for Settings to grey those
     out. `chosen` is the model in use on this computer, `remote` the other computer that

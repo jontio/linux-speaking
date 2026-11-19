@@ -72,7 +72,10 @@ On Linux (for Windows, see [the Windows page](docs/WINDOWS.md#what-you-need)):
   asks.
 - **About 1.5 GB of disk space** in your home folder: some 650 MB for the two speech
   models the installer fetches and the rest for the Python packages they run on. The
-  recommended model, fetched afterwards, is another 660 MB. (Round figures.)
+  recommended model, fetched afterwards, is another 660 MB. (Round figures.) The
+  installer asks whether to download the models: a computer that is short of space, or
+  slow, can do without them and have
+  [another computer do the recognising](docs/OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own).
 - **A reasonably recent processor.** On an 8-core laptop chip a phrase takes about a
   second to appear after you stop speaking. The speech models are kept in memory while
   it runs.

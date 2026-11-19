@@ -64,7 +64,10 @@ TRAINING_DIR = os.path.normpath(os.path.expanduser(
 _SPEECH_NOTE = os.path.expanduser(
     "~/.var/app/net.mkiol.SpeechNote/cache/net.mkiol/dsnote/speech-models"
 )
-if os.path.isdir(os.path.join(_OWN_MODELS, "small.en")):
+if os.path.isdir(os.path.join(_OWN_MODELS, "small.en")) \
+        or not os.path.isdir(os.path.join(_SPEECH_NOTE, "en_fasterwhisper_small")):
+    # The install's own. So it is where there are none at all, here or there: a computer
+    # installed with no speech model, where one fetched later has to land in this folder.
     _DIR, _ASLEEP, _AWAKE = _OWN_MODELS, "base.en", "small.en"
 else:  # models already downloaded by the Speech Note app
     _DIR, _ASLEEP, _AWAKE = _SPEECH_NOTE, "en_fasterwhisper_base", "en_fasterwhisper_small"

@@ -14,7 +14,9 @@
 # Options, as environment variables:
 #   LS_INSTALL_DIR=~/linux-speaking   where to install: a folder of its own
 #   LS_SKIP_PACKAGES=1                  don't install system packages
-#   LS_SKIP_MODELS=1                    don't download the speech models
+#   LS_SKIP_MODELS=1                    don't download the speech models, and don't ask: for a
+#                                       small computer that leaves the recognising to another
+#                                       one (0: download them, and don't ask)
 #   LS_SKIP_INTEGRATIONS=1              don't touch LibreOffice, Thunderbird, VS Code, Kate,
 #                                       the menu or the login service, and don't start it
 #   LS_NO_AUTOSTART=1                   don't start it at every login (0 turns that back on;
@@ -73,6 +75,58 @@ if [ -d "$dir" ] && [ ! -d "$dir/app/dictation" ] && others_in "$dir"; then
   stop "$dir is a folder with other things in it, and not an earlier install." \
        "Linux Speaking wants a folder of its own. Name one that doesn't exist yet, such as:" \
        "  LS_INSTALL_DIR=\"$dir/linux-speaking\" ./install.sh"
+fi
+
+# ---- the speech models: to fetch them, or not ---------------------------------------------
+# Recognising speech on this computer needs speech models, about 650 MB of them. A
+# computer that is short of space, or slow, can do without and leave the recognising to
+# another one. So a new install asks, here at the start, before the long steps. What was
+# answered is kept, in a note in the models folder, so that an update doesn't ask again.
+# LS_SKIP_MODELS answers for somebody who isn't there to be asked: 1 for no, 0 for yes.
+left_out="$dir/models/left-out.txt"
+ask_about_models() {
+  local answer
+  echo
+  echo "== Speech models"
+  echo "To recognise speech, this computer needs speech models. Two are downloaded now:"
+  echo "about 650 MB."
+  echo
+  echo "A computer that is short of disk space, or slow, can do without them, and have"
+  echo "another computer of yours do the recognising. Models can also be added later, from"
+  echo "Settings."
+  echo
+  while true; do
+    printf 'Download the speech models now? [Y/n] '
+    read -r answer || answer=""
+    case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+      ""|y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) echo "Please answer y for yes, or n for no." ;;
+    esac
+  done
+}
+if [ "${LS_ENGINE_ONLY:-0}" != 1 ]; then
+  case "${LS_SKIP_MODELS:-}" in
+    0|1) ;;                                            # said outright
+    *)
+      if [ -e "$dir/models/small.en/model.bin" ]; then
+        LS_SKIP_MODELS=0                               # they are here already
+      elif [ -e "$left_out" ]; then
+        LS_SKIP_MODELS=1
+        echo "No speech models are downloaded: that is what was chosen when this was installed."
+        echo "(To have them after all: \"Install or remove models\" in Settings.)"
+      elif [ -t 0 ] && [ -t 1 ]; then
+        if ask_about_models; then
+          LS_SKIP_MODELS=0
+        else
+          LS_SKIP_MODELS=1
+          echo "They are left out. The end of this says what to do next."
+        fi
+      else
+        LS_SKIP_MODELS=0                               # nobody to ask: as it always was
+      fi ;;
+  esac
+  export LS_SKIP_MODELS                                # the check at the end goes by it too
 fi
 
 # ---- room on the disk ------------------------------------------------------------------
@@ -243,12 +297,27 @@ fi
   "issue with those lines, and the version, which the first line of this output gives."
 
 if [ "${LS_SKIP_MODELS:-0}" != 1 ]; then
+  rm -f "$left_out"
   say "Downloading the speech models (about 650 MB, once)"
   "$dir/venv/bin/python" "$dir/app/scripts/fetch_models.py" "$dir/models" || exit 1
+else
+  # The choice is kept, so that an update doesn't ask again.
+  mkdir -p "$dir/models"
+  printf '%s\n' \
+    "The installer was asked not to download speech models to this computer, and" \
+    "doesn't ask again while this note is here." \
+    "To have them after all: \"Install or remove models\" in Linux Speaking's Settings." \
+    > "$left_out"
 fi
 
 say "Checking that speech recognition loads (ten seconds or so)"
 (cd "$dir/app" && LS_INSTALL_DIR="$dir" "$dir/venv/bin/python" scripts/check_install.py) || exit 1
+# Whether there is a speech model to recognise with: without one, another computer has to.
+nomodel=0
+(cd "$dir/app" && LS_INSTALL_DIR="$dir" "$dir/venv/bin/python" -c 'import sys
+from dictation import config
+from dictation.settings import available_models
+sys.exit(0 if available_models(config.MODEL_DIR) else 3)') || nomodel=1
 
 # ---- LibreOffice, Thunderbird, VS Code, Kate, and starting at login -----------------------
 writer=""        # what became of the Writer extension: in, waiting, none or failed
@@ -369,7 +438,21 @@ launcher="$dir/app/scripts/launch.sh"
 echo
 echo "Done. Linux Speaking is installed in $dir."
 echo
-if [ "$started" = 1 ]; then
+no_model_words() {
+  echo "No speech model was installed, as chosen, so this computer can't recognise speech"
+  echo "by itself. Its icon says \"No speech model\" until you do one of these:"
+  echo "  - Have another computer do the recognising. On that one, open Settings and tick"
+  echo "    \"Let other computers use this one for speech recognition\": it shows an address"
+  echo "    and a key. On this one, open Settings, and under \"Another computer\" tick \"Use"
+  echo "    another computer for speech recognition\", type those in and press Connect."
+  echo "    \"Wake up\" is then listened for there as well: see docs/OTHER-COMPUTER.md."
+  echo "  - Or install a model after all: \"Install or remove models\" in Settings. It is"
+  echo "    put to use as soon as it has arrived."
+}
+if [ "$started" = 1 ] && [ "$nomodel" = 1 ]; then
+  echo "It is running: look for the microphone icon in your system tray."
+  no_model_words
+elif [ "$started" = 1 ]; then
   echo "It is running: look for the microphone icon in your system tray. It is purple while"
   echo "the speech models load, then orange: asleep, and listening only for \"wake up\"."
   if [ "$update" = 0 ]; then
@@ -380,6 +463,7 @@ if [ "$started" = 1 ]; then
 else
   echo "It has not been started. Start it from the application menu (\"Linux Speaking\","
   echo "under Utilities), or with:  $launcher"
+  [ "$nomodel" = 1 ] && no_model_words
 fi
 case "$autostart" in
   yes)      echo "It will start by itself at every login." ;;

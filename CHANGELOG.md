@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A small computer needs no speech model of its own.** One with little disk space, or
+  too slow to recognise speech, can leave all the listening to another computer. **The
+  installer now asks whether to download the speech models**: answer no, then tick "Use
+  another computer" in Settings. That is about half a gigabyte on Linux and 600 MB on
+  Windows, where an ordinary install is twice that. It asks once, and an update keeps
+  the answer. A model can still be installed later, from Settings: the first to arrive
+  is put to use straight away, and a Parakeet brings the Small model it needs with it.
+  It used to need a model all the same: the installer stopped without one, and the
+  program let nothing through to the other computer until one had loaded. With no model here, "wake up" is listened for on the other computer too, so
+  **Listen for "wake up" there too** is ticked and greyed, and says why; with a model
+  here it is yours to set, and unticked to begin with. If the other computer can't be
+  reached, nothing is heard, and the tray icon and Settings say so: each phrase is tried
+  twice first, and the other computer is asked again five seconds later.
 - **"Redo that."** It does again what "undo that" has just taken back: the program's
   own Redo, in Word, Outlook, Writer, Thunderbird and Visual Studio Code. In a box that
   is typed into it is the key for it: Ctrl+Y on Windows, Ctrl+Shift+Z on Linux. In

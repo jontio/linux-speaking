@@ -49,7 +49,10 @@ For Windows, see [Linux Speaking on Windows](WINDOWS.md). Back to the [README](.
 - **Disk space: about 1.5 GB** in your home folder. Some 650 MB of that is the two
   speech models the installer fetches (Base, 150 MB, and Small, 490 MB), and the rest is
   the Python packages they run on. The recommended model, Parakeet Unified, is another
-  660 MB when you fetch it. The installer checks that there is room before it starts.
+  660 MB when you fetch it. The installer checks that there is room before it starts. A
+  computer that is short of space, or slow, can do without the models and have
+  [another computer do the recognising](OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own):
+  the installer asks.
   These are round figures, not measurements.
 - **Memory and processor.** A reasonably recent processor: on an 8-core laptop chip a
   phrase takes about a second to appear after you stop speaking. No graphics card is
@@ -80,7 +83,8 @@ and beside your settings the key for Thunderbird's add-on. It then:
 
 1. sets up the speech engine: Python packages, a few hundred megabytes of them, shown as
    they arrive,
-2. downloads two speech models (about 650 MB), with a count of how far it has got,
+2. downloads two speech models (about 650 MB), with a count of how far it has got, unless
+   you said no when it asked,
 3. checks that the speech models load, which takes ten seconds or so,
 4. installs the LibreOffice Writer extension,
 5. builds the Thunderbird add-on,
@@ -88,6 +92,10 @@ and beside your settings the key for Thunderbird's add-on. It then:
 7. lets Kate and KWrite be dictated into,
 8. adds "Linux Speaking" to the application menu, under Utilities,
 9. starts the tray icon, now and at every login.
+
+Right at the start it asks one question: **Download the speech models now?** Press Enter
+for yes. Say no on a computer that is to leave the recognising to another one, or to
+fetch models later from Settings. It asks once: an update keeps what you answered.
 
 It takes roughly five to fifteen minutes, most of it downloading. If a download is cut short,
 run the installer again: it carries on from where it stopped.
@@ -157,7 +165,7 @@ They are set in front of the command, as in `LS_SKIP_PACKAGES=1 ./install.sh`.
 |---|---|
 | `LS_INSTALL_DIR=~/somewhere/linux-speaking` | Installs there instead of `~/linux-speaking`. It must be a folder of its own: one that doesn't exist yet, or an earlier install. A folder with other things in it is refused. |
 | `LS_SKIP_PACKAGES=1` | Doesn't ask the system for packages, and so doesn't ask for your password. For when they are there already, or you install them yourself. |
-| `LS_SKIP_MODELS=1` | Doesn't download the speech models. |
+| `LS_SKIP_MODELS=1` | Answers the installer's question about the speech models for you: they are not downloaded, which saves about 600 MB. For installing with nobody at the keyboard. The install finishes without them and says what to do next: see [Using another computer](OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own). `LS_SKIP_MODELS=0` answers yes. |
 | `LS_SKIP_INTEGRATIONS=1` | Doesn't touch LibreOffice, Thunderbird, VS Code, Kate, the menu or the login service, and doesn't start the program. |
 | `LS_NO_AUTOSTART=1` | Doesn't set it to start at every login. `LS_NO_AUTOSTART=0` sets it to start again. Left out, a first install sets it to start, and an update keeps whatever was chosen before. |
 | `LS_NO_START=1` | Doesn't start it now. |

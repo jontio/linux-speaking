@@ -16,7 +16,9 @@
 #   LS_PYTHON            the Python to build on: the full path of its python.exe, or a
 #                        version for the "py" launcher, such as 3.12
 #   LS_SKIP_PACKAGES=1   don't install or update the Python packages
-#   LS_SKIP_MODELS=1     don't download the speech models
+#   LS_SKIP_MODELS=1     don't download the speech models, and don't ask: for a small
+#                        computer that leaves the recognising to another one (0: download
+#                        them, and don't ask)
 #   LS_NO_AUTOSTART=1    don't start it when you sign in (0 puts that back; left unset, an
 #                        update keeps what was chosen before)
 #   LS_NO_START=1        don't start it now
@@ -64,6 +66,46 @@ if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath "$dir\app\di
             "  `$env:LS_INSTALL_DIR = `"$dir\linux-speaking`""
     }
 }
+
+# ---- the speech models: to fetch them, or not ----------------------------------------------
+# Recognising speech on this computer needs speech models, about 650 MB of them. A PC that
+# is short of space, or slow, can do without and leave the recognising to another one. So
+# a new install asks, here at the start, before the long steps. What was answered is kept,
+# in a note in the models folder, so that an update doesn't ask again. LS_SKIP_MODELS
+# answers for somebody who isn't there to be asked: 1 for no, 0 for yes.
+$leftOut = "$dir\models\left-out.txt"
+function Ask-AboutModels {
+    Write-Host ""
+    Write-Host "== Speech models"
+    Write-Host "To recognise speech, this PC needs speech models. Two are downloaded now:"
+    Write-Host "about 650 MB."
+    Write-Host ""
+    Write-Host "A PC that is short of disk space, or slow, can do without them, and have another"
+    Write-Host "computer of yours do the recognising. Models can also be added later, from"
+    Write-Host "Settings."
+    Write-Host ""
+    while ($true) {
+        $answer = ([string](Read-Host "Download the speech models now? [Y/n]")).Trim().ToLower()
+        if ($answer -eq "" -or $answer -eq "y" -or $answer -eq "yes") { return $true }
+        if ($answer -eq "n" -or $answer -eq "no") { return $false }
+        Write-Host "Please answer y for yes, or n for no."
+    }
+}
+$someoneToAsk = $false
+try { $someoneToAsk = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected } catch { }
+if ($env:LS_SKIP_MODELS -eq "1") { $skipModels = $true }             # said outright
+elseif ($env:LS_SKIP_MODELS -eq "0") { $skipModels = $false }
+elseif (Test-Path -LiteralPath "$dir\models\small.en\model.bin") { $skipModels = $false }   # here already
+elseif (Test-Path -LiteralPath $leftOut) {
+    $skipModels = $true
+    Write-Host "No speech models are downloaded: that is what was chosen when this was installed."
+    Write-Host "(To have them after all: `"Install or remove models`" in Settings.)"
+}
+elseif ($someoneToAsk) {
+    $skipModels = -not (Ask-AboutModels)
+    if ($skipModels) { Write-Host "They are left out. The end of this says what to do next." }
+}
+else { $skipModels = $false }                                         # nobody to ask: as it always was
 
 # ---- Python --------------------------------------------------------------------------
 # The packages it runs on are made for 64-bit Intel and AMD processors, and for a few
@@ -239,17 +281,44 @@ if ($env:LS_SKIP_PACKAGES -ne "1") {
 # ---- the speech models -----------------------------------------------------------------
 # Fetched with the app's own downloader, which goes through Windows' proxy settings and
 # certificates, checks what arrives, and carries on from where it stopped.
-if ($env:LS_SKIP_MODELS -ne "1") {
+if (-not $skipModels) {
+    Remove-Item -LiteralPath $leftOut -Force -ErrorAction SilentlyContinue
     Say "Downloading the speech models (about 650 MB, once)"
     & $py "$dir\app\scripts\fetch_models.py" "$dir\models"
     if ($LASTEXITCODE -ne 0) { exit 1 }    # it has said why, and what to do
+} else {
+    # The choice is kept, so that an update doesn't ask again.
+    Set-Content -LiteralPath $leftOut -Encoding UTF8 -Value @(
+        "The installer was asked not to download speech models to this PC, and doesn't ask",
+        "again while this note is here.",
+        "To have them after all: `"Install or remove models`" in Linux Speaking's Settings.")
 }
 
 $env:LS_INSTALL_DIR = $dir
 Push-Location -LiteralPath "$dir\app"
 Say "Checking that speech recognition loads (ten seconds or so)"
+# The check goes by the same answer. (Set for it alone: a choice made here is not left
+# lying in this PowerShell window to answer for the next run.)
+$saidBefore = $env:LS_SKIP_MODELS
+$env:LS_SKIP_MODELS = if ($skipModels) { "1" } else { "0" }
 & $py "scripts\check_install.py"
-if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }    # it has said what is wrong
+$checked = $LASTEXITCODE
+$env:LS_SKIP_MODELS = $saidBefore
+if ($checked -ne 0) { Pop-Location; exit 1 }    # it has said what is wrong
+# Whether there is a speech model to recognise with: without one, another computer has to.
+& $py -c "import sys; from dictation import config; from dictation.settings import available_models; sys.exit(0 if available_models(config.MODEL_DIR) else 3)"
+$nomodel = $LASTEXITCODE -ne 0
+function Say-NoModel {
+    Write-Host "No speech model was installed, as chosen, so this PC can't recognise speech by"
+    Write-Host "itself. Its icon says `"No speech model`" until you do one of these:"
+    Write-Host "  - Have another computer do the recognising. On that one, open Settings and tick"
+    Write-Host "    `"Let other computers use this one for speech recognition`": it shows an address"
+    Write-Host "    and a key. On this one, open Settings, and under `"Another computer`" tick `"Use"
+    Write-Host "    another computer for speech recognition`", type those in and press Connect."
+    Write-Host "    `"Wake up`" is then listened for there as well: see docs\OTHER-COMPUTER.md."
+    Write-Host "  - Or install a model after all: `"Install or remove models`" in Settings. It is"
+    Write-Host "    put to use as soon as it has arrived."
+}
 
 # ---- shortcuts ---------------------------------------------------------------------------
 Say "Adding Linux Speaking to the Start menu"
@@ -349,7 +418,11 @@ if ($env:LS_NO_START -ne "1") {
 Write-Host ""
 Write-Host "Done. Linux Speaking is installed in $dir."
 Write-Host ""
-if ($started) {
+if ($started -and $nomodel) {
+    Write-Host "It is running: look for the microphone icon near the clock. Windows may tuck it"
+    Write-Host "behind the little arrow there: drag it out onto the taskbar to keep it in view."
+    Say-NoModel
+} elseif ($started) {
     Write-Host "It is running: look for the microphone icon near the clock. Windows may tuck it"
     Write-Host "behind the little arrow there: drag it out onto the taskbar to keep it in view."
     Write-Host "It is purple while the speech models load, then orange: asleep, and listening only"
@@ -364,6 +437,7 @@ if ($started) {
 } else {
     Write-Host "It has not been started. Start it from the Start menu: Linux Speaking."
     if ($running.Count -gt 0) { Write-Host "(It was running, and was stopped so that it could be updated.)" }
+    if ($nomodel) { Say-NoModel }
 }
 if ($autostart -eq "yes") { Write-Host "It will start by itself when you sign in. `"Start when I sign in`" in Settings changes that." }
 elseif ($autostart -eq "no") { Write-Host "It will not start when you sign in. `"Start when I sign in`" in Settings changes that." }

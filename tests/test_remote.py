@@ -293,14 +293,15 @@ class There:
     host = "elsewhere"
 
     def __init__(self):
-        self.calls, self.down = [], False
+        self.calls, self.down, self.failing = [], False, 0   # failing: how many asks fail next
 
     def hear(self, kind, audio, awake, prompt="", model="", otherwise=(), quick=False,
              exact=False, speech_only=True, wake_same=True, code=False, letters=False):
         self.quick_asked, self.exact_asked, self.speech_only_asked = quick, exact, speech_only
         self.wake_same_asked, self.code_asked, self.letters_asked = wake_same, code, letters
         self.calls.append((kind, awake, prompt, model, tuple(otherwise)))
-        if self.down:
+        if self.down or self.failing > 0:
+            self.failing -= 1
             raise remote.RemoteError("The other computer can't be reached.")
         return {"ok": True, "text": f"{kind} there", "model": "medium.en", "not_speech": 0.1, "ignored": ""}
 
@@ -405,6 +406,65 @@ class Offloading(unittest.TestCase):
             self.there.hear = lambda *_, **__: {"ok": True, "text": "the words", "not_speech": odd}
             self.assertEqual(self.offload.transcribe(self.audio, True), "the words", odd)
             self.assertEqual(self.offload.not_speech, 0.0, odd)
+
+
+class NoModelHere(unittest.TestCase):
+    """A computer with no speech model of its own: the other one hears everything, "wake
+    up" too, whatever was chosen, and what it can't be asked for is not heard."""
+
+    def setUp(self):
+        self.local, self.there, self.now, self.moves = None, There(), [100.0], []
+        self.offload = remote.Offload(
+            lambda: self.local, self.there, "medium.en", ("small.en",),
+            on_where=lambda there, problem: self.moves.append((there, problem)),
+            clock=lambda: self.now[0])
+        self.audio = np.zeros(16000, dtype=np.float32)
+
+    def test_awake_phrases_go_there(self):
+        self.assertEqual(self.offload.transcribe(self.audio, True, "before"), "phrase there")
+        self.assertEqual(self.offload.hear_alone(self.audio), "alone there")
+        self.assertEqual(self.moves, [(True, "")])
+
+    def test_asleep_stays_here_unless_asked(self):
+        # There is no "here": asleep goes there too, though that was not what was chosen.
+        self.assertFalse(self.offload.wake)
+        self.assertEqual(self.offload.transcribe(self.audio, False), "phrase there")
+        self.assertEqual(self.there.calls[-1][:2], ("phrase", False))
+
+    def test_too_long_to_be_wake_up_is_never_sent(self):
+        long = np.zeros(int((config.WAKE_MAX_SECONDS + 1) * config.RATE), dtype=np.float32)
+        self.assertEqual(self.offload.transcribe(long, False), "")
+        self.assertEqual(self.there.calls, [])
+
+    def test_when_the_other_cant_be_asked_nothing_is_heard_and_it_is_said(self):
+        self.there.down = True
+        self.offload.not_speech, self.offload.ignored = 0.7, "bump"
+        self.assertEqual(self.offload.transcribe(self.audio, True), "")
+        self.assertEqual(len(self.there.calls), 2)        # asked twice before that is settled
+        self.assertEqual(self.offload.transcribe(self.audio, False), "")
+        self.assertEqual(self.offload.hear_alone(self.audio), "")
+        self.assertEqual(len(self.there.calls), 2)        # and then left alone for a little
+        self.assertEqual((self.offload.not_speech, self.offload.ignored), (0.0, ""))
+        self.assertEqual(self.moves, [(False, "The other computer can't be reached.")])
+        # It is asked again sooner than a computer that can carry on by itself would ask.
+        self.there.down = False
+        self.assertLess(remote.ALONE_RETRY_SECONDS, remote.RETRY_SECONDS)
+        self.now[0] += remote.ALONE_RETRY_SECONDS + 1
+        self.assertEqual(self.offload.transcribe(self.audio, True), "phrase there")
+        self.assertEqual(self.moves[-1], (True, ""))
+
+    def test_one_ask_that_fails_does_not_lose_the_phrase(self):
+        self.there.failing = 1
+        self.assertEqual(self.offload.transcribe(self.audio, True), "phrase there")
+        self.assertEqual((len(self.there.calls), self.moves), (2, [(True, "")]))
+
+    def test_a_model_installed_later_is_used_as_ever(self):
+        self.local = Local()
+        self.assertEqual(self.offload.transcribe(self.audio, False), "heard here")
+        # And with one here, a single failure is enough: the phrase is heard here at once.
+        self.there.failing = 1
+        self.assertEqual(self.offload.transcribe(self.audio, True), "heard here")
+        self.assertEqual(len(self.there.calls), 1)
 
 
 class Guests(unittest.TestCase):

@@ -22,17 +22,63 @@ own words from Settings, and in a C or C++ file the names in it. The tray icon's
 says where the recognising is being done.
 
 If that computer is off or out of reach, this one does the work itself, so no phrase is
-lost, and tries the other again after twenty seconds. The same happens if the other
+lost, and tries the other again after twenty seconds. (A computer with
+[no speech model of its own](#a-small-computer-with-no-speech-model-of-its-own) has
+nothing to do the work with: see there.) The same happens if the other
 computer is slow to answer, or if something else answers at its address: it is given
 five seconds to say hello and a minute for a phrase. The tray icon's tip then says that
 the recognising is being done on this computer, and the line under the address in
 Settings says what went wrong when Settings is next opened, such as "The other computer
 took too long to answer."
 
+## A small computer with no speech model of its own
+
+A computer with little disk space, or too slow to recognise speech, can leave all of it
+to the other one and have no speech model at all. The program and what it runs on take
+about half a gigabyte on Linux and about 600 MB on Windows. The two models an ordinary
+install starts with are another 600 MB, and are what is left out.
+
+1. Install it as usual. The installer asks **Download the speech models now?** Answer
+   **n**. It says at the end that no model was installed, and the tray icon says "No
+   speech model" until the next step is done.
+2. Set the other computer up as above: **Let other computers use this one** there, and
+   **Use another computer** here, with its address and key.
+
+That is all. The icon turns orange, and what you say is heard on the other computer.
+
+- **"Wake up" is listened for on the other computer too.** With no model here there is
+  nothing to hear it with, so the short sounds heard while dictation is asleep are sent
+  as well. **Listen for "wake up" there too** is ticked and greyed in Settings, and its
+  tip says why. Switch dictation off, from the tray icon or with your key, and nothing
+  is listened to or sent.
+- **If the other computer can't be reached, nothing is heard.** There is no model here
+  to carry on with. The tray icon's tip and the top of Settings say so, with the
+  reason. A phrase is tried twice before it is given up, and the other computer is
+  asked again five seconds later, as you speak.
+- **Installing a model later makes it an ordinary install.** "Install or remove models"
+  in Settings fetches one, and the first to arrive is put to use straight away. (A
+  Parakeet model needs the Small model beside it: Small is fetched first, by itself.)
+  The tick box is then yours to set, and is unticked to begin with: "wake up" is
+  listened for here, and this computer carries on by itself when the other is out of
+  reach.
+- **The installer asks once.** An update keeps what you answered, in a note in the
+  models folder, `left-out.txt`. For installing with nobody to ask, `LS_SKIP_MODELS=1`
+  answers no and `LS_SKIP_MODELS=0` answers yes: see the installer's options for
+  [Linux](LINUX.md#the-installers-options) and [Windows](WINDOWS.md).
+- **On Linux the installer also asks the system for packages**, LibreOffice Writer
+  among them, which is a large one if it isn't there already. `LS_SKIP_PACKAGES=1`
+  leaves that step out, and the installer then lists what it needs for you to install
+  yourself: see [Linux](LINUX.md#the-installers-options).
+- **To save more space**, the packages the installer downloaded are kept in a cache by
+  Python's installer, a few hundred megabytes. It can be emptied afterwards:
+  `~/linux-speaking/venv/bin/python -m pip cache purge` on Linux, and on Windows
+  `& "$env:USERPROFILE\linux-speaking\venv\Scripts\python.exe" -m pip cache purge`.
+
 ## Things to know
 
 - **"Wake up" is still listened for on this computer**, so nothing is sent while dictation
-  is asleep. A tick box sends that too, which wakes it sooner on a slow computer.
+  is asleep. A tick box sends that too, which wakes it sooner on a slow computer. (On a
+  computer with no speech model the other one has to listen for it: see above.)
 - **Each computer proves to the other that it holds the key**, before any sound is sent,
   and the key itself is never sent. A computer that merely answers at the same address is
   given nothing, and nothing it says is typed. Every answer is signed too, and a request

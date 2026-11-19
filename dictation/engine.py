@@ -1086,7 +1086,9 @@ class Engine:
     # ---- phrases --------------------------------------------------------
     def _work(self) -> None:
         # Load the speech models straight away. Anything said meanwhile waits in the queue.
-        if self._transcriber is None:
+        if self._no_model_here():
+            self._there_only()
+        elif self._transcriber is None:
             self._load(self.settings.model)
         elif not self.status.ready:
             self.status.ready = True
@@ -1141,11 +1143,41 @@ class Engine:
         except Exception as e:
             log(f"loading failed: {type(e).__name__}: {e}")
             self._load_tried = time.monotonic()
+            if self._no_model_here():
+                self._there_only()        # nothing to load, and nothing wrong: see there
+                return
             failed = no_model(e)
             if failed != self.status.failed:
                 self.status.failed = failed
                 self.on_event("failed")
         self.status.ready = self._transcriber is not None
+        self.on_change()
+
+    def model_installed(self, name: str) -> None:
+        """A speech model has just been installed. On a computer that had none loaded
+        it is put to use straight away: nobody should have to go looking for how."""
+        if self._transcriber is None:
+            log(f"the first speech model here, {name}: it is put to use")
+            self.set_model(name)
+
+    # ---- a computer with no speech model of its own ---------------------------------------
+    def _no_model_here(self) -> bool:
+        """Whether this computer has no speech model, and another computer is set up to
+        do the listening: a small computer, with no room for a model or no speed for
+        one. That is a way of installing it, and nothing is wrong."""
+        return (self._transcriber is None and self._offload is not None
+                and not available_models(config.MODEL_DIR))
+
+    def _there_only(self) -> None:
+        """Ready, with no model here: the other computer hears everything, "wake up"
+        too. What it can't be asked for is not heard, which is said while it is so (see
+        _listening_moved)."""
+        if self.status.failed or not self.status.ready:
+            log("no speech model on this computer: the other computer does all the "
+                "listening, \"wake up\" too")
+        self.status.failed = ""
+        self.status.ready = True
+        self.on_event("ready")
         self.on_change()
 
     def setting_changed(self, key: str) -> None:
@@ -1260,10 +1292,23 @@ class Engine:
         offload = self._offload
         if offload is None:
             return
+        alone = self._transcriber is None      # no speech model here to carry on with
         self.status.listening_on = (
-            offload.client.host if there else "this computer: the other can't be reached")
+            offload.client.host if there
+            else "nowhere: the other computer can't be reached" if alone
+            else "this computer: the other can't be reached")
         log("recognition on the other computer" if there
+            else f"no recognition: no speech model on this computer. {problem}" if alone
             else f"recognition on this computer. {problem}")
+        if alone and not there:
+            self._standing["remote"] = (
+                "Nothing you say can be heard. This computer has no speech model of its own, "
+                "and the other computer does the listening: "
+                + (problem if problem else "it isn't answering.")
+                + " It is asked again as you speak.")
+        else:
+            self._standing.pop("remote", None)
+        self._problems()
         self.on_change()
 
     def set_remote(self, on: bool, address: str, key: str, model: str, wake: bool) -> None:
@@ -1271,6 +1316,15 @@ class Engine:
         self.settings.set_remote(on=on, address=address, key=key, model=model, wake=wake)
         log("another computer for recognition: " + ("on" if self.settings.remote["on"] else "off"))
         self._apply_remote()
+        self._standing.pop("remote", None)     # it is asked afresh, and says how it is then
+        if self._transcriber is None and not available_models(config.MODEL_DIR):
+            # No speech model here: whether anything can be heard turns on this choice.
+            if self._offload is not None:
+                self._there_only()
+            else:
+                self.status.failed, self.status.ready = no_model(None), False
+                self.on_event("failed")
+                self.on_change()
 
     def check_remote(self) -> dict:
         """Ask the other computer what it offers. Waits for the answer, so not for the
@@ -1438,13 +1492,15 @@ class Engine:
     def handle_audio(self, audio) -> None:
         if self._only_breath(audio):
             return
-        if self._transcriber is None:
+        if self._transcriber is None and not self._no_model_here():
             # No speech model could be loaded when the program started. One may have been
             # installed since: try again, but now and then, not with every sound.
-            if time.monotonic() - self._load_tried < config.LOAD_AGAIN:
-                return
-            self._load(self.settings.model)
-            if self._transcriber is None:
+            # (With none installed and another computer doing the listening, there is
+            # nothing to load: the sound goes there. So it does while a model that is
+            # installed won't load.)
+            if time.monotonic() - self._load_tried >= config.LOAD_AGAIN:
+                self._load(self.settings.model)
+            if self._transcriber is None and self._offload is None:
                 return
         awake = self.status.awake
         prompt = hint = before = ""
@@ -2274,7 +2330,8 @@ def named(model: str) -> str:
 
 def no_model(error) -> str:
     """Why there is no speech model to recognise with, and what to do, in plain words."""
-    press = "Open Settings and press \"Install or remove models\u2026\"."
+    press = ("Open Settings and press \"Install or remove models\u2026\", or have another "
+             "computer do the listening: \"Another computer\", further down in Settings.")
     if isinstance(error, ImportError):
         return (f"A part the recogniser needs is missing ({getattr(error, 'name', '') or error}). "
                 "Run the installer again.")

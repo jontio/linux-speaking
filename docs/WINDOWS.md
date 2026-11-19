@@ -47,7 +47,10 @@ dictated into as other programs' text boxes.
 - **A microphone.** A headset works best.
 - **About 1.5 GB of disk space** in your user folder: some 650 MB for the two speech
   models the installer fetches, and the rest for the Python packages. The recommended
-  model, Parakeet Unified, is another 660 MB when you fetch it. (Round figures.)
+  model, Parakeet Unified, is another 660 MB when you fetch it. (Round figures.) A PC
+  that is short of space, or slow, can do without the models and have
+  [another computer do the recognising](OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own):
+  the installer asks.
 - **An internet connection for the install.**
 - **Leave to run a PowerShell script.** The command below asks for it for that one run.
   On a PC managed by an employer, a policy may forbid it, and PowerShell then says so.
@@ -71,11 +74,16 @@ Nothing needs administrator rights.
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
 
+It first asks one question: **Download the speech models now?** Press Enter for yes. Say
+no on a PC that is to leave the recognising to another computer, or to fetch models
+later from Settings. It asks once: an update keeps what you answered.
+
 It says which Python it is using, then:
 
 1. copies the program into `linux-speaking` in your user folder,
 2. installs the Python packages it runs on, about 200 MB, shown as they arrive,
-3. downloads two speech models (about 650 MB), with a count of how far it has got,
+3. downloads two speech models (about 650 MB), with a count of how far it has got, unless
+   you said no,
 4. checks that the speech models load, which takes ten seconds or so,
 5. fetches two English dictionaries, which it uses to tell a name from an ordinary word,
 6. adds **Linux Speaking** and **Uninstall Linux Speaking** to the Start menu, and a
@@ -185,7 +193,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | `$env:LS_PYTHON = "C:\path\to\python.exe"` | Builds on that Python. A version, such as `"3.12"`, is taken as one for the `py` launcher. Without it, the newest suitable Python is found by itself. |
 | `$env:LS_INSTALL_DIR = "D:\apps\linux-speaking"` | Installs there instead of your user folder. It must be a folder of its own: one that doesn't exist yet, or an earlier install. See below. |
 | `$env:LS_SKIP_PACKAGES = "1"` | Doesn't install or update the Python packages. |
-| `$env:LS_SKIP_MODELS = "1"` | Doesn't download the speech models. |
+| `$env:LS_SKIP_MODELS = "1"` | Answers the installer's question about the speech models for you: they are not downloaded, which saves about 600 MB. For installing with nobody at the keyboard. The install finishes without them and says what to do next: see [Using another computer](OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own). `"0"` answers yes. |
 
 **Installing outside your user folder.** Your user folder is closed to the PC's other
 accounts; a folder elsewhere usually is not. Since the install folder holds your

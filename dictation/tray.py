@@ -35,7 +35,7 @@ from .engine import Engine, brief, meter_value, saved_on
 from .formatting import LINE, PARAGRAPH
 from .reading_text import SENTENCES
 from .settings import (ITEMS, WINDOWS_ONLY, available_models, help_for, model_label,
-                       without_effect)
+                       wake_there, without_effect)
 from .status import State
 
 # The model to suggest to somebody new: settings.py says which, once it knows.
@@ -1514,6 +1514,8 @@ class SettingsWindow(Window):
             self.models.setCurrentIndex(at)
         self.suggest.setVisible(RECOMMENDED not in [name for name, _ in found])
         self.fit_ticks()
+        if hasattr(self, "remote_wake"):
+            self.fit_wake_there()         # with the first model here, or the last one gone
 
     IDLE = "  (no effect at present)"  # added to the line of a tick box that is greyed
 
@@ -1618,7 +1620,6 @@ class SettingsWindow(Window):
             form.addWidget(widget, row, 1)
         form.addWidget(connect, 0, 2)
         self.remote_wake = QCheckBox("Listen for \"wake up\" there too")
-        self.remote_wake.setChecked(chosen["wake"])
         form.addWidget(self.remote_wake, 3, 0, 1, 3)
         form.setColumnStretch(1, 1)
         layout.addLayout(form)
@@ -1645,15 +1646,12 @@ class SettingsWindow(Window):
                 "Which of the other computer's models to use. Press Connect to see what it has.")
         explain(connect,
                 "Saves the address and the key, and asks the other computer whether it answers.")
-        explain(self.remote_wake,
-                "Unticked, \"wake up\" is listened for on this computer, and nothing is sent "
-                "while dictation is asleep. Ticked, the short sounds heard while asleep are sent "
-                "too, which wakes it sooner on a slow computer.")
+        self.fit_wake_there()
         self.remote_bridge = RemoteBridge()
         self.remote_bridge.checked.connect(self.on_remote_checked)
         connect.clicked.connect(self.apply_remote)
         self.remote_on.clicked.connect(self.apply_remote)
-        self.remote_wake.clicked.connect(self.apply_remote)
+        self.remote_wake.clicked.connect(self.on_wake_there)
         self.remote_model.activated.connect(self.apply_remote)
         self.remote_address.returnPressed.connect(self.apply_remote)
         self.remote_key.returnPressed.connect(self.apply_remote)
@@ -1681,6 +1679,42 @@ class SettingsWindow(Window):
         self.refresh_sharing()
         return box
 
+    WAKE_THERE = "Listen for \"wake up\" there too"
+
+    def fit_wake_there(self) -> None:
+        """The tick box for "wake up" being listened for on the other computer.
+
+        With no speech model on this computer there is nothing here to hear "wake up"
+        with: the other computer has to, so the box is ticked and greyed, and says why.
+        With a model here it is as it was chosen: unticked, to begin with.
+
+        Greyed in colour and in words, as the tick boxes without effect are (see
+        fit_ticks): it can still be tabbed to, to be told why it is grey."""
+        ticked, forced = wake_there(self.engine.settings.remote, config.MODEL_DIR)
+        self.wake_forced = forced
+        self.remote_wake.setChecked(ticked)
+        grey = looks.greyed(look_of(self)) or self.palette().color(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText).name()
+        self.remote_wake.setText(self.WAKE_THERE.replace("&", "&&")
+                                 + ("  (it has to: no speech model is on this computer)"
+                                    if forced else ""))
+        self.remote_wake.setStyleSheet(f"QCheckBox {{ color: {grey}; }}" if forced else "")
+        explain(self.remote_wake,
+                "This computer has no speech model of its own, so the other one has to listen "
+                "for \"wake up\" as well: the short sounds heard while dictation is asleep are "
+                "sent there, and this can't be unticked. Install a model here (\"Install or "
+                "remove models\") and it can be: it is then unticked to begin with."
+                if forced else "",
+                "Unticked, \"wake up\" is listened for on this computer, and nothing is sent "
+                "while dictation is asleep. Ticked, the short sounds heard while asleep are sent "
+                "too, which wakes it sooner on a slow computer.")
+
+    def on_wake_there(self, *_) -> None:
+        if getattr(self, "wake_forced", False):
+            self.remote_wake.setChecked(True)   # it has to be: see fit_wake_there
+            return
+        self.apply_remote()
+
     def fill_remote_models(self, models: list) -> None:
         """The choice of model on the other computer: `models` is what it says it has."""
         chosen = self.engine.settings.remote["model"]
@@ -1694,9 +1728,13 @@ class SettingsWindow(Window):
 
     def apply_remote(self, *_) -> None:
         """Save what is in the boxes and see whether the other computer answers."""
+        # (A tick that is only there because it has to be is not the person's choice: what
+        # they chose is kept for when a model is installed here.)
+        wake = self.engine.settings.remote["wake"] if getattr(self, "wake_forced", False) \
+            else self.remote_wake.isChecked()
         self.engine.set_remote(
             self.remote_on.isChecked(), self.remote_address.text(), self.remote_key.text(),
-            self.remote_model.currentData() or "", self.remote_wake.isChecked())
+            self.remote_model.currentData() or "", wake)
         self.check_remote()
         self.fit_ticks()
 
@@ -1949,6 +1987,7 @@ class Downloads(QObject):
     def __init__(self):
         super().__init__()
         self.name = ""          # the model being downloaded, or ""
+        self.after = ""         # the one to fetch when that is in: see start()
         self.download = None    # its models.Download
         self.done = self.total = 0
         self.told_at = 0.0
@@ -1967,6 +2006,20 @@ class Downloads(QObject):
         problem = models.room_problem(config.MODEL_DIR, known)
         if problem:
             return problem
+        # A Parakeet model leans on the Small Whisper model for the spelling box and for
+        # punctuation said by itself. An ordinary install has Small from the start. Where
+        # it isn't here (a computer installed with no models), it is fetched first, and
+        # the Parakeet after it.
+        helper = models.BY_NAME.get(config.WAKE_MODEL)
+        if (known.marker in models.TRANSDUCERS and helper is not None and helper is not known
+                and not models.is_installed(config.MODEL_DIR, config.WAKE_MODEL)):
+            problem = models.room_problem(config.MODEL_DIR, helper)
+            if problem:
+                return problem
+            self.after = name
+            self.announce(f"{short_name(model_label(helper.name)[1])} is fetched first: "
+                          f"{short_name(model_label(name)[1])} needs it beside it.", "info")
+            name, known = helper.name, helper
 
         def tell(done, total):  # a few times a second is plenty for the windows
             now = time.monotonic()
@@ -2004,6 +2057,7 @@ class Downloads(QObject):
 
     def on_over(self, name: str, problem: str) -> None:
         self.name, self.download = "", None
+        after, self.after = self.after, ""
         print(f"model {name}: " + (problem or "installed"), flush=True)
         label = short_name(model_label(name)[1])
         if not problem:
@@ -2014,6 +2068,13 @@ class Downloads(QObject):
             # another model's, and this one's failure would then be said nowhere.
             self.announce(f"{label} could not be downloaded. {problem}", "problem")
         self.finished.emit(name, problem)
+        if after and not problem:
+            # What was asked for, now that what it needs is here.
+            why = self.start(after)
+            if why:
+                self.announce(f"{short_name(model_label(after)[1])} could not be downloaded. {why}",
+                              "problem")
+                self.finished.emit(after, why)
 
 
 _downloads = None
@@ -2153,7 +2214,10 @@ class ModelsWindow(Window):
             size.setText(models.size_text(models.folder_size(path) if installed
                                           else known.megabytes * 1e6 if known else 0))
             discard = False
-            if name == fetching:
+            if name == self.downloads.after:
+                status.setText("Waiting: Small is fetched first, which it needs beside it")
+                does, enabled = "Install", False
+            elif name == fetching:
                 if self.downloads.pausing():
                     status.setText("Pausing…")
                 elif not status.text().startswith(("Downloading", "Checking")):
@@ -4001,7 +4065,7 @@ class AboutWindow(Window):
         # more: another computer of the person's own can be given the recognising.)
         if chosen["on"] and chosen["address"]:
             when = ("what you say while awake, and short sounds while asleep,"
-                    if chosen.get("wake") else "what you say while awake")
+                    if wake_there(chosen, config.MODEL_DIR)[0] else "what you say while awake")
             where = ("<b>Nothing you say goes to the cloud</b>, or to anybody else: there is "
                      "no account and no service behind this program. As it is set now, "
                      f"{when} is sent to the computer of yours that you chose in Settings "
@@ -4954,7 +5018,10 @@ class WelcomeWindow(Window):
         known = models.BY_NAME.get(RECOMMENDED)
         in_use = (self.engine.settings.model or config.AWAKE_MODEL) == RECOMMENDED
         installed = bool(models.kind(config.MODEL_DIR, RECOMMENDED))
-        coming = self.downloads.name == RECOMMENDED
+        # (On a computer installed with no models, Small is fetched first: it is needed
+        # beside a Parakeet. See Downloads.start.)
+        first = self.downloads.after == RECOMMENDED
+        coming = self.downloads.name == RECOMMENDED or first
         best = "Parakeet Unified is the best of the models so far, and the one to use."
         self.model_box.setVisible(not in_use or self.arrived)
         self.model_bar.setVisible(coming)
@@ -4975,7 +5042,9 @@ class WelcomeWindow(Window):
             self.model_bar.setValue(round(1000 * done / total) if total else 0)
             self.model_note.setText(
                 f"{best} " + ("Pausing…" if self.downloads.pausing() else
-                              f"Downloading: {int(100 * done / total)}%  "
+                              ("The Small model is fetched first, which it needs beside it. "
+                               if first else "")
+                              + f"Downloading: {int(100 * done / total)}%  "
                               f"({models.size_text(done)} of {models.size_text(total)}). "
                               "It goes on if this window is closed"
                               + (", and is put to use when it has arrived."
@@ -4997,7 +5066,7 @@ class WelcomeWindow(Window):
 
     def on_model_go(self) -> None:
         self.problem = ""
-        if self.downloads.name == RECOMMENDED:
+        if RECOMMENDED in (self.downloads.name, self.downloads.after):
             self.wanted = False  # paused on purpose: it isn't put to use behind their back
             self.downloads.pause()
         elif models.kind(config.MODEL_DIR, RECOMMENDED):
@@ -5008,11 +5077,12 @@ class WelcomeWindow(Window):
         self.refresh_model()
 
     def on_progress(self, name: str, done, total) -> None:
-        if name == RECOMMENDED:
+        if RECOMMENDED in (name, self.downloads.after):
             self.refresh_model()
 
     def on_downloaded(self, name: str, problem: str) -> None:
         if name != RECOMMENDED:
+            self.refresh_model()   # the one fetched before it, perhaps: see refresh_model
             return
         if not problem and self.wanted:
             self.use_it()
@@ -5205,6 +5275,7 @@ class Tray:
         self.hub.set_hotkey = self.set_hotkey
         self.hub.hotkey_problem = lambda: self.hotkey_refused
         downloads().announce = self.announce
+        downloads().finished.connect(self.on_model_installed)
         self.hotkey = None
         self.hotkey_refused = ""  # why the chosen key isn't working, in words
         self.extension_failed = False  # the Writer extension couldn't be put in: not tried again
@@ -5432,6 +5503,13 @@ class Tray:
             self.notice.say(title, message, icon, milliseconds)
         else:
             self.tray.showMessage(title, message, icon, milliseconds)
+
+    def on_model_installed(self, name: str, problem: str) -> None:
+        """A model has been downloaded. On a computer that had none it is put to use
+        straight away (the engine knows whether it had one)."""
+        told = getattr(self.engine, "model_installed", None)
+        if not problem and told is not None:
+            told(name)
 
     def announce(self, text: str, kind: str = "info") -> None:
         """A notice from one of the windows, or from the engine: "info" passes quickly,

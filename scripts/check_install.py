@@ -45,8 +45,22 @@ def check(out=None) -> int:
               "to put in a report.", file=out)
         return 1
     from dictation import config, models
+    from dictation.settings import Settings, available_models
+    # The installer was told to fetch no models: the person's choice when it asked, or
+    # LS_SKIP_MODELS=1. Then there may be none, which is no fault, or whichever ones were
+    # installed from Settings since, which only have to load.
+    left_out = os.environ.get("LS_SKIP_MODELS") == "1"
+    here = [name for name, _ in available_models(config.MODEL_DIR)]
+    if left_out and not here:
+        print("  No speech model is installed, as chosen.", file=out)
+        return 0
+    chosen = ""
+    if left_out:
+        chosen = Settings.load(config.SETTINGS_FILE).model
+        if chosen not in here:
+            chosen = config.AWAKE_MODEL if config.AWAKE_MODEL in here else here[0]
     own = os.path.join(config.INSTALL_DIR, "models")
-    for name in (config.ASLEEP_MODEL, config.AWAKE_MODEL):
+    for name in () if left_out else (config.ASLEEP_MODEL, config.AWAKE_MODEL):
         if not models.is_installed(config.MODEL_DIR, name):
             if config.MODEL_DIR != own and not os.environ.get("LS_MODEL_DIR"):
                 # With no Small model of its own the app looks where another program
@@ -60,7 +74,7 @@ def check(out=None) -> int:
             return 1
     try:
         from dictation.engine import Transcriber
-        Transcriber()
+        Transcriber(chosen)
     except Exception as e:
         print(f"The speech models are in {config.MODEL_DIR}, but could not be loaded:", file=out)
         print(f"  {type(e).__name__}: {e}", file=out)

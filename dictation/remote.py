@@ -77,6 +77,8 @@ CONNECT_SECONDS = 2.0       # the other computer is near by, or it isn't there
 HELLO_SECONDS = 5.0         # for the whole of a hello, which is no work to answer
 ANSWER_SECONDS = 60.0       # for the whole of a request: a big model on a long phrase
 RETRY_SECONDS = 20.0        # after a failure, how long this computer manages by itself
+ALONE_RETRY_SECONDS = 5.0   # ... and how long one with no speech model of its own waits:
+                            # it has nothing to manage with, and hears nothing meanwhile
 AUTH = "X-LS-Auth"          # proof of holding the key
 ASK = "X-LS-Ask"            # the proof that comes ahead of a request's body
 NONCE = "X-LS-Nonce"        # the asker's number, made up for this one request
@@ -879,6 +881,10 @@ class Offload:
 
     Whatever goes wrong there, this computer's own recogniser answers instead, and the
     other one is left alone for a little while so each phrase doesn't wait on it.
+
+    A computer with no speech model of its own has no recogniser: `local()` gives None.
+    Then the other computer hears everything, "wake up" included, whatever `wake` says,
+    and what it can't be asked for is not heard at all.
     """
 
     def __init__(self, local, client: Client, model: str = "", otherwise=(), wake: bool = False,
@@ -902,13 +908,16 @@ class Offload:
     def transcribe(self, audio, awake: bool, prompt: str = "", exact: bool = False,
                    code: bool = False, letters: bool = False) -> str:
         too_long = not awake and len(audio) > config.WAKE_MAX_SECONDS * config.RATE
-        if (awake or self.wake) and not too_long:
+        local = self._local()
+        if (awake or self.wake or local is None) and not too_long:
             reply = self._ask("phrase", audio, awake, prompt, exact, code, letters)
             if reply is not None:
                 self.not_speech = _likelihood(reply.get("not_speech"))
                 self.ignored = str(reply.get("ignored", ""))
                 return str(reply.get("text", ""))
-        local = self._local()
+        if local is None:
+            self.not_speech, self.ignored = 0.0, ""
+            return ""                     # nothing here to hear it with
         text = local.transcribe(audio, awake, prompt, **({"exact": True} if exact else {}),
                                 **({"code": True} if code else {}),
                                 **({"letters": True} if letters else {}))
@@ -920,25 +929,35 @@ class Offload:
         reply = self._ask("alone", audio, True, "")
         if reply is not None:
             return str(reply.get("text", ""))
-        return self._local().hear_alone(audio)
+        local = self._local()
+        return local.hear_alone(audio) if local is not None else ""
 
     def _ask(self, kind: str, audio, awake: bool, prompt: str, exact: bool = False,
              code: bool = False, letters: bool = False):
         if self._clock() < self._down_until:
             return None
-        try:
-            reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
-                                     self.quick, exact, speech_only=self.speech_only,
-                                     code=code, letters=letters)
-            if not isinstance(reply, dict):
-                raise RemoteError("The other computer's answer was not understood.")
-        except Exception as e:
-            # Of whatever kind: a RemoteError says why in words for the person, and
-            # anything else is not known of. Either way the phrase is heard here.
-            self._down_until = self._clock() + RETRY_SECONDS
-            self._note(False, str(e) if isinstance(e, RemoteError) else
-                       f"The other computer couldn't be asked ({type(e).__name__}: {e}).")
-            return None
+        # With a recogniser here, one failure is enough: the phrase is heard here, and
+        # was kept waiting no longer than it had to be. With none, a phrase that isn't
+        # heard there is lost, so it is asked a second time before that is settled, and
+        # asked again sooner afterwards.
+        alone = self._local() is None
+        for last in ((False, True) if alone else (True,)):
+            try:
+                reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
+                                         self.quick, exact, speech_only=self.speech_only,
+                                         code=code, letters=letters)
+                if not isinstance(reply, dict):
+                    raise RemoteError("The other computer's answer was not understood.")
+                break
+            except Exception as e:
+                if not last:
+                    continue
+                # Of whatever kind: a RemoteError says why in words for the person, and
+                # anything else is not known of. Either way the phrase is heard here.
+                self._down_until = self._clock() + (ALONE_RETRY_SECONDS if alone else RETRY_SECONDS)
+                self._note(False, str(e) if isinstance(e, RemoteError) else
+                           f"The other computer couldn't be asked ({type(e).__name__}: {e}).")
+                return None
         self.model_there = str(reply.get("model", ""))
         self._note(True, "")
         return reply

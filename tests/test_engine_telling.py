@@ -368,10 +368,96 @@ class LoadingAModel(Quiet):
                 mock.patch("dictation.engine.available_models", return_value=[]):
             engine._load("")
         self.assertEqual(engine.status.failed,
-                         'No speech model is installed. Open Settings and press "Install or remove models\u2026".')
+                         'No speech model is installed. Open Settings and press "Install or remove '
+                         'models\u2026", or have another computer do the listening: "Another computer", '
+                         'further down in Settings.')
         self.assertEqual(engine.events, ["failed"])
         self.assertEqual(engine.status.label(), "No speech model")
         self.assertFalse(engine.status.ready)
+
+    def test_with_none_installed_and_another_computer_listening_nothing_is_wrong(self):
+        engine = bare()
+        engine._offload = mock.Mock()
+        with mock.patch("dictation.engine.Transcriber", side_effect=RuntimeError("no such folder")), \
+                mock.patch("dictation.engine.available_models", return_value=[]):
+            self.assertTrue(engine._no_model_here())
+            engine._load("")
+            self.assertEqual((engine.status.failed, engine.status.ready), ("", True))
+            self.assertEqual(engine.events, ["ready"])
+            self.assertEqual(engine.status.label(), "Awake")
+        # With a model installed, that it won't load is still a failure.
+        engine = bare()
+        engine._offload = mock.Mock()
+        with mock.patch("dictation.engine.Transcriber", side_effect=RuntimeError("damaged")), \
+                mock.patch("dictation.engine.available_models", return_value=[("small.en", "Small")]):
+            self.assertFalse(engine._no_model_here())
+            engine._load("")
+            self.assertFalse(engine.status.ready)
+            self.assertIn("could not be loaded", engine.status.failed)
+
+    def test_with_none_installed_what_is_heard_goes_to_the_other_computer(self):
+        engine = bare()
+        engine._offload = mock.Mock()
+        engine._offload.transcribe.return_value = "hello there"
+        engine._offload.measured = None
+        engine._only_breath = lambda audio: False
+        heard = []
+        engine.handle_text = lambda text, awake: heard.append((text, awake))
+        with mock.patch("dictation.engine.Transcriber", side_effect=RuntimeError("no")) as made, \
+                mock.patch("dictation.engine.available_models", return_value=[]):
+            engine.handle_audio(np.ones(16000, dtype=np.float32) * 0.1)
+            engine.status.state = State.ASLEEP
+            engine.handle_audio(np.ones(16000, dtype=np.float32) * 0.1)
+        made.assert_not_called()                     # there is nothing to load, and it isn't tried
+        self.assertEqual(heard, [("hello there", True), ("hello there", False)])
+
+    def test_with_none_installed_it_says_when_the_other_computer_cant_be_reached(self):
+        engine = bare()
+        engine._offload = mock.Mock()
+        engine._offload.client.host = "office-pc"
+        engine._listening_moved(False, "The other computer can't be reached.")
+        self.assertEqual(engine.status.listening_on, "nowhere: the other computer can't be reached")
+        self.assertEqual(len(engine.status.problems), 1)
+        self.assertEqual(engine.status.problems[0],
+                         "Nothing you say can be heard. This computer has no speech model of its own, "
+                         "and the other computer does the listening: The other computer can't be "
+                         "reached. It is asked again as you speak.")
+        self.assertIn("problems", engine.events)
+        engine._listening_moved(True, "")
+        self.assertEqual((engine.status.listening_on, engine.status.problems), ("office-pc", []))
+        # With a model here it carries on by itself, and that is no problem to report.
+        engine._transcriber = mock.Mock()
+        engine._listening_moved(False, "The other computer can't be reached.")
+        self.assertEqual(engine.status.listening_on, "this computer: the other can't be reached")
+        self.assertEqual(engine.status.problems, [])
+
+    def test_with_none_installed_choosing_or_dropping_the_other_computer_decides_it(self):
+        engine = bare()
+        engine.settings.remote = {"on": True, "address": "office-pc", "key": "k", "model": "", "wake": False}
+        engine.settings.set_remote = lambda **chosen: engine.settings.remote.update(chosen)
+
+        def apply():
+            engine._offload = mock.Mock() if engine.settings.remote["on"] else None
+        engine._apply_remote = apply
+        with mock.patch("dictation.engine.available_models", return_value=[]):
+            engine.set_remote(True, "office-pc", "k", "", False)
+            self.assertEqual((engine.status.failed, engine.status.ready), ("", True))
+            engine.set_remote(False, "office-pc", "k", "", False)
+            self.assertFalse(engine.status.ready)
+            self.assertIn("No speech model is installed", engine.status.failed)
+            self.assertIn("Another computer", engine.status.failed)
+            engine.set_remote(True, "office-pc", "k", "", False)
+            self.assertEqual((engine.status.failed, engine.status.ready), ("", True))
+
+    def test_the_first_model_installed_on_a_computer_with_none_is_put_to_use(self):
+        engine = bare()
+        asked = []
+        engine.set_model = asked.append
+        engine.model_installed("small.en")
+        self.assertEqual(asked, ["small.en"])
+        engine._transcriber = mock.Mock()            # with one loaded, the choice is the person's
+        engine.model_installed("medium.en")
+        self.assertEqual(asked, ["small.en"])
 
     def test_a_sound_does_not_try_again_at_once_but_does_later(self):
         engine = bare()
