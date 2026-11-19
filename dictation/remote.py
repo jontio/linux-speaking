@@ -32,7 +32,12 @@ of its own made from that one (ChaCha20-Poly1305). This needs the "cryptography"
 which the installer fetches. Without it the link is not used at all: nothing is sent in
 the clear.
 
-Still to be seen from outside: that phrases are being sent, when, and how long each is.
+Still to be seen from outside: that phrases are being sent, when, and how big each is.
+
+The sound is packed for the journey, if both computers can: as FLAC, which halves it and
+gives back exactly what went in, or as Opus, which makes it about a tenth of the size and
+loses a little. Which is chosen in Settings; the sharing computer says at hello what it
+can unpack, and one that says nothing (an earlier version) is sent the sound as it is.
 
 The sharing computer answers on the network, where anything can call it, with the key or
 without. So that a stranger can do no more than be a nuisance to the sharing itself:
@@ -85,6 +90,9 @@ NONCE = "X-LS-Nonce"        # the asker's number, made up for this one request
 TURN = "X-LS-Turn"          # the answerer's number that the request uses up
 NEXT = "X-LS-Next"          # the turn for the asker's next request
 KEY = "X-LS-Key"            # hello: the asker's half of the key for this run of requests
+MORE = "X-LS-More"          # hello: proof of what else the answer says (how sound may be packed)
+OPUS_RATE = 32000           # bits a second for Opus: about a tenth of the sound as it is
+MAX_SAMPLES = MAX_BODY // 2  # no sound unpacks to more than could have been sent as it is
 TURN_SECONDS = 60.0         # how long a turn is good for
 MOST_TURNS = 512            # how many are kept waiting to be used, of each kind
 MOST_CALLERS = 8            # how many callers are attended to at once
@@ -354,6 +362,176 @@ def from_pcm(sound: bytes):
     return np.frombuffer(sound[:len(sound) // 2 * 2], dtype="<i2").astype(np.float32) / 32767
 
 
+# ---- packing the sound for the journey ------------------------------------------------
+# Done with PyAV, which the speech packages bring with them: nothing more is installed for
+# it. Where it is missing, or can't do one of these, that one is not offered and the sound
+# goes as it is.
+def _packed(samples, way: str) -> bytes:
+    """16-bit samples, one channel, packed as FLAC or as Opus."""
+    import av
+    codec, container, options = (("flac", "flac", {}) if way == "flac"
+                                 else ("libopus", "ogg", {"application": "voip"}))
+    held = io.BytesIO()
+    with av.open(held, "w", format=container) as out:
+        stream = out.add_stream(codec, rate=config.RATE, options=options)
+        stream.layout = "mono"
+        if way == "opus":
+            stream.bit_rate = OPUS_RATE
+        frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="s16", layout="mono")
+        frame.sample_rate = config.RATE
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    return held.getvalue()
+
+
+def _unpacked(sound: bytes, way: str):
+    """16-bit samples out of FLAC or Opus. Raises ValueError if it isn't that, or comes
+    to more than could have been sent as it is: a little can be made to unpack to a lot."""
+    import av
+    import numpy as np
+    container, codecs = ("flac", ("flac",)) if way == "flac" else ("ogg", ("opus", "libopus"))
+    parts, count = [], 0
+    try:
+        # Said to be this one kind, so nothing is left to guess at what it might be.
+        with av.open(io.BytesIO(sound), "r", format=container) as source:
+            stream = source.streams.audio[0]
+            if stream.codec_context.name not in codecs:
+                raise ValueError("not what it was said to be")
+            fit = av.AudioResampler(format="s16", layout="mono", rate=config.RATE)
+            frames = 0
+            for frame in source.decode(stream):
+                frames += 1
+                for made in fit.resample(frame):
+                    part = made.to_ndarray().reshape(-1)
+                    count += len(part)
+                    if count > MAX_SAMPLES:
+                        raise ValueError("too long")
+                    parts.append(part)
+            if not frames:
+                # What isn't sound of this kind is mostly read as no sound at all, and
+                # not as a mistake: nothing that was really packed comes to nothing.
+                raise ValueError("no sound in it")
+            for made in fit.resample(None):                    # what it was still holding
+                parts.append(made.to_ndarray().reshape(-1))
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError("could not be unpacked") from e
+    return np.concatenate(parts).astype("<i2") if parts else np.zeros(0, dtype="<i2")
+
+
+def _tried(way: str) -> bool:
+    """Whether a short sound packed this way comes back as it should."""
+    import numpy as np
+    tone = (np.sin(np.arange(config.RATE // 2) * (2 * np.pi * 440 / config.RATE)) * 8000).astype("<i2")
+    back = _unpacked(_packed(tone, way), way)
+    if way == "flac":
+        return np.array_equal(back, tone)
+    loud = float(np.sqrt(np.mean(back.astype(np.float64) ** 2))) if len(back) else 0.0
+    return abs(len(back) - len(tone)) <= config.RATE // 10 and 2800 < loud < 11000
+
+
+_sounds, _sounds_lock = None, threading.Lock()
+
+
+def sounds_here() -> tuple:
+    """The ways this computer can pack sound and unpack it again: found out by doing it
+    once, and "pcm" (as it is) always. A computer is only ever sent what it has said it
+    can unpack, and only says so of what it has tried."""
+    global _sounds
+    with _sounds_lock:
+        if _sounds is None:
+            found = []
+            for way in config.SOUNDS:
+                try:
+                    if way != "pcm" and _tried(way):
+                        found.append(way)
+                except Exception:
+                    pass                  # no PyAV, or one without it: not offered
+            _sounds = tuple(found) + ("pcm",)
+        return _sounds
+
+
+def sound_for(wanted: str, there) -> str:
+    """How to pack sound for a computer that can unpack `there`: as wanted if both can,
+    else the next smallest that both can, down to as it is."""
+    here = sounds_here()
+    for way in {"opus": ("opus", "flac"), "flac": ("flac",)}.get(wanted, ()):
+        if way in here and way in there:
+            return way
+    return "pcm"
+
+
+def to_sound(audio, way: str) -> bytes:
+    """Sound as it travels, packed the way `way` says ("pcm": as it is)."""
+    if way == "pcm":
+        return to_pcm(audio)
+    import numpy as np
+    return _packed(np.frombuffer(to_pcm(audio), dtype="<i2"), way)
+
+
+def from_sound(sound: bytes, way: str = "pcm", samples=None):
+    """The sound that was sent. `samples` is how long it was before it was packed: Opus
+    may give back a few more, which are cut off, or a few less. Raises ValueError if it
+    can't be unpacked, or comes to less than it was said to be."""
+    if way == "pcm":
+        return from_pcm(sound)
+    if way not in sounds_here():
+        raise ValueError("packed in a way that can't be unpacked here")
+    import numpy as np
+    got = _unpacked(sound, way)
+    if type(samples) is int and samples >= 0:
+        if len(got) < samples - (0 if way == "flac" else config.RATE // 10):
+            raise ValueError("less sound than it was said to be")
+        got = got[:samples]
+    return got.astype(np.float32) / 32767
+
+
+# ---- the networks this computer is on ---------------------------------------------------
+def networks() -> list:
+    """(name, address) of each network this computer is on just now: the name as the
+    system gives it ("Wi-Fi", "wlp3s0", a VPN's own name), and this computer's address
+    on it. Those that are switched off or unplugged are left out, and so is the computer's
+    way of talking to itself.
+
+    A network is known by its name and not by its address, which can change from day to
+    day: so sharing kept to one network needs to know nothing of who runs it, or of
+    which addresses it gives out.
+
+    The names come from Qt, which the program has for its windows. Where it isn't
+    (tests of the rules alone), there is no list, and sharing is on every network."""
+    try:
+        from PyQt6.QtNetwork import QNetworkInterface
+    except Exception:
+        return []
+    flag, found = QNetworkInterface.InterfaceFlag, []
+    try:
+        for one in QNetworkInterface.allInterfaces():
+            flags = one.flags()
+            if not (flags & flag.IsUp and flags & flag.IsRunning) or flags & flag.IsLoopBack:
+                continue
+            name = one.humanReadableName() or one.name()
+            for entry in one.addressEntries():
+                try:
+                    address = ipaddress.ip_address(entry.ip().toString().split("%")[0])
+                except ValueError:
+                    continue
+                if address.version == 4 and not address.is_link_local and not address.is_loopback:
+                    if name and name not in [had for had, _ in found]:
+                        found.append((name, str(address)))
+                    break
+    except Exception:
+        return []
+    return found
+
+
+def address_on(name: str) -> str:
+    """This computer's address on the network of that name, or "" if it isn't on it just now."""
+    return dict(networks()).get(name, "")
+
+
 def _is_host(host: str) -> bool:
     """Whether `host` could be a computer's address or its name: nothing is looked up.
     One that could not (a space in it, two dots together, a part too long) would only
@@ -449,8 +627,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._refuse(400, "not understood")
                 return
             turn = owner.turns.give(run)
-            self._reply(200, {"ok": True, "turn": turn, "key": mine, "speaks": SPEAKS},
-                        proof=prove(owner.key, "hello", nonce, turn, theirs, mine))
+            # How sound may be packed for this computer goes with it, under a proof of
+            # its own: a computer from before that takes no notice of either. Without the
+            # proof someone in between could have sound sent packed to a computer that
+            # would take it for sound as it is.
+            sounds = list(owner.sounds)
+            self._reply(200, {"ok": True, "turn": turn, "key": mine, "speaks": SPEAKS,
+                              "sounds": sounds},
+                        proof=prove(owner.key, "hello", nonce, turn, theirs, mine),
+                        more=prove(owner.key, "hello sounds", nonce, turn, *sounds))
             return
         turn, first = self.headers.get(TURN, ""), self.headers.get(ASK)
         if first is None:
@@ -489,10 +674,12 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     header, sound = unpack(unseal(run, "request", turn, nonce, body,
                                                   f"{self.command} {self.path}"))
+                    audio = from_sound(sound, str(header.get("sound", "pcm")),
+                                       header.get("samples"))
                 except (ValueError, RemoteError):
                     code, answer = 400, {"ok": False, "why": "not understood"}
                 else:
-                    code, answer = 200, owner.hear(header, from_pcm(sound))
+                    code, answer = 200, owner.hear(header, audio)
             else:
                 code, answer = 404, {"ok": False, "why": "no such thing"}
         except Exception as e:            # the recogniser failed: say so, and stay up
@@ -521,10 +708,10 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _reply(self, code: int, answer: dict, turn: str = "", nonce: str = "",
-               proof: str = "", run: bytes = b"") -> None:
+               proof: str = "", run: bytes = b"", more: str = "") -> None:
         """Answer. With the request's `turn`, `nonce` and `run` (its key), the answer is
         sealed, signed over those numbers, and brings the turn for the asker's next
-        request."""
+        request. `more` is a second proof, of what else a hello says."""
         data = json.dumps(answer).encode("utf-8")
         following = self.server.owner.turns.give(run, proven=True) if turn else ""
         if turn:
@@ -537,6 +724,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             if proof:
                 self.send_header(AUTH, proof)
+            if more:
+                self.send_header(MORE, more)
             if following:
                 self.send_header(NEXT, following)
             self.end_headers()
@@ -616,6 +805,7 @@ class Server:
         self.address, self.port, self.key = address, port, key
         self.hear, self.describe = hear, describe
         self.turns = Turns()
+        self.sounds = ("pcm",)  # how sound may be packed for this computer: found at start()
         self._server = None
 
     @property
@@ -637,6 +827,7 @@ class Server:
         except RemoteError as e:
             raise OSError("nothing can be encrypted here: the \"cryptography\" package can't "
                           "do what is needed. Run the installer again.") from e
+        self.sounds = sounds_here()       # tried now, so that no caller waits on the trying
         server = LimitedServer((self.address, self.port), _Handler)
         server.owner = self
         self._server = server
@@ -678,6 +869,8 @@ class Client:
         self._turn = ("", 0.0, b"")
         self._lookup = None  # the looking up of the other computer's name, while it goes on
         self._lock = threading.Lock()
+        self.sounds = ("pcm",)  # how the other computer said, at hello, sound may be packed
+        self.sound = ""         # and how the last sound sent to it was
 
     def status(self) -> dict:
         """What the other computer offers: its version and its models."""
@@ -686,7 +879,7 @@ class Client:
     def hear(self, kind: str, audio, awake: bool, prompt: str = "", model: str = "",
              otherwise=(), quick: bool = False, exact: bool = False, sure: bool = False,
              speech_only: bool = True, wake_same: bool = True, code: bool = False,
-             letters: bool = False) -> dict:
+             letters: bool = False, sound: str = "pcm") -> dict:
         """One piece of listening. `kind` is "phrase", or "alone" for a second or so of
         sound with nothing to go on. `model` is the one wanted there; if it hasn't got
         it, the first of `otherwise` that it has, else its own choice. `quick` asks for
@@ -696,12 +889,30 @@ class Client:
         what is heard asleep listened to by `model` too, as everything else is: a
         computer with an earlier version takes no notice, and uses its own Whisper.
         `code` says that it is source code, which the other computer may keep a bigger
-        Whisper for."""
+        Whisper for. `sound` is how the sound is to be packed for the journey (see
+        config.SOUNDS): it goes that way if the other computer said it can unpack it,
+        and otherwise as near to it as both can."""
         header = {"kind": kind, "awake": bool(awake), "prompt": prompt, "model": model,
                   "otherwise": list(otherwise), "quick": bool(quick), "exact": bool(exact),
                   "sure": bool(sure), "speech_only": bool(speech_only),
                   "wake_same": bool(wake_same), "code": bool(code), "letters": bool(letters)}
-        return self._send("POST", "/hear", pack(header, to_pcm(audio)))
+        made = {}
+
+        def body(there) -> bytes:
+            # Made once the other computer has said hello, which is when it is known
+            # what it can unpack. No phrase is lost to the packing: one that can't be
+            # packed goes as it is.
+            way = sound_for(sound, there)
+            if way not in made:
+                try:
+                    made[way] = to_sound(audio, way)
+                except Exception:
+                    way = "pcm"
+                    made.setdefault(way, to_pcm(audio))
+            self.sound = way
+            return pack(dict(header, sound=way, samples=len(audio)), made[way])
+
+        return self._send("POST", "/hear", body)
 
     def _addresses(self, until: float) -> list:
         """Where the other computer is, in the form a connection is made from."""
@@ -802,6 +1013,13 @@ class Client:
                                              prove(self.key, "hello", nonce, turn, mine, theirs)):
             raise RemoteError("The key doesn't match the other computer's, or something else "
                               "is answering at that address.")
+        sounds = answer.get("sounds")
+        told = (isinstance(sounds, list) and 0 < len(sounds) <= 16
+                and all(isinstance(way, str) and way.isalnum() for way in sounds)
+                and _same(headers.get(MORE, ""),
+                          prove(self.key, "hello sounds", nonce, turn, *sounds)))
+        # One from before sound was packed says nothing of it: it is sent sound as it is.
+        self.sounds = tuple(sounds) if told else ("pcm",)
         speaks = answer.get("speaks")
         if type(speaks) is not int or speaks < SPEAKS:
             # One from before the proof ahead of the body says no number. It would answer
@@ -819,9 +1037,11 @@ class Client:
             (turn, until, run), self._turn = self._turn, ("", 0.0, b"")
         return (turn, run) if turn and time.monotonic() < until else self._hello()
 
-    def _send(self, method: str, path: str, body: bytes) -> dict:
-        """One request, and what the other computer said to it. Whatever goes wrong, it
-        is a RemoteError that is raised: whoever asked then does the work here."""
+    def _send(self, method: str, path: str, body) -> dict:
+        """One request, and what the other computer said to it. `body` is what to send,
+        or something that makes it when told how the other computer can unpack sound.
+        Whatever goes wrong, it is a RemoteError that is raised: whoever asked then does
+        the work here."""
         try:
             return self._sent(method, path, body)
         except RemoteError:
@@ -829,10 +1049,11 @@ class Client:
         except Exception as e:            # none is known of: but no phrase is to be lost to one
             raise RemoteError(f"The other computer couldn't be asked ({type(e).__name__}: {e}).") from e
 
-    def _sent(self, method: str, path: str, body: bytes) -> dict:
+    def _sent(self, method: str, path: str, body) -> dict:
         for attempt in range(2):
             (turn, run), nonce = self._take_turn(), number()
-            sealed = seal(run, "request", turn, nonce, body, f"{method} {path}") if body else b""
+            data = body(self.sounds) if callable(body) else body  # after any hello: see hear()
+            sealed = seal(run, "request", turn, nonce, data, f"{method} {path}") if data else b""
             status, headers, data = self._exchange(method, path, sealed, {
                 TURN: turn, NONCE: nonce,
                 ASK: ask(self.key, method, path, len(sealed), turn, nonce),
@@ -888,12 +1109,16 @@ class Offload:
     """
 
     def __init__(self, local, client: Client, model: str = "", otherwise=(), wake: bool = False,
-                 on_where=lambda there, problem: None, clock=time.monotonic):
+                 on_where=lambda there, problem: None, clock=time.monotonic,
+                 sound: str = "pcm", on_sound=lambda way: None):
         self._local = local      # called for this computer's recogniser, when it is needed
         self.client = client
         self.model = model
         self.otherwise = tuple(otherwise)
         self.wake = wake         # send what is heard while asleep, too
+        self.sound = sound       # how the sound is to be packed for the journey
+        self.sound_sent = ""     # and how it last was: what the other computer can unpack
+        self.on_sound = on_sound
         self.quick = False       # ask for the quick way of listening
         self.speech_only = True  # and for noises written as words to be left out
         self.on_where = on_where
@@ -945,7 +1170,7 @@ class Offload:
             try:
                 reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
                                          self.quick, exact, speech_only=self.speech_only,
-                                         code=code, letters=letters)
+                                         code=code, letters=letters, sound=self.sound)
                 if not isinstance(reply, dict):
                     raise RemoteError("The other computer's answer was not understood.")
                 break
@@ -959,6 +1184,10 @@ class Offload:
                            f"The other computer couldn't be asked ({type(e).__name__}: {e}).")
                 return None
         self.model_there = str(reply.get("model", ""))
+        sent = getattr(self.client, "sound", "")
+        if sent and sent != self.sound_sent:
+            self.sound_sent = sent
+            self.on_sound(sent)
         self._note(True, "")
         return reply
 

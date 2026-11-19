@@ -752,7 +752,9 @@ class Engine:
         self._running = True
         self._offload = None       # another computer that does the listening: see remote.py
         self._server = None        # other computers using this one's recogniser
+        self.share_address = ""    # the one address it answers them on, or "" for all
         self._share_timer = None
+        self._share_lock = threading.RLock()
         self.share_problem = ""
         self._apply_remote()
         self._apply_sharing()
@@ -1283,9 +1285,22 @@ class Engine:
             else:
                 self._offload = remote.Offload(
                     lambda: self._transcriber, other, chosen["model"], self._otherwise(),
-                    wake=chosen["wake"], on_where=self._listening_moved)
+                    wake=chosen["wake"], on_where=self._listening_moved,
+                    sound=chosen["sound"], on_sound=self._sound_sent)
                 self.status.listening_on = other.host
+                # Whether sound can be packed here is found out by trying, once: now,
+                # and not while the first phrase waits.
+                threading.Thread(target=remote.sounds_here, daemon=True).start()
         self.on_change()
+
+    def _sound_sent(self, way: str) -> None:
+        """Called when the way sound goes to the other computer is first known, or changes."""
+        wanted = self.settings.remote["sound"]
+        how = {"flac": "packed as FLAC", "opus": "packed as Opus", "pcm": "as it is (raw)"}
+        log(f"sound goes to the other computer {how.get(way, way)}"
+            + ("" if way == wanted else
+               f": {how.get(wanted, wanted)} was chosen, but both computers have to be "
+               "able to do that"))
 
     def _listening_moved(self, there: bool, problem: str) -> None:
         """Called when the listening moves to the other computer or back to this one."""
@@ -1311,9 +1326,12 @@ class Engine:
         self._problems()
         self.on_change()
 
-    def set_remote(self, on: bool, address: str, key: str, model: str, wake: bool) -> None:
-        """Choose another computer to do the listening. From the Settings window."""
-        self.settings.set_remote(on=on, address=address, key=key, model=model, wake=wake)
+    def set_remote(self, on: bool, address: str, key: str, model: str, wake: bool,
+                   sound: str = "") -> None:
+        """Choose another computer to do the listening, and how the sound is packed for
+        the journey (left out, that stays as it was). From the Settings window."""
+        self.settings.set_remote(on=on, address=address, key=key, model=model, wake=wake,
+                                 sound=sound or self.settings.remote["sound"])
         log("another computer for recognition: " + ("on" if self.settings.remote["on"] else "off"))
         self._apply_remote()
         self._standing.pop("remote", None)     # it is asked afresh, and says how it is then
@@ -1329,27 +1347,76 @@ class Engine:
     def check_remote(self) -> dict:
         """Ask the other computer what it offers. Waits for the answer, so not for the
         thread that draws the windows. {"ok": True, "version": ..., "models": [[name,
-        label], ...], "model": its own choice} or {"ok": False, "why": ...}."""
+        label], ...], "model": its own choice, "sound": how sound will go to it} or
+        {"ok": False, "why": ...}."""
         chosen = self.settings.remote
         if not chosen["address"] or not chosen["key"]:
             return {"ok": False, "why": "Fill in the address and the key first."}
         try:
-            answer = remote.Client(chosen["address"], chosen["key"]).status()
+            client = remote.Client(chosen["address"], chosen["key"])
+            answer = client.status()
         except remote.RemoteError as e:
             return {"ok": False, "why": str(e)}
         models = [pair for pair in answer.get("models", [])
                   if isinstance(pair, list) and len(pair) == 2]
         return {"ok": True, "models": models, "model": str(answer.get("model", "")),
-                "version": str(answer.get("version", ""))}
+                "version": str(answer.get("version", "")),
+                "sound": remote.sound_for(chosen["sound"], client.sounds),
+                "sound_there": chosen["sound"] in client.sounds}
 
-    def set_sharing(self, on: bool) -> None:
+    def set_sharing(self, on: bool, where=None) -> None:
         """Let other computers use this one's recogniser, or stop. The key is made the
-        first time and kept, so computers already set up carry on working."""
-        self.settings.set_share(on=on, key=self.settings.share["key"] or secrets.token_hex(16))
+        first time and kept, so computers already set up carry on working. `where` is
+        the one network it can be reached over, by its name (see remote.networks), or ""
+        for every network this computer is on; left out, that stays as it was."""
+        self.settings.set_share(on=on, key=self.settings.share["key"] or secrets.token_hex(16),
+                                where=self.settings.share["where"] if where is None else where)
         log("sharing the recogniser: " + ("on" if on else "off"))
         self._apply_sharing()
 
+    def new_share_key(self) -> None:
+        """Make a new key for other computers to use this one with, in place of the one
+        there is. Whoever holds the old one is no longer answered, from this moment:
+        each computer that is still to use this one has to be given the new key."""
+        self.settings.set_share(key=secrets.token_hex(16))
+        log("sharing the recogniser: a new key was made; the old one is no longer answered")
+        self._apply_sharing()                     # answers afresh, and forgets what it had agreed
+
+    def _share_address(self) -> tuple:
+        """(the address of this computer to answer on, or "" for all of them; what is
+        in the way of answering there, if anything)."""
+        if config.SHARE_ADDRESS:                 # said where it was started: that is that
+            return config.SHARE_ADDRESS, ""
+        where = self.settings.share["where"]
+        if not where:
+            return "", ""
+        found = remote.address_on(where)
+        return found, "" if found else f"this computer isn't on the network \"{where}\" just now"
+
+    def _watch_sharing(self) -> None:
+        """Kept to one network, it answers on this computer's address there, and that
+        can change under it (a new lease from the router, a VPN signed in to again). So
+        it is looked at every half minute, and the sharing moved to where it now is."""
+        with self._share_lock:
+            self._share_timer = None
+            if self._server is None or not self._running:
+                return
+            if remote.address_on(self.settings.share["where"]) != self.share_address:
+                log("sharing the recogniser: this computer's address on that network has changed")
+                self._apply_sharing_now()
+            else:
+                self._watch_sharing_later()
+
+    def _watch_sharing_later(self) -> None:
+        self._share_timer = threading.Timer(30, self._watch_sharing)
+        self._share_timer.daemon = True
+        self._share_timer.start()
+
     def _apply_sharing(self) -> None:
+        with self._share_lock:                    # the windows ask for it, and so do its own timers
+            self._apply_sharing_now()
+
+    def _apply_sharing_now(self) -> None:
         if self._share_timer is not None:
             self._share_timer.cancel()
             self._share_timer = None
@@ -1357,16 +1424,21 @@ class Engine:
             self._server.stop()
             self._server = None
         share = self.settings.share
+        self.share_address = ""
         if not (share["on"] and share["key"] and self._running):
             self.share_problem = ""
             return
-        server = remote.Server(config.SHARE_ADDRESS, config.SHARE_PORT, share["key"],
+        address, missing = self._share_address()
+        server = remote.Server(address, config.SHARE_PORT, share["key"],
                                self._hear_for_guest, self._describe)
         try:
+            if missing:                   # never on every network instead: that wasn't chosen
+                raise OSError(missing)
             server.start()
         except OSError as e:
-            # The port is taken, at login the network isn't up yet, or nothing can be
-            # encrypted here (which says so itself). Keep trying.
+            # The port is taken, at login the network isn't up yet, the one network it is
+            # kept to isn't there, or nothing can be encrypted here (which says so
+            # itself). Keep trying.
             problem = (f"can't answer on port {config.SHARE_PORT}: {e.strerror}"
                        if e.strerror else str(e))
             if problem != self.share_problem:
@@ -1376,8 +1448,13 @@ class Engine:
             self._share_timer.daemon = True
             self._share_timer.start()
             return
-        self._server, self.share_problem = server, ""
-        log(f"sharing the recogniser on port {server.port}")
+        self._server, self.share_problem, self.share_address = server, "", address
+        kept = bool(address) and not config.SHARE_ADDRESS
+        log(f"sharing the recogniser on port {server.port}"
+            + (", on one network only" if kept else
+               ", on one address only" if address else ", on every network"))
+        if kept:                          # its address there may change: see _watch_sharing
+            self._watch_sharing_later()
 
     def _hear_for_guest(self, header: dict, sound) -> dict:
         """One piece of listening for another computer. Runs on the server's thread."""
@@ -1436,7 +1513,8 @@ class Engine:
             chosen = self.settings.remote
             reply = remote.Client(chosen["address"], chosen["key"]).hear(
                 "phrase", sound, True, written, candidate.name, (), candidate.quick, sure=True,
-                speech_only=self.settings.enabled("speech_only"))
+                speech_only=self.settings.enabled("speech_only"),
+                sound=chosen["sound"])     # as dictation is sent: Opus is part of what is tried
             if reply.get("model") != candidate.name:
                 raise remote.RemoteError("The other computer no longer has this model.")
             try:  # how sure it was of each word, if that computer says

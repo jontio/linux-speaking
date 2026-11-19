@@ -355,15 +355,22 @@ def _shortened(line: str) -> str:
 def _remote(saved) -> dict:
     """The other computer that does the listening, with anything missing filled in."""
     saved = saved if isinstance(saved, dict) else {}
+    sound = saved.get("sound")
     return {"on": bool(saved.get("on", False)), "address": str(saved.get("address", "")).strip(),
             "key": str(saved.get("key", "")).strip(), "model": str(saved.get("model", "")),
-            "wake": bool(saved.get("wake", False))}
+            "wake": bool(saved.get("wake", False)),
+            # How the sound is packed for the journey: see config.SOUNDS.
+            "sound": sound if sound in config.SOUNDS else config.SOUNDS[0]}
 
 
 def _share(saved) -> dict:
-    """Whether other computers may use this one's recogniser, and the key they need."""
+    """Whether other computers may use this one's recogniser, the key they need, and
+    which network they can reach it over: the name of one of this computer's networks
+    (see remote.networks), or "" for every network it is on."""
     saved = saved if isinstance(saved, dict) else {}
-    return {"on": bool(saved.get("on", False)), "key": str(saved.get("key", "")).strip()}
+    where = saved.get("where")
+    return {"on": bool(saved.get("on", False)), "key": str(saved.get("key", "")).strip(),
+            "where": where.strip() if isinstance(where, str) and len(where) <= 100 else ""}
 
 
 _saving = threading.Lock()  # one save at a time: the engine's worker saves, and so do the windows

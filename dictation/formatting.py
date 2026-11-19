@@ -244,16 +244,37 @@ def _as_a_sign(phrase: str, marker: str, line_before: str = ""):
 # "Hello, Bob": the recogniser puts a comma between a greeting and the name of the person
 # greeted. It is what the grammar books say, and not what most people write. The comma is
 # only taken out before a name or a word that stands for one, so "Hello, how are you"
-# keeps its comma, and only where the greeting starts the phrase or a sentence, so "I saw
-# her this morning, Bob" keeps its too.
+# keeps its comma.
+#
+# Where the greeting starts the phrase or a sentence, that is all there is to it. Further
+# on in a sentence ("so if I say hello, Jill") it is taken out too, but with more care,
+# because there a comma before a name may be doing other work:
+# - only after the words that are nothing but greetings. "Morning" and "evening" are also
+#   times of day, and "I saw her this morning, Bob" keeps its comma; so do "he sends his
+#   greetings, Dave" and "you're welcome, Dave".
+# - only where the name ends what is being said, or is joined on to more ("hello, Jill
+#   and..."). In "I said hello, Bob said goodbye" the name begins something new, and the
+#   comma is what keeps the two apart.
 ADDRESSED = ("everyone", "everybody", "all", "both", "there", "team", "folks", "guys")
+# The words that are nothing but greetings, wherever they stand ("hello there" too), and
+# those that are greetings only at the start of a sentence: "he sends his greetings,
+# Dave" and "you're welcome, Dave" keep their commas.
+_ONLY_GREETINGS = (r"(?:hello|hallo|hullo|hi|hiya|heya|hey|howdy|yo|g['’]?day|kia\s+ora)"
+                   r"(?:\s+there)?")
 _GREETING_COMMA = re.compile(
     r"(^|[.!?…]\s+)"
-    r"(hello|hi|hiya|hey|howdy|good\s+(?:morning|afternoon|evening|day)|morning|afternoon|evening)"
+    r"(" + _ONLY_GREETINGS + r"|greetings|welcome(?:\s+back)?"
+    r"|good\s+(?:morning|afternoon|evening|day)|morning|afternoon|evening)"
     r"\s*,\s+"
     r"(?=(?:" + "|".join(ADDRESSED) + r")\b|(?!I\b|I')[A-Z])",
     re.IGNORECASE,
 )
+_GREETING_COMMA_WITHIN = re.compile(
+    r"(\w\s+|[,;:]\s+|[\"“‘(])(" + _ONLY_GREETINGS + r")\s*,\s+(?=[^\W\d_])", re.IGNORECASE)
+# A name, of one word or several, each with a capital: "Jill", "Mary-Ann", "Bob O'Brien".
+_NAME = re.compile(r"[A-Z][^\W\d_]*(?:['’-][^\W\d_]+)*(?:\s+[A-Z][^\W\d_]*(?:['’-][^\W\d_]+)*)*")
+# What may follow the name for the comma to go: nothing, a mark, or a word that joins on.
+_NAME_ENDS_IT = re.compile(r"\s*(?:$|[.,!?;:…)\"”’]|(?:and|or|but)\b)", re.IGNORECASE)
 _ADDRESSED = re.compile(r"(?:" + "|".join(ADDRESSED) + r")\b", re.IGNORECASE)
 _DAYS = frozenset("monday tuesday wednesday thursday friday saturday sunday".split())
 _MONTHS = frozenset("january february march april may june july august september october "
@@ -273,7 +294,21 @@ def without_greeting_comma(text: str) -> str:
         if not (named or _ADDRESSED.match(rest)):
             return m.group(0)
         return m.group(1) + m.group(2) + " "
-    return _GREETING_COMMA.sub(join, text)
+
+    def join_within(m: re.Match) -> str:
+        rest = text[m.end():]
+        who = _ADDRESSED.match(rest) or _NAME.match(rest)
+        if who is None:
+            return m.group(0)
+        if not _ADDRESSED.match(rest):                 # each word of a name has to be one
+            for word in re.findall(r"[^\W\d_]+", who.group()):
+                if word == "I" or (len(word) > 1 and word.isupper()) \
+                        or word.lower() in _DAYS or word.lower() in _MONTHS:
+                    return m.group(0)
+        if not _NAME_ENDS_IT.match(rest[who.end():]):
+            return m.group(0)
+        return m.group(1) + m.group(2) + " "
+    return _GREETING_COMMA_WITHIN.sub(join_within, _GREETING_COMMA.sub(join, text))
 
 
 def _is_sym(token: str) -> bool:

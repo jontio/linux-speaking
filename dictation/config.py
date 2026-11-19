@@ -127,10 +127,15 @@ LOAD_AGAIN = 20.0  # with no speech model loaded: how long before loading is tri
 # The Thunderbird add-on connects to this port on this computer. LS_MAIL=0 turns it off.
 MAIL_PORT = int(os.environ.get("LS_MAIL_PORT", "47613"))
 # Sharing this computer's recogniser with others: the port, and the one address of this
-# computer to answer on ("" answers on all of them).
+# computer to answer on. Without LS_SHARE_ADDRESS it is as chosen in Settings: every
+# network this computer is on, or one of them by name (see remote.networks).
 DEFAULT_SHARE_PORT = 47614
 SHARE_PORT = int(os.environ.get("LS_SHARE_PORT", str(DEFAULT_SHARE_PORT)))
 SHARE_ADDRESS = os.environ.get("LS_SHARE_ADDRESS", "")
+# How the sound is packed for the journey to another computer, as chosen in Settings; the
+# first is what it starts as. FLAC loses nothing, Opus is smaller and loses a little, and
+# "pcm" is the sound as it is. See remote.py.
+SOUNDS = ("flac", "opus", "pcm")
 MAIL = os.environ.get("LS_MAIL", "0" if WINDOWS else "1") == "1"
 # Dictation into Kate and KWrite, through the accessibility interface. LS_EDITOR=0 turns it off.
 EDITOR = os.environ.get("LS_EDITOR", "0" if WINDOWS else "1") == "1"

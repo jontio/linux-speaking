@@ -361,6 +361,177 @@ class TheMicrophone(Quiet):
         self.assertIs(engine.status.state, State.OFF)
 
 
+class HowTheSoundGoes(Quiet):
+    """What the engine says of how sound goes to the other computer."""
+
+    def test_asking_the_other_computer_says_how_sound_will_go_to_it(self):
+        from dictation import remote
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            self.skipTest("needs the cryptography package")
+        server = remote.Server("127.0.0.1", 0, "0123456789abcdef", lambda header, sound: {"ok": True},
+                               lambda: {"version": "1", "models": [["small.en", "Small"]], "model": "small.en"})
+        server.start()
+        self.addCleanup(server.stop)
+        engine = bare()
+        engine.settings.remote = {"on": True, "address": f"127.0.0.1:{server.port}",
+                                  "key": "0123456789abcdef", "model": "", "wake": False, "sound": "flac"}
+        with mock.patch.object(remote, "_sounds", ("flac", "opus", "pcm")):
+            server.sounds = ("flac", "opus", "pcm")
+            answer = engine.check_remote()
+            self.assertEqual((answer["ok"], answer["sound"], answer["sound_there"]), (True, "flac", True))
+            self.assertEqual(answer["models"], [["small.en", "Small"]])
+            server.sounds = ("pcm",)                            # as an earlier version would be
+            answer = engine.check_remote()
+            self.assertEqual((answer["sound"], answer["sound_there"]), ("pcm", False))
+            engine.settings.remote["sound"] = "opus"
+            server.sounds = ("flac", "pcm")
+            self.assertEqual(engine.check_remote()["sound"], "flac")
+
+    def test_the_log_says_how_it_goes_and_when_that_is_not_as_chosen(self):
+        import dictation.engine as module
+        engine = bare()
+        engine.settings.remote = {"sound": "flac"}
+        engine._sound_sent("flac")
+        self.assertEqual(module.log.call_args[0][0], "sound goes to the other computer packed as FLAC")
+        engine._sound_sent("pcm")
+        said = module.log.call_args[0][0]
+        self.assertTrue(said.startswith("sound goes to the other computer as it is (raw): packed as FLAC "
+                                        "was chosen"), said)
+
+    def test_the_way_chosen_is_kept_when_the_rest_is_set_without_it(self):
+        engine = bare()
+        engine.settings.remote = {"on": True, "address": "office-pc", "key": "k", "model": "", "wake": False,
+                                  "sound": "opus"}
+        engine.settings.set_remote = lambda **chosen: engine.settings.remote.update(chosen)
+        engine._apply_remote = lambda: None
+        engine._transcriber = mock.Mock()
+        engine.set_remote(True, "office-pc", "k", "", False)
+        self.assertEqual(engine.settings.remote["sound"], "opus")
+        engine.set_remote(True, "office-pc", "k", "", False, "pcm")
+        self.assertEqual(engine.settings.remote["sound"], "pcm")
+
+
+class WhereItIsShared(Quiet):
+    """Which of this computer's addresses other computers are answered on."""
+
+    def engine(self, where, here=()):
+        from dictation import remote
+        engine = bare()
+        engine._server = engine._share_timer = None
+        engine._share_lock = threading.RLock()
+        engine.settings.share = {"on": True, "key": "0123456789abcdef", "where": where}
+        engine.settings.set_share = lambda **chosen: engine.settings.share.update(chosen)
+        self.here, self.asked = dict(here), []
+        for patch in (mock.patch.object(config, "SHARE_PORT", 0),
+                      mock.patch.object(remote, "networks",
+                                        lambda: self.asked.append(1) or list(self.here.items()))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+        def stop():
+            engine._running = False
+            engine._apply_sharing()
+        self.addCleanup(stop)
+        return engine
+
+    def answers_on(self, engine):
+        return engine._server._server.server_address[0]
+
+    def test_on_every_network_unless_chosen_otherwise(self):
+        engine = self.engine("")
+        engine._apply_sharing()
+        self.assertEqual((self.answers_on(engine), engine.share_address, engine.share_problem),
+                         ("0.0.0.0", "", ""))
+        self.assertEqual(self.asked, [])                       # the networks aren't so much as looked at
+        self.assertIsNone(engine._share_timer)                 # and there is nothing to watch
+
+    def test_kept_to_one_network_it_answers_on_its_address_there_alone(self):
+        engine = self.engine("office-vpn", {"Wi-Fi": "192.168.1.20", "office-vpn": "127.0.0.1"})
+        engine._apply_sharing()
+        self.assertEqual((self.answers_on(engine), engine.share_address, engine.share_problem),
+                         ("127.0.0.1", "127.0.0.1", ""))
+
+    def test_when_this_computer_is_not_on_that_network_nobody_is_answered_and_it_tries_again(self):
+        engine = self.engine("office-vpn", {"Wi-Fi": "127.0.0.1"})
+        engine._apply_sharing()
+        self.assertIsNone(engine._server)                      # never every network instead
+        self.assertEqual(engine.share_problem, 'this computer isn\'t on the network "office-vpn" just now')
+        self.assertIsNotNone(engine._share_timer)
+        engine._problems()
+        self.assertIn("isn't on the network", " ".join(engine.status.problems))
+        self.here["office-vpn"] = "127.0.0.1"                  # the VPN is switched on
+        engine._apply_sharing()                                # as the timer would
+        self.assertEqual((self.answers_on(engine), engine.share_problem), ("127.0.0.1", ""))
+
+    def test_an_address_that_changes_is_followed(self):
+        engine = self.engine("office-vpn", {"office-vpn": "127.0.0.1"})
+        engine._apply_sharing()
+        first = engine._server
+        self.assertIsNotNone(engine._share_timer)              # it is watched
+        engine._share_timer.cancel()
+        engine._watch_sharing()                                # half a minute on: nothing has changed
+        self.assertIs(engine._server, first)
+        self.assertIsNotNone(engine._share_timer)
+        engine._share_timer.cancel()
+        self.here["office-vpn"] = "127.0.0.2"                  # a new address on the same network
+        engine._watch_sharing()
+        self.assertIsNot(engine._server, first)
+        self.assertEqual((self.answers_on(engine), engine.share_address), ("127.0.0.2", "127.0.0.2"))
+        engine._share_timer.cancel()
+        del self.here["office-vpn"]                            # and then the network goes away
+        engine._watch_sharing()
+        self.assertIsNone(engine._server)
+        self.assertIn("isn't on the network", engine.share_problem)
+
+    def test_a_new_key_shuts_out_whoever_holds_the_old_one(self):
+        from dictation import remote
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            self.skipTest("needs the cryptography package")
+        engine = self.engine("")
+        engine._describe = lambda: {"version": "1", "models": [], "model": ""}
+        engine._apply_sharing()
+        old = engine.settings.share["key"]
+
+        def asks(key):
+            return remote.Client(f"127.0.0.1:{engine._server.port}", key).status()
+        self.assertTrue(asks(old)["ok"])
+        engine.new_share_key()
+        new = engine.settings.share["key"]
+        self.assertNotEqual(new, old)
+        self.assertRegex(new, "^[0-9a-f]{32}$")
+        self.assertTrue(engine.settings.share["on"])               # it goes on sharing
+        self.assertTrue(asks(new)["ok"])
+        with self.assertRaises(remote.RemoteError) as raised:
+            asks(old)
+        self.assertIn("key doesn't match", str(raised.exception))
+        engine.new_share_key()                                     # and each new one is another
+        self.assertNotIn(engine.settings.share["key"], (old, new))
+
+    def test_an_address_said_when_it_was_started_is_used_whatever_was_chosen(self):
+        engine = self.engine("office-vpn", {})
+        with mock.patch.object(config, "SHARE_ADDRESS", "127.0.0.1"):
+            engine._apply_sharing()
+            self.assertEqual((self.answers_on(engine), engine.share_problem, self.asked),
+                             ("127.0.0.1", "", []))
+            self.assertIsNone(engine._share_timer)             # that address is not watched
+
+    def test_changing_the_choice_moves_it(self):
+        engine = self.engine("", {"office-vpn": "127.0.0.1"})
+        engine._apply_sharing()
+        self.assertEqual(self.answers_on(engine), "0.0.0.0")
+        engine.set_sharing(True, "office-vpn")
+        self.assertEqual(self.answers_on(engine), "127.0.0.1")
+        engine.set_sharing(True)                               # left out: it stays as it was
+        self.assertEqual((engine.settings.share["where"], self.answers_on(engine)),
+                         ("office-vpn", "127.0.0.1"))
+        engine.set_sharing(True, "")                           # and back to every network
+        self.assertEqual((engine.settings.share["where"], self.answers_on(engine)), ("", "0.0.0.0"))
+
+
 class LoadingAModel(Quiet):
     def test_with_none_to_load_it_says_so_and_what_to_do(self):
         engine = bare()
@@ -433,7 +604,8 @@ class LoadingAModel(Quiet):
 
     def test_with_none_installed_choosing_or_dropping_the_other_computer_decides_it(self):
         engine = bare()
-        engine.settings.remote = {"on": True, "address": "office-pc", "key": "k", "model": "", "wake": False}
+        engine.settings.remote = {"on": True, "address": "office-pc", "key": "k", "model": "", "wake": False,
+                                  "sound": "flac"}
         engine.settings.set_remote = lambda **chosen: engine.settings.remote.update(chosen)
 
         def apply():

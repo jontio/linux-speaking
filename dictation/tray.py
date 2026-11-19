@@ -30,7 +30,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import (APP_NAME, HOMEPAGE, __version__, actions, audio, autostart, config, control, hotkey,
-               looks, models, reading, settings as settings_module, speech, training, voicetest)
+               looks, models, reading, remote, settings as settings_module, speech, training,
+               voicetest)
 from .engine import Engine, brief, meter_value, saved_on
 from .formatting import LINE, PARAGRAPH
 from .reading_text import SENTENCES
@@ -415,6 +416,15 @@ def explain(widget, *parts: str) -> None:
     widget.setToolTip(tip(*said))
     widget.setAccessibleDescription(" ".join(said))
     widget.setProperty("explained", "\n".join(said))
+
+
+def network_label(name: str, address: str) -> str:
+    """A network as it is offered to choose: "Wi-Fi  (192.168.1.20)". Linux gives its
+    networks names that say little ("wlp3s0"), so there the kind is said first where the
+    name tells it."""
+    kind = ("" if config.WINDOWS else "Wi-Fi, " if name.startswith("wl")
+            else "Wired, " if name.startswith(("en", "eth")) else "")
+    return f"{kind}{name}  ({address})"
 
 
 def short_name(label: str) -> str:
@@ -1607,20 +1617,25 @@ class SettingsWindow(Window):
         self.remote_key.setPlaceholderText("the key shown on that computer")
         self.remote_model = Chooser()
         self.fill_remote_models([])
+        self.remote_sound = Chooser()
+        for way, label in self.SOUNDS:
+            self.remote_sound.addItem(label, way)
+        self.remote_sound.setCurrentIndex(max(0, self.remote_sound.findData(chosen["sound"])))
         connect = QPushButton(alt("Connect"))
-        for row, (label, widget) in enumerate((("Address", self.remote_address),
-                                               ("Key", self.remote_key),
-                                               ("Model there", self.remote_model))):
+        for row, (label, widget, called) in enumerate((
+                ("Address", self.remote_address, ""), ("Key", self.remote_key, ""),
+                ("Model there", self.remote_model, ""),
+                ("Sound sent", self.remote_sound, "How the sound is sent to the other computer"))):
             # Each box is named for a screen reader by the label beside it, and Alt and
             # the label's letter goes to it.
             named = QLabel(alt(label))
             named.setBuddy(widget)
-            widget.setAccessibleName(f"{label}, of the other computer")
+            widget.setAccessibleName(called or f"{label}, of the other computer")
             form.addWidget(named, row, 0)
             form.addWidget(widget, row, 1)
         form.addWidget(connect, 0, 2)
         self.remote_wake = QCheckBox("Listen for \"wake up\" there too")
-        form.addWidget(self.remote_wake, 3, 0, 1, 3)
+        form.addWidget(self.remote_wake, 4, 0, 1, 3)
         form.setColumnStretch(1, 1)
         layout.addLayout(form)
         self.remote_note = QLabel()
@@ -1644,6 +1659,14 @@ class SettingsWindow(Window):
                 "the other that it holds it.")
         explain(self.remote_model,
                 "Which of the other computer's models to use. Press Connect to see what it has.")
+        explain(self.remote_sound,
+                "How the sound is packed for the journey to the other computer.",
+                "FLAC halves it, and what arrives is exactly what was heard. Opus makes it "
+                "about a tenth of the size, for a slow connection or one you pay for by the "
+                "megabyte: a little of the sound is lost, which the recogniser rarely notices. "
+                "Raw sends it as it is.",
+                "If the other computer has an earlier Linux Speaking that can't unpack it, "
+                "the sound is sent raw.")
         explain(connect,
                 "Saves the address and the key, and asks the other computer whether it answers.")
         self.fit_wake_there()
@@ -1653,6 +1676,7 @@ class SettingsWindow(Window):
         self.remote_on.clicked.connect(self.apply_remote)
         self.remote_wake.clicked.connect(self.on_wake_there)
         self.remote_model.activated.connect(self.apply_remote)
+        self.remote_sound.activated.connect(self.apply_remote)
         self.remote_address.returnPressed.connect(self.apply_remote)
         self.remote_key.returnPressed.connect(self.apply_remote)
 
@@ -1673,12 +1697,43 @@ class SettingsWindow(Window):
                 "Copies the key, to paste into Settings on the other computer.")
         self.share_copy.clicked.connect(
             lambda: QApplication.clipboard().setText(self.engine.settings.share["key"]))
+        self.share_new_key = QPushButton("New key\u2026")
+        explain(self.share_new_key,
+                "Makes a new key in place of this one, for when the key has been given to "
+                "somebody who is no longer to use this computer, or may have been seen.",
+                "From then on nobody is answered with the old key. Each computer that is "
+                "still to use this one has to be given the new key, in its Settings.")
+        self.share_new_key.clicked.connect(self.new_share_key)
+        # Which network it can be reached over: every one this computer is on, or one of
+        # them by name. It is filled, and shown or not, by refresh_sharing.
+        self.share_where = Chooser()
+        self.share_where_label = QLabel(alt("Reachable from"))
+        self.share_where_label.setBuddy(self.share_where)
+        self.share_where.setAccessibleName("Which network other computers can reach this one over")
+        explain(self.share_where,
+                "Which network other computers can reach this one over.",
+                "To begin with, every network this computer is on. Choose one of them, such as "
+                "your home network or a VPN, and it answers there alone: from any other the "
+                "port can't so much as be found. If this computer isn't on that network (a VPN "
+                "that is switched off), nobody is answered until it is again.",
+                "Either way everything sent is encrypted, and nobody is answered without the key.")
+        self.share_where.activated.connect(self.apply_sharing)
+        reach = QHBoxLayout()
+        reach.setContentsMargins(22, 0, 0, 0)
+        reach.addWidget(self.share_where_label)
+        reach.addWidget(self.share_where, 1)
+        layout.addLayout(reach)
         row.addWidget(self.share_note, 1)
         row.addWidget(self.share_copy)
+        row.addWidget(self.share_new_key)
         layout.addLayout(row)
         self.refresh_sharing()
         return box
 
+    SOUNDS = (("flac", "FLAC: half the size, nothing lost"),
+              ("opus", "Opus: a tenth of the size, a little lost"),
+              ("pcm", "Raw: as it is"))
+    EVERY_NETWORK = "Every network this computer is on"
     WAKE_THERE = "Listen for \"wake up\" there too"
 
     def fit_wake_there(self) -> None:
@@ -1734,7 +1789,7 @@ class SettingsWindow(Window):
             else self.remote_wake.isChecked()
         self.engine.set_remote(
             self.remote_on.isChecked(), self.remote_address.text(), self.remote_key.text(),
-            self.remote_model.currentData() or "", wake)
+            self.remote_model.currentData() or "", wake, self.remote_sound.currentData() or "")
         self.check_remote()
         self.fit_ticks()
 
@@ -1752,8 +1807,16 @@ class SettingsWindow(Window):
         on = self.engine.settings.remote["on"]
         if answer.get("ok"):
             self.fill_remote_models(answer.get("models", []))
+            # Said only when the sound can't go the way that was chosen.
+            wanted, goes = self.engine.settings.remote["sound"], answer.get("sound", "")
+            names = {"flac": "FLAC", "opus": "Opus", "pcm": "raw"}
+            sound = "" if not goes or goes == wanted else (
+                f" The sound goes {'raw' if goes == 'pcm' else 'as ' + names.get(goes, goes)}, "
+                f"not as {names.get(wanted, wanted)}: "
+                + ("the other computer has an earlier Linux Speaking, or can't unpack it."
+                   if not answer.get("sound_there") else "this computer can't pack it."))
             self.say_remote(
-                "Connected. Recognition is done on the other computer." if on
+                "Connected. Recognition is done on the other computer." + sound if on
                 else "The other computer answers. Tick the box above to use it.")
         else:
             self.say_remote(
@@ -1766,24 +1829,72 @@ class SettingsWindow(Window):
         self.remote_note.setVisible(bool(text.strip()))
 
     def apply_sharing(self, *_) -> None:
-        self.engine.set_sharing(self.share_on.isChecked())
+        self.engine.set_sharing(self.share_on.isChecked(), self.share_where.currentData() or "")
         self.refresh_sharing()
         if self.engine.share_problem:  # give a retry a moment, then say how it stands
+            QTimer.singleShot(1500, self.refresh_sharing)
+
+    def new_share_key(self, *_) -> None:
+        """Change the key, once the person has said they mean it: it can't be taken back,
+        and every computer that uses this one is shut out until it has the new key."""
+        if not ask(self, "Make a new key?\n\nNobody will be answered with the old key any "
+                         "more. Each computer that is still to use this one will have to be "
+                         "given the new key, in its Settings, before it can again.",
+                   careful=True):
+            return
+        self.engine.new_share_key()
+        self.refresh_sharing()
+        if self.engine.share_problem:
             QTimer.singleShot(1500, self.refresh_sharing)
 
     def refresh_sharing(self) -> None:
         share = self.engine.settings.share
         on = share["on"] and bool(share["key"])
         self.share_copy.setVisible(on)
+        self.share_new_key.setVisible(on)
         self.share_note.setVisible(on)   # no empty band under the tick box when it is off
+        # The choice of network: there where there is one to make (this computer is on
+        # more than one, or was kept to one before), and not where the address was said
+        # when the program was started, which settles it.
+        saved = share["where"]
+        here = [] if config.SHARE_ADDRESS else remote.networks()
+        lines = [(self.EVERY_NETWORK, "")] + [(network_label(name, address), name)
+                                              for name, address in here]
+        if saved and saved not in [name for name, _ in here]:
+            lines.append((f"{saved}  (this computer isn't on it just now)", saved))
+        chooser = self.share_where
+        if lines != [(chooser.itemText(n), chooser.itemData(n)) for n in range(chooser.count())]:
+            chooser.clear()
+            for label, name in lines:
+                chooser.addItem(label, name)
+        chooser.setCurrentIndex(max(0, chooser.findData(saved)))
+        there = on and not config.SHARE_ADDRESS and (len(here) > 1 or bool(saved))
+        chooser.setVisible(there)
+        self.share_where_label.setVisible(there)
         if not on:
             self.share_note.setText("")
         elif self.engine.share_problem:
-            self.share_note.setText(f"Not working yet: {self.engine.share_problem}")
+            self.share_note.setText(
+                f"Not working yet: {self.engine.share_problem}"
+                + (". It is looked for again every half minute."
+                   if "isn't on the network" in self.engine.share_problem else ""))
         else:
-            name = config.SHARE_ADDRESS or socket.gethostname()
             port = "" if config.SHARE_PORT == config.DEFAULT_SHARE_PORT else f":{config.SHARE_PORT}"
-            self.share_note.setText(f"Address: {name}{port}\nKey: {share['key']}")
+            name = config.SHARE_ADDRESS or socket.gethostname()
+            # Kept to one network, the address that is sure to find it is the one it has there.
+            if self.engine.share_address and not config.SHARE_ADDRESS:
+                name = (f"{self.engine.share_address}{port}  (or its name, "
+                        f"{socket.gethostname()}{port}, where that network knows it)")
+                port = ""
+            fixed = "  (fixed by LS_SHARE_ADDRESS)" if config.SHARE_ADDRESS else ""
+            self.share_note.setText(f"Address: {name}{port}{fixed}\nKey: {share['key']}")
+        # Where the address was said when the program was started there is no choice of
+        # network to show, and its absence would be a puzzle: so it is said why.
+        explain(self.share_note,
+                "This computer answers on this one address because LS_SHARE_ADDRESS was set "
+                "where the program is started. Take that away and start it again, and the "
+                "choice of network, \"Reachable from\", appears here."
+                if on and config.SHARE_ADDRESS else "")
 
     def showEvent(self, event) -> None:
         self.refresh_sharing()

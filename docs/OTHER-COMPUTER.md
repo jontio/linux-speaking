@@ -84,6 +84,11 @@ That is all. The icon turns orange, and what you say is heard on the other compu
   given nothing, and nothing it says is typed. Every answer is signed too, and a request
   is good once only, so one that was overheard can't be sent again. Both computers need
   this version or a later one: an older one is told to update.
+- **The key can be changed.** If it has been given to somebody who is no longer to use
+  the computer, or may have been seen, press **New key…** beside it in Settings on the
+  sharing computer, and say yes. From that moment nobody is answered with the old key.
+  Each computer that is still to use it has to be given the new one: until then it does
+  its own listening, and its Settings says the key doesn't match.
 - **A computer without the key can't use up the sharing one.** The sharing computer
   attends to eight callers at once and turns the rest away, gives each a few seconds to
   show that it holds the key, and reads nothing more of a request until it has. What a
@@ -96,13 +101,36 @@ That is all. The icon turns orange, and what you say is heard on the other compu
   that come back. The two computers agree a key afresh for each run of phrases, which is
   never sent and is then forgotten, so what was overheard can't be read later either, not
   even by someone who has since got hold of the key in Settings. What can still be seen
-  from outside is that phrases are being sent, when, and how long each one is. It was
+  from outside is that phrases are being sent, when, and how big each one is. It was
   made for your own network; nothing about it has been looked over by anyone whose trade
   is breaking such things, so across the open internet a VPN is still the wiser way.
+- **The sound is packed for the journey.** **Sound sent**, under the address, says how:
+  - **FLAC**, which it starts as, halves it, and what arrives is exactly what was heard.
+  - **Opus** makes it about a tenth of the size, for a slow connection or one you pay for
+    by the megabyte. A little of the sound is lost. Over sixty read sentences a Parakeet
+    model heard just the same words either way, and over thirty the Small Whisper model
+    got one word more wrong; spelled letters and quiet speech have not been tried.
+  - **Raw** sends it as it is: 32 kB for each second of speech.
+
+  On a home network the difference in time is too small to notice. Packing costs next to
+  nothing: a thousandth of a second of work for each second of speech for FLAC, a
+  hundredth for Opus. A computer with an earlier Linux Speaking can't unpack sound, and
+  is sent it raw; the line under the address says so when that happens.
 - **The faster computer listens on port 47614.** Its firewall has to let that through. On
   Windows, the firewall asks the first time, and allowing it needs an administrator: it
-  is the one thing in Linux Speaking that does. Set `LS_SHARE_ADDRESS` to one of the
-  computer's addresses to answer only there, and `LS_SHARE_PORT` for another port.
+  is the one thing in Linux Speaking that does.
+- **Which network it can be reached over.** To begin with, every network the faster
+  computer is on. Where it is on more than one (a home network and a VPN, say), Settings
+  shows **Reachable from** under its tick box, with each network by the name the system
+  gives it. Choose one and it answers there alone: from any other the port can't so much
+  as be found, and the address to give the other computers is the one Settings then
+  shows. The network is known by its name, whoever runs it and whatever addresses it
+  gives out, and if this computer's address on it changes, the sharing follows within
+  half a minute. If the computer isn't on that network (a VPN that is switched off),
+  nobody is answered until it is again: it is never every network instead. For one
+  address that is to be written down and kept, set `LS_SHARE_ADDRESS` to it, which
+  settles the matter and takes the choice out of Settings; `LS_SHARE_PORT` is for
+  another port.
   [Troubleshooting](TROUBLESHOOTING.md#settings-that-are-environment-variables) says how
   such a variable is set for a program that starts by itself.
 - **The voice test and reading aloud use it too.** If another computer does your
@@ -119,7 +147,8 @@ one. Meanwhile each computer does its own listening. Once the older one is updat
 other computer is used again by itself: it is tried afresh with a phrase every twenty
 seconds or so.
 
-If the sharing computer can't share at all, because its port is in use or the part that
-does the encrypting is missing, its tray icon's tip and the top of its Settings say
+If the sharing computer can't share at all, because its port is in use, it is kept to
+one network and isn't on it just now, or the part that does the encrypting is missing,
+its tray icon's tip and the top of its Settings say
 "Other computers can't use this one for recognition" and why. The line under its tick
 box in Settings says "Not working yet", and it tries again every half a minute.

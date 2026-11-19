@@ -208,8 +208,9 @@ them again is safe, and carries on from what is already there.
   in your home folder.
 - **"Linux Speaking needs Python 3.10 or newer", or "No Python on this PC will do".** On
   Linux, the system's Python is too old: a newer distribution is needed, or a newer
-  Python named with `LS_PYTHON`. On Windows, install a 64-bit Python between 3.10 and
-  3.14 from python.org beside what is there.
+  Python named with `LS_PYTHON`. On Windows, run the installer in a PowerShell window and
+  it offers to fetch one for itself; or install a 64-bit Python between 3.10 and 3.14
+  from python.org beside what is there.
 - **"This Python can't find PyQt6 or numpy" (Linux).** The Python it names is not the
   system's own, or the system packages are missing. See what `LS_PYTHON` is set to.
 - **The system packages could not be installed (Linux).** The lines above the message

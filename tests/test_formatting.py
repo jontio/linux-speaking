@@ -56,6 +56,63 @@ class GreetingComma(unittest.TestCase):
         self.assertEqual(self.typed("Hello, I'm Bob."), "Hello, I'm Bob")
         self.assertEqual(self.typed("I saw her this morning, Bob."), "I saw her this morning, Bob")
 
+    def test_other_words_of_greeting(self):
+        from dictation.formatting import without_greeting_comma as plain
+        for said, want in (("Greetings, Dave.", "Greetings Dave."),
+                           ("Hello there, Dave.", "Hello there Dave."),
+                           ("Hi there, Dave!", "Hi there Dave!"),
+                           ("Hallo, Dave.", "Hallo Dave."),
+                           ("Kia ora, Dave.", "Kia ora Dave."),
+                           ("G'day, Dave.", "G'day Dave."),
+                           ("Gday, Dave.", "Gday Dave."),
+                           ("Yo, Dave.", "Yo Dave."),
+                           ("Welcome, Dave.", "Welcome Dave."),
+                           ("Welcome back, Dave.", "Welcome back Dave."),
+                           ("Thanks. Greetings, everyone.", "Thanks. Greetings everyone."),
+                           ("And then I said hey there, Jill.", "And then I said hey there Jill."),
+                           ("So I wrote kia ora, Dave and sent it.", "So I wrote kia ora Dave and sent it.")):
+            self.assertEqual(plain(said), want)
+        self.assertEqual(self.typed("Greetings, Dave."), "Greetings Dave")
+
+    def test_words_that_only_greet_at_the_start_keep_their_comma_further_on(self):
+        for kept in ("He sends his greetings, Dave",
+                     "Season's greetings, Dave",
+                     "You're welcome, Dave",
+                     "You are always welcome, Dave and Jill"):
+            self.assertEqual(self.typed(kept + "."), kept)
+
+    def test_further_on_in_a_sentence_too(self):
+        self.assertEqual(self.typed("So if I say hello, Bob."), "So if I say hello Bob")
+        self.assertEqual(self.typed("So if I say hello, Jill and I say hello, Peter."),
+                         "So if I say hello Jill and I say hello Peter")
+        self.assertEqual(self.typed("Oh, hello, Bob."), "Oh, hello Bob")
+        self.assertEqual(self.typed("She said hi, Mary-Ann, and left."), "She said hi Mary-Ann, and left")
+        self.assertEqual(self.typed("Then I said hey, Bob Smith!"), "Then I said hey Bob Smith")
+        self.assertEqual(self.typed("I waved and said hello, everyone."), "I waved and said hello everyone")
+
+    def test_further_on_a_comma_before_a_name_that_begins_something_new_is_kept(self):
+        for kept in ("I said hello, Bob said goodbye",
+                     "When you say hello, Jill will answer",
+                     "I said hello, I think",
+                     "We said hello, Monday was the day for it",
+                     "They said hi, OK was the answer",
+                     "She said hello, how are you"):
+            self.assertEqual(self.typed(kept + "."), kept)
+
+    def test_further_on_a_word_that_is_also_a_time_of_day_keeps_its_comma(self):
+        for kept in ("I saw her this morning, Bob",
+                     "We had a good evening, Bob",
+                     "Have a good day, Jill",
+                     "See you this afternoon, Peter and Sam"):
+            self.assertEqual(self.typed(kept + "."), kept)
+
+    def test_inside_quotes(self):
+        from dictation.formatting import without_greeting_comma
+        self.assertEqual(without_greeting_comma('She said, "Hello, Bob."'), 'She said, "Hello Bob."')
+        self.assertEqual(without_greeting_comma("He wrote (hi, Sam) on it."), "He wrote (hi Sam) on it.")
+        self.assertEqual(without_greeting_comma('She said, "Hello, Bob will be late."'),
+                         'She said, "Hello, Bob will be late."')
+
     def test_sign_offs_keep_theirs(self):
         self.assertEqual(self.typed("Cheers, Jonti"), "Cheers, Jonti")
         self.assertEqual(self.typed("Thanks, Bob."), "Thanks, Bob")

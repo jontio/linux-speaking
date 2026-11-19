@@ -103,7 +103,8 @@ class OverTheNetwork(unittest.TestCase):
         self.assertEqual(header, {"kind": "phrase", "awake": True, "prompt": "Dear Sam,\n“Thanks”",
                                   "model": "medium.en", "otherwise": ["small.en"], "quick": False,
                                   "exact": False, "sure": False, "speech_only": True,
-                                  "wake_same": True, "code": False, "letters": False})
+                                  "wake_same": True, "code": False, "letters": False,
+                                  "sound": "pcm", "samples": 16000})
         self.assertEqual(length, 16000)
         self.assertAlmostEqual(peak, 0.5, places=3)
 
@@ -295,8 +296,12 @@ class There:
     def __init__(self):
         self.calls, self.down, self.failing = [], False, 0   # failing: how many asks fail next
 
+    sound = ""                                                # how the last sound went, once known
+
     def hear(self, kind, audio, awake, prompt="", model="", otherwise=(), quick=False,
-             exact=False, speech_only=True, wake_same=True, code=False, letters=False):
+             exact=False, speech_only=True, wake_same=True, code=False, letters=False,
+             sound="pcm"):
+        self.sound_asked = sound
         self.quick_asked, self.exact_asked, self.speech_only_asked = quick, exact, speech_only
         self.wake_same_asked, self.code_asked, self.letters_asked = wake_same, code, letters
         self.calls.append((kind, awake, prompt, model, tuple(otherwise)))
@@ -738,8 +743,9 @@ class Saved(unittest.TestCase):
     def test_nothing_is_saved_until_set_up(self):
         path = os.path.join(tempfile.mkdtemp(), "settings.json")
         settings = Settings.load(path)
-        self.assertEqual(settings.remote, {"on": False, "address": "", "key": "", "model": "", "wake": False})
-        self.assertEqual(settings.share, {"on": False, "key": ""})
+        self.assertEqual(settings.remote, {"on": False, "address": "", "key": "", "model": "",
+                                           "wake": False, "sound": "flac"})
+        self.assertEqual(settings.share, {"on": False, "key": "", "where": ""})
         settings.set("scratch", False)
         with open(path) as f:
             saved = json.load(f)
@@ -753,8 +759,28 @@ class Saved(unittest.TestCase):
         settings.set_share(on=True, key="abc")
         again = Settings.load(path)
         self.assertEqual(again.remote, {"on": True, "address": "office-pc:47614", "key": KEY,
-                                        "model": "", "wake": True})
-        self.assertEqual(again.share, {"on": True, "key": "abc"})
+                                        "model": "", "wake": True, "sound": "flac"})
+        self.assertEqual(again.share, {"on": True, "key": "abc", "where": ""})
+
+    def test_how_the_sound_is_packed_and_which_network_are_kept(self):
+        path = os.path.join(tempfile.mkdtemp(), "settings.json")
+        settings = Settings.load(path)
+        settings.set_remote(on=True, address="office-pc", key=KEY, sound="opus")
+        settings.set_share(on=True, key="abc", where=" Wi-Fi 2 ")
+        again = Settings.load(path)
+        self.assertEqual(again.remote["sound"], "opus")
+        self.assertEqual(again.share["where"], "Wi-Fi 2")
+        again.set_share(where="")                              # back to every network
+        self.assertEqual(Settings.load(path).share["where"], "")
+
+    def test_a_choice_that_is_not_one_becomes_what_it_starts_as(self):
+        path = os.path.join(tempfile.mkdtemp(), "settings.json")
+        with open(path, "w") as f:
+            json.dump({"states": {}, "remote": {"address": "office-pc", "key": KEY, "sound": "mp3"},
+                       "share": {"on": True, "key": "abc", "where": ["everywhere"]}}, f)
+        settings = Settings.load(path)
+        self.assertEqual(settings.remote["sound"], "flac")
+        self.assertEqual(settings.share["where"], "")
 
     def test_damaged_blocks_are_ignored(self):
         path = os.path.join(tempfile.mkdtemp(), "settings.json")
@@ -1204,6 +1230,287 @@ class WithNothingToEncryptWith(unittest.TestCase):
         with self.assertRaises(OSError):
             server.start()
         self.assertFalse(server.running)
+
+
+def speech_like(seconds=2.0):
+    """A sound with something of speech's shape: tones that come and go, over a little hiss."""
+    count = int(config.RATE * seconds)
+    at = np.arange(count) / config.RATE
+    made = sum(np.sin(2 * np.pi * pitch * at) * (0.5 + 0.5 * np.sin(2 * np.pi * beat * at))
+               for pitch, beat in ((180, 3.0), (420, 2.0), (1300, 5.0), (2600, 4.0)))
+    made = made / 6 + np.random.default_rng(1).standard_normal(count) * 0.003
+    return made.astype(np.float32)
+
+
+def needs(way):
+    return unittest.skipUnless(way in remote.sounds_here(),
+                               f"this computer can't pack sound as {way}: PyAV is missing, or hasn't it")
+
+
+class Packing(unittest.TestCase):
+    """The sound packed for the journey, and unpacked at the other end."""
+
+    def test_as_it_is_can_always_be_done(self):
+        self.assertEqual(remote.sounds_here()[-1], "pcm")
+        audio = speech_like(0.2)
+        back = remote.from_sound(remote.to_sound(audio, "pcm"))
+        self.assertEqual(len(back), len(audio))
+        self.assertLess(float(np.max(np.abs(back - audio))), 1e-4)
+
+    @needs("flac")
+    def test_flac_gives_back_exactly_what_went_in_and_is_smaller(self):
+        audio = speech_like()
+        plain, packed = remote.to_pcm(audio), remote.to_sound(audio, "flac")
+        self.assertLess(len(packed), len(plain) * 0.85)
+        self.assertTrue(np.array_equal(remote.from_sound(packed, "flac", len(audio)),
+                                       remote.from_pcm(plain)))
+
+    @needs("opus")
+    def test_opus_is_much_smaller_and_much_the_same_sound(self):
+        audio = speech_like()
+        packed = remote.to_sound(audio, "opus")
+        self.assertLess(len(packed), len(remote.to_pcm(audio)) * 0.25)
+        back = remote.from_sound(packed, "opus", len(audio))
+        self.assertLessEqual(len(back), len(audio))            # cut to how long it was
+        self.assertGreater(len(back), len(audio) - config.RATE // 20)
+        # And not moved in time: it lines up with what went in, to within a millisecond or so.
+        size = min(len(back), len(audio))
+        best = max(range(-80, 81), key=lambda shift: float(np.dot(
+            audio[160:size - 160], back[160 + shift:size - 160 + shift])))
+        self.assertLessEqual(abs(best), 16)
+        self.assertGreater(float(np.corrcoef(audio[160:size - 160],
+                                             back[160 + best:size - 160 + best])[0, 1]), 0.9)
+
+    @needs("flac")
+    def test_what_is_not_what_it_says_is_refused(self):
+        for junk in (b"", b"not sound at all" * 100, remote.to_pcm(speech_like(0.2))):
+            with self.assertRaises(ValueError):
+                remote.from_sound(junk, "flac")
+        with self.assertRaises(ValueError):
+            remote.from_sound(remote.to_sound(speech_like(0.2), "flac"), "mp3")
+
+    @needs("flac")
+    def test_less_sound_than_was_said_is_refused(self):
+        packed = remote.to_sound(speech_like(0.5), "flac")
+        self.assertEqual(len(remote.from_sound(packed, "flac", config.RATE // 2)), config.RATE // 2)
+        self.assertEqual(len(remote.from_sound(packed, "flac", config.RATE // 4)), config.RATE // 4)
+        with self.assertRaises(ValueError):
+            remote.from_sound(packed, "flac", config.RATE)
+        for odd in (None, "8000", -1, 8000.0, True):           # not a length: taken as it comes
+            self.assertEqual(len(remote.from_sound(packed, "flac", odd)), config.RATE // 2, odd)
+
+    @needs("opus")
+    def test_one_kind_is_not_taken_for_another(self):
+        with self.assertRaises(ValueError):
+            remote.from_sound(remote.to_sound(speech_like(0.2), "opus"), "flac")
+        with self.assertRaises(ValueError):
+            remote.from_sound(remote.to_sound(speech_like(0.2), "flac"), "opus")
+
+    @needs("flac")
+    def test_a_little_that_unpacks_to_too_much_is_refused(self):
+        quiet = remote.to_sound(np.zeros(config.RATE * 4, dtype=np.float32), "flac")
+        self.assertLess(len(quiet), 20000)                     # silence packs to next to nothing
+        with mock.patch.object(remote, "MAX_SAMPLES", config.RATE * 2):
+            with self.assertRaises(ValueError):
+                remote.from_sound(quiet, "flac")
+        self.assertEqual(len(remote.from_sound(quiet, "flac")), config.RATE * 4)
+
+    def test_the_way_chosen_is_used_only_if_both_computers_can(self):
+        with mock.patch.object(remote, "_sounds", ("flac", "opus", "pcm")):
+            self.assertEqual(remote.sound_for("flac", ("flac", "opus", "pcm")), "flac")
+            self.assertEqual(remote.sound_for("opus", ("flac", "opus", "pcm")), "opus")
+            self.assertEqual(remote.sound_for("opus", ("flac", "pcm")), "flac")   # the next smallest
+            self.assertEqual(remote.sound_for("flac", ("opus", "pcm")), "pcm")    # never what loses
+            self.assertEqual(remote.sound_for("flac", ("pcm",)), "pcm")
+            self.assertEqual(remote.sound_for("pcm", ("flac", "opus", "pcm")), "pcm")
+            self.assertEqual(remote.sound_for("mp3", ("mp3", "pcm")), "pcm")
+        with mock.patch.object(remote, "_sounds", ("pcm",)):                      # no PyAV here
+            self.assertEqual(remote.sound_for("flac", ("flac", "opus", "pcm")), "pcm")
+
+    def test_without_pyav_only_as_it_is_is_offered(self):
+        with mock.patch.object(remote, "_sounds", None), \
+                mock.patch.object(remote, "_tried", side_effect=ImportError("no av")):
+            self.assertEqual(remote.sounds_here(), ("pcm",))
+
+
+class PackedOverTheNetwork(unittest.TestCase):
+    def setUp(self):
+        self.recogniser = Recogniser()
+        self.server = remote.Server("127.0.0.1", 0, KEY, self.recogniser.hear, self.recogniser.describe)
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.address = f"127.0.0.1:{self.server.port}"
+
+    def sent(self):
+        """How many bytes the last request's body came to, as it travelled."""
+        return len(ask.last["sealed"]) if getattr(ask, "last", None) else 0
+
+    def hear(self, way, audio, client=None):
+        client = client or remote.Client(self.address, KEY)
+        sizes = []
+        real = client._exchange
+        client._exchange = lambda method, path, body, *rest: (
+            sizes.append(len(body)) if path == "/hear" else None) or real(method, path, body, *rest)
+        answer = client.hear("phrase", audio, True, sound=way)
+        return client, answer, sizes[-1]
+
+    def test_the_sharing_computer_says_what_it_can_unpack_and_is_believed(self):
+        client = remote.Client(self.address, KEY)
+        client.status()
+        self.assertEqual(client.sounds, remote.sounds_here())
+        self.assertEqual(self.server.sounds, remote.sounds_here())
+
+    @needs("flac")
+    def test_flac_arrives_as_exactly_the_sound_that_was_sent(self):
+        audio = speech_like()
+        heard = []
+        self.server.hear = lambda header, sound: heard.append((header, sound)) or {"ok": True, "text": "x"}
+        client, _, packed = self.hear("flac", audio)
+        _, _, plain = self.hear("pcm", audio)
+        self.assertEqual(client.sound, "flac")
+        (header, sound), (_, as_it_is) = heard
+        self.assertEqual((header["sound"], header["samples"]), ("flac", len(audio)))
+        self.assertTrue(np.array_equal(sound, as_it_is))
+        self.assertLess(packed, plain * 0.85)
+
+    @needs("opus")
+    def test_opus_arrives_as_long_as_it_was_sent_and_far_smaller(self):
+        audio = speech_like()
+        client, answer, packed = self.hear("opus", audio)
+        _, _, plain = self.hear("pcm", audio)
+        self.assertEqual(client.sound, "opus")
+        header, length, peak = self.recogniser.asked[0]
+        self.assertEqual(header["sound"], "opus")
+        self.assertLessEqual(abs(length - len(audio)), config.RATE // 20)
+        self.assertGreater(peak, 0.1)
+        self.assertLess(packed, plain * 0.25)
+
+    @needs("flac")
+    def test_a_computer_that_cannot_unpack_it_is_sent_the_sound_as_it_is(self):
+        self.server.sounds = ("pcm",)
+        client, answer, _ = self.hear("flac", speech_like(0.5))
+        self.assertEqual(client.sound, "pcm")
+        self.assertEqual(self.recogniser.asked[0][0]["sound"], "pcm")
+        self.assertEqual(answer["text"], f"phrase of {config.RATE // 2}")
+
+    @needs("opus")
+    def test_opus_falls_back_to_flac_before_it_falls_back_to_as_it_is(self):
+        self.server.sounds = ("flac", "pcm")
+        client, _, _ = self.hear("opus", speech_like(0.5))
+        self.assertEqual(client.sound, "flac")
+
+    @needs("flac")
+    def test_a_sound_that_cannot_be_packed_goes_as_it_is(self):
+        with mock.patch.object(remote, "_packed", side_effect=RuntimeError("it fell over")):
+            client, answer, _ = self.hear("flac", speech_like(0.5))
+        self.assertEqual(client.sound, "pcm")
+        self.assertEqual(answer["text"], f"phrase of {config.RATE // 2}")
+
+    @needs("flac")
+    def test_no_sound_at_all_still_gets_an_answer(self):
+        client, answer, _ = self.hear("flac", np.zeros(0, dtype=np.float32))
+        self.assertEqual(answer["text"], "phrase of 0")
+
+    @needs("flac")
+    def test_packed_sound_that_is_not_sound_is_refused_and_the_server_stays_up(self):
+        client = remote.Client(self.address, KEY)
+        with mock.patch.object(remote, "to_sound", return_value=b"nothing of the kind" * 50):
+            with self.assertRaises(remote.RemoteError) as raised:
+                client.hear("phrase", speech_like(0.2), True, sound="flac")
+        self.assertIn("not understood", str(raised.exception))
+        self.assertEqual(self.recogniser.asked, [])
+        self.assertEqual(remote.Client(self.address, KEY).hear(
+            "phrase", np.zeros(160, dtype=np.float32), True)["text"], "phrase of 160")
+
+    @needs("flac")
+    def test_the_offload_asks_for_the_way_chosen_and_says_how_it_went(self):
+        ways = []
+
+        class Local:
+            not_speech, ignored = 0.0, ""
+
+        offload = remote.Offload(Local, remote.Client(self.address, KEY), sound="flac",
+                                 on_sound=ways.append)
+        for _ in range(2):
+            offload.transcribe(speech_like(0.3), True)
+        self.assertEqual(ways, ["flac"])                       # said once, not with every phrase
+        self.server.sounds = ("pcm",)                          # the other computer is changed
+        offload.client._turn = ("", 0.0, b"")                  # and hello is said again
+        offload.transcribe(speech_like(0.3), True)
+        self.assertEqual(ways, ["flac", "pcm"])
+
+
+class WhatHelloSaysOfSound(unittest.TestCase):
+    """What a computer says it can unpack is believed only with proof made from the key."""
+
+    serve = Impostors.serve
+
+    def said(self, sounds, proof=True, more=None):
+        turn, half = "c" * 32, remote.half()[1]
+        answer = {"ok": True, "turn": turn, "key": half, "speaks": remote.SPEAKS}
+        if sounds is not None:
+            answer["sounds"] = sounds
+
+        def hello(nonce, theirs):
+            headers = {remote.AUTH: remote.prove(KEY, "hello", nonce, turn, theirs, half)}
+            if proof and sounds is not None:
+                try:   # proof as good as can be made for it, so that it is its shape that is refused
+                    headers[remote.MORE] = more or remote.prove(KEY, "hello sounds", nonce, turn, *sounds)
+                except TypeError:
+                    headers[remote.MORE] = "0" * 64
+            return 200, answer, headers
+
+        address, _ = self.serve(hello)
+        client = remote.Client(address, KEY)
+        client._hello()
+        return client.sounds
+
+    def test_one_from_before_sound_was_packed_says_nothing_and_is_sent_it_as_it_is(self):
+        self.assertEqual(self.said(None), ("pcm",))
+
+    def test_with_proof_it_is_believed(self):
+        self.assertEqual(self.said(["flac", "pcm"]), ("flac", "pcm"))
+
+    def test_without_proof_or_with_another_it_is_not(self):
+        # Someone in between adds to what an older computer said, to have it sent sound
+        # that it would take for something else.
+        self.assertEqual(self.said(["flac", "opus", "pcm"], proof=False), ("pcm",))
+        self.assertEqual(self.said(["flac", "opus", "pcm"], more="0" * 64), ("pcm",))
+
+    def test_what_is_not_a_list_of_ways_is_not_believed(self):
+        for odd in ("flac", [], ["flac", 3], ["fl ac"], ["x"] * 17):
+            self.assertEqual(self.said(odd), ("pcm",), odd)
+
+
+class TheNetworksThisComputerIsOn(unittest.TestCase):
+    """A network is known by its name, whoever runs it and whatever addresses it gives out."""
+
+    def test_the_address_on_a_network_is_found_by_its_name(self):
+        here = [("Wi-Fi", "192.168.1.20"), ("office-vpn", "10.8.0.6"), ("another", "203.0.113.9")]
+        with mock.patch.object(remote, "networks", lambda: here):
+            self.assertEqual(remote.address_on("Wi-Fi"), "192.168.1.20")
+            self.assertEqual(remote.address_on("office-vpn"), "10.8.0.6")
+            self.assertEqual(remote.address_on("another"), "203.0.113.9")   # no kind of address is expected
+            self.assertEqual(remote.address_on("not there"), "")
+            self.assertEqual(remote.address_on(""), "")
+
+    def test_it_follows_an_address_that_changes(self):
+        here = [("office-vpn", "10.8.0.6")]
+        with mock.patch.object(remote, "networks", lambda: here):
+            self.assertEqual(remote.address_on("office-vpn"), "10.8.0.6")
+            here[0] = ("office-vpn", "172.16.4.9")
+            self.assertEqual(remote.address_on("office-vpn"), "172.16.4.9")
+
+    def test_the_real_list_is_names_and_addresses_that_can_be_answered_on(self):
+        import ipaddress
+        found = remote.networks()                              # whatever this computer is on
+        self.assertIsInstance(found, list)
+        self.assertEqual(len({name for name, _ in found}), len(found))    # no name twice
+        for name, address in found:
+            self.assertTrue(name)
+            address = ipaddress.ip_address(address)
+            self.assertEqual(address.version, 4)
+            self.assertFalse(address.is_loopback or address.is_link_local)
 
 
 if __name__ == "__main__":

@@ -190,9 +190,12 @@ function Remove-IfEmpty($path) {
         Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     }
 }
+# A Python that the installer fetched for Linux Speaking alone lives in the folder, and goes
+# with it. One that you installed yourself is somewhere else, and is not touched.
+$ownPython = $installed -and (Test-Path -LiteralPath "$dir\python\python.exe")
 if ($installed) {
-    foreach ($name in "app", "venv", "training", "dictionaries", "settings.json", "settings.json.new",
-                      "mail-key", "linux-speaking.ico", "linux-speaking.vsix") {
+    foreach ($name in "app", "venv", "python", "python.new", "training", "dictionaries", "settings.json",
+                      "settings.json.new", "mail-key", "linux-speaking.ico", "linux-speaking.vsix") {
         Remove-It "$dir\$name"
     }
     if ($keeping) {
@@ -216,7 +219,8 @@ if ($installed) {
         Remove-IfEmpty $env:LS_TRAINING_DIR
     }
     # This file itself goes last, and then the folder, if nothing else is in it.
-    $failed = (Test-Path -LiteralPath "$dir\app") -or (Test-Path -LiteralPath "$dir\venv")
+    $failed = (Test-Path -LiteralPath "$dir\app") -or (Test-Path -LiteralPath "$dir\venv") -or
+        (Test-Path -LiteralPath "$dir\python")
     if (-not $failed) { Remove-It "$dir\uninstall.ps1" }
     Remove-IfEmpty $state
     Remove-IfEmpty "$dir\models"
@@ -255,7 +259,15 @@ if ($left.Count -gt 0) {
     foreach ($line in $left) { Write-Host "  - $line" }
 }
 Write-Host ""
-Write-Host "Python itself, which you installed, is still on this PC, and so is the folder you"
-Write-Host "installed from, if you kept it."
+if ($ownPython) {
+    if (-not $failed) {
+        Write-Host "The Python that the installer fetched for Linux Speaking alone has gone with it. Any"
+        Write-Host "other Python on this PC has not been touched. The folder you installed from is still"
+        Write-Host "here, if you kept it."
+    }
+} else {
+    Write-Host "Python itself, which you installed, is still on this PC, and so is the folder you"
+    Write-Host "installed from, if you kept it."
+}
 if ($failed) { Finish 1 }
 Finish 0

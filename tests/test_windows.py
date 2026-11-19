@@ -80,7 +80,7 @@ if HAVE_QT and ALONE:
             self.settings = Settings.load(os.environ["LS_SETTINGS_FILE"])
             self.status = Status()
             self.status.state = State.ASLEEP
-            self.boost, self.share_problem = 1.0, ""
+            self.boost, self.share_problem, self.share_address = 1.0, "", ""
             self.targets = SimpleNamespace(office=None, own=None)
             self.on_event, self.on_level = (lambda name: None), (lambda: None)
             self.asked = []
@@ -112,6 +112,15 @@ if HAVE_QT and ALONE:
         def set_words(self, text): self.asked.append(("words", text))
         def set_microphone(self, name): self.asked.append(("microphone", name))
         def check_remote(self): return {"ok": False, "why": ""}
+
+        def new_share_key(self):
+            self.asked.append("new key")
+            self.settings.share["key"] = "a-new-key"
+
+        def set_sharing(self, on, where=None):
+            self.asked.append(("sharing", on, where))
+            self.settings.share.update(on=on, key=self.settings.share["key"] or "k",
+                                       where=self.settings.share["where"] if where is None else where)
         def model_renewed(self, name): pass
         def quit(self): self.asked.append("quit")
 
@@ -207,7 +216,7 @@ if HAVE_QT and ALONE:
             self.have(models)
             engine = Engine()
             engine.settings.remote.update(on=True, address="office-pc", key="k", model="", wake=wake)
-            engine.set_remote = lambda on, address, key, model, wake: engine.asked.append(("remote", wake))
+            engine.set_remote = lambda on, address, key, model, wake, sound="": engine.asked.append(("remote", wake))
             self.engine = engine
             window = tray.SettingsWindow(engine)
             self.addCleanup(window.close)
@@ -246,6 +255,198 @@ if HAVE_QT and ALONE:
             window.refill_models()                                    # as when one is installed
             self.assertFalse(window.remote_wake.isChecked())
             self.assertEqual(window.remote_wake.styleSheet(), "")
+
+    class HowTheSoundIsSent(unittest.TestCase):
+        """The choice of how the sound is packed for the journey to the other computer."""
+
+        def window(self, **remote):
+            engine = Engine()
+            engine.settings.remote.update(on=True, address="office-pc", key="k", **remote)
+            engine.set_remote = lambda on, address, key, model, wake, sound="": engine.asked.append(("sound", sound))
+            self.engine = engine
+            window = tray.SettingsWindow(engine)
+            self.addCleanup(window.close)
+            return window
+
+        def test_it_starts_as_flac_and_offers_the_three(self):
+            chooser = self.window().remote_sound
+            self.assertEqual([chooser.itemData(n) for n in range(chooser.count())], ["flac", "opus", "pcm"])
+            self.assertEqual(chooser.currentData(), "flac")
+            self.assertEqual([chooser.itemText(n).split(":")[0] for n in range(chooser.count())],
+                             ["FLAC", "Opus", "Raw"])
+            self.assertIn("exactly what was heard", chooser.toolTip())
+
+        def test_it_shows_what_was_chosen_before(self):
+            self.assertEqual(self.window(sound="opus").remote_sound.currentData(), "opus")
+
+        def test_choosing_one_is_passed_on(self):
+            window = self.window()
+            window.remote_sound.setCurrentIndex(window.remote_sound.findData("opus"))
+            window.remote_sound.activated.emit(window.remote_sound.currentIndex())
+            self.assertEqual(self.engine.asked[-1], ("sound", "opus"))
+
+        def test_it_says_so_when_the_sound_cannot_go_the_way_chosen(self):
+            window = self.window()
+            window.on_remote_checked({"ok": True, "models": [], "sound": "flac", "sound_there": True})
+            self.assertEqual(window.remote_note.text(), "Connected. Recognition is done on the other computer.")
+            window.on_remote_checked({"ok": True, "models": [], "sound": "pcm", "sound_there": False})
+            self.assertIn("The sound goes raw, not as FLAC", window.remote_note.text())
+            self.assertIn("earlier Linux Speaking", window.remote_note.text())
+            window.on_remote_checked({"ok": True, "models": [], "sound": "pcm", "sound_there": True})
+            self.assertIn("this computer can't pack it", window.remote_note.text())
+            self.engine.settings.remote["sound"] = "opus"
+            window.on_remote_checked({"ok": True, "models": [], "sound": "flac", "sound_there": False})
+            self.assertIn("The sound goes as FLAC, not as Opus", window.remote_note.text())
+            # One that says nothing of it (the windows of an earlier engine): nothing is said.
+            window.on_remote_checked({"ok": True, "models": []})
+            self.assertEqual(window.remote_note.text(), "Connected. Recognition is done on the other computer.")
+
+    class ANewKeyForSharing(unittest.TestCase):
+        """Changing the key, so that whoever was given the old one is no longer answered."""
+
+        def window(self, answer=True, **share):
+            self.questions = []
+
+            def ask(window, text, careful=False):
+                self.questions.append((text, careful))
+                return answer
+            self.addCleanup(setattr, tray, "ask", tray.ask)
+            tray.ask = ask
+            engine = Engine()
+            engine.settings.share.update(share)
+            self.engine = engine
+            window = tray.SettingsWindow(engine)
+            self.addCleanup(window.close)
+            return window
+
+        def test_with_sharing_off_there_is_no_key_to_change(self):
+            self.assertTrue(self.window().share_new_key.isHidden())
+
+        def test_it_asks_first_and_then_shows_the_new_key(self):
+            window = self.window(on=True, key="the-old-key")
+            self.assertFalse(window.share_new_key.isHidden())
+            self.assertIn("Key: the-old-key", window.share_note.text())
+            window.share_new_key.click()
+            (question, careful), = self.questions
+            self.assertIn("Nobody will be answered with the old key", question)
+            self.assertTrue(careful)                              # Enter alone changes nothing
+            self.assertIn("new key", self.engine.asked)
+            self.assertIn("Key: a-new-key", window.share_note.text())
+            self.assertNotIn("the-old-key", window.share_note.text())
+
+        def test_answered_no_nothing_changes(self):
+            window = self.window(answer=False, on=True, key="the-old-key")
+            window.share_new_key.click()
+            self.assertEqual(len(self.questions), 1)
+            self.assertNotIn("new key", self.engine.asked)
+            self.assertIn("Key: the-old-key", window.share_note.text())
+
+        def test_it_says_what_it_is_for(self):
+            tip = self.window(on=True, key="k").share_new_key.toolTip()
+            self.assertIn("no longer to use this computer", tip)
+            self.assertIn("has to be given the new key", tip)
+
+    class WhichNetworkItIsSharedOn(unittest.TestCase):
+        """The choice between every network this computer is on and one of them, by name."""
+
+        HOME = [("Wi-Fi", "192.168.1.20")]
+        TWO = [("Wi-Fi", "192.168.1.20"), ("office-vpn", "10.8.0.6")]
+
+        def window(self, here=(), address="", **share):
+            self.here = list(here)
+            for owner, name, value in ((tray.remote, "networks", lambda: list(self.here)),
+                                       (config, "SHARE_ADDRESS", address)):
+                self.addCleanup(setattr, owner, name, getattr(owner, name))
+                setattr(owner, name, value)
+            engine = Engine()
+            engine.settings.share.update(share)
+            self.engine = engine
+            window = tray.SettingsWindow(engine)
+            self.addCleanup(window.close)
+            return window
+
+        def shown(self, window):
+            return (not window.share_where.isHidden(), not window.share_where_label.isHidden())
+
+        def offered(self, window):
+            chooser = window.share_where
+            return [(chooser.itemText(n), chooser.itemData(n)) for n in range(chooser.count())]
+
+        def test_with_sharing_off_there_is_nothing_to_choose(self):
+            self.assertEqual(self.shown(self.window(self.TWO)), (False, False))
+
+        def test_on_one_network_there_is_nothing_to_choose(self):
+            window = self.window(self.HOME, on=True, key="k")
+            self.assertEqual(self.shown(window), (False, False))
+            self.assertIn("Key: k", window.share_note.text())
+
+        def test_on_more_than_one_it_offers_each_by_name_and_starts_as_every_network(self):
+            window = self.window(self.TWO, on=True, key="k")
+            self.assertEqual(self.shown(window), (True, True))
+            self.assertEqual([name for _, name in self.offered(window)], ["", "Wi-Fi", "office-vpn"])
+            self.assertEqual(self.offered(window)[0][0], "Every network this computer is on")
+            self.assertIn("192.168.1.20", self.offered(window)[1][0])
+            self.assertEqual(window.share_where.currentData(), "")
+            self.assertIn("encrypted", window.share_where.toolTip())
+
+        def test_choosing_one_is_passed_on_and_so_is_going_back(self):
+            window = self.window(self.TWO, on=True, key="k")
+            window.share_where.setCurrentIndex(window.share_where.findData("office-vpn"))
+            window.share_where.activated.emit(window.share_where.currentIndex())
+            self.assertEqual(self.engine.asked[-1], ("sharing", True, "office-vpn"))
+            self.assertEqual(window.share_where.currentData(), "office-vpn")
+            window.share_where.setCurrentIndex(0)
+            window.share_where.activated.emit(0)
+            self.assertEqual(self.engine.asked[-1], ("sharing", True, ""))
+            self.assertEqual(window.share_where.currentData(), "")
+
+        def test_kept_to_one_it_shows_the_address_that_finds_it_there(self):
+            window = self.window(self.TWO, on=True, key="k", where="office-vpn")
+            self.engine.share_address = "10.8.0.6"
+            window.refresh_sharing()
+            self.assertEqual(window.share_where.currentData(), "office-vpn")
+            self.assertIn("Address: 10.8.0.6", window.share_note.text())
+
+        def test_kept_to_one_that_has_gone_it_says_so_and_can_still_be_changed(self):
+            window = self.window(self.HOME, on=True, key="k", where="office-vpn")
+            self.engine.share_problem = 'this computer isn\'t on the network "office-vpn" just now'
+            window.refresh_sharing()
+            self.assertEqual(self.shown(window), (True, True))       # though only one network is here
+            self.assertEqual(window.share_where.currentData(), "office-vpn")
+            self.assertIn("isn't on it just now", window.share_where.currentText())
+            self.assertIn("Not working yet: this computer isn't on the network", window.share_note.text())
+            self.assertIn("looked for again", window.share_note.text())
+
+        def test_the_list_follows_the_networks_as_they_come_and_go(self):
+            window = self.window(self.HOME, on=True, key="k")
+            self.assertEqual(self.shown(window), (False, False))
+            self.here.append(("office-vpn", "10.8.0.6"))             # a VPN is switched on
+            window.refresh_sharing()                                  # as when Settings is next shown
+            self.assertEqual(self.shown(window), (True, True))
+            self.assertEqual([name for _, name in self.offered(window)], ["", "Wi-Fi", "office-vpn"])
+
+        def test_an_address_said_when_it_was_started_settles_it(self):
+            window = self.window(self.TWO, address="192.168.1.20", on=True, key="k")
+            self.assertEqual(self.shown(window), (False, False))
+            # And it says why there is no choice to be seen, and what would bring it back.
+            self.assertIn("Address: 192.168.1.20  (fixed by LS_SHARE_ADDRESS)", window.share_note.text())
+            self.assertIn("Reachable from", window.share_note.toolTip())
+
+        def test_without_one_nothing_is_said_of_it(self):
+            window = self.window(self.TWO, on=True, key="k")
+            self.assertNotIn("LS_SHARE_ADDRESS", window.share_note.text())
+            self.assertEqual(window.share_note.toolTip(), "")
+
+        def test_on_linux_a_name_that_says_little_is_said_with_its_kind(self):
+            was = config.WINDOWS
+            self.addCleanup(setattr, config, "WINDOWS", was)
+            config.WINDOWS = False
+            self.assertEqual(tray.network_label("wlp3s0", "192.168.1.20"), "Wi-Fi, wlp3s0  (192.168.1.20)")
+            self.assertEqual(tray.network_label("enp1s0", "10.0.0.4"), "Wired, enp1s0  (10.0.0.4)")
+            self.assertEqual(tray.network_label("office-vpn", "10.8.0.6"), "office-vpn  (10.8.0.6)")
+            config.WINDOWS = True
+            self.assertEqual(tray.network_label("Wi-Fi", "192.168.1.20"), "Wi-Fi  (192.168.1.20)")
+            self.assertEqual(tray.network_label("Ethernet 2", "10.0.0.4"), "Ethernet 2  (10.0.0.4)")
 
     class TextInAPageThatScrolls(unittest.TestCase):
         """Scrolling down Settings, the wheel stays with the page when the pointer comes
@@ -1264,6 +1465,9 @@ if HAVE_QT and ALONE:
                     (models, "Download", Pretend), (tray.threading, "Thread", NoThread),
                     (models, "free_space", lambda folder: 10 ** 12),
                     (models, "is_installed", lambda folder, name: name in here),
+                    # (Where Speech Note's models are used, the helper goes by its name
+                    # for it, which is none that can be fetched: here it is the usual one.)
+                    (config, "WAKE_MODEL", "small.en"),
                     (fetches, "announce", lambda text, kind="info": said.append((text, kind)))):
                 self.addCleanup(setattr, where, name, getattr(where, name))
                 setattr(where, name, stand_in)
@@ -1289,7 +1493,9 @@ if HAVE_QT and ALONE:
             self.assertEqual((len(started), fetches.name), (2, ""))
 
         def test_with_small_here_a_parakeet_is_fetched_by_itself(self):
-            fetches, started, said = self.downloads_that_only_pretend({config.WAKE_MODEL})
+            here = set()
+            fetches, started, said = self.downloads_that_only_pretend(here)
+            here.add(config.WAKE_MODEL)
             self.assertEqual(fetches.start(tray.RECOMMENDED), "")
             self.assertEqual((started, fetches.after, said), ([tray.RECOMMENDED], "", []))
 

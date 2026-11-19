@@ -40,10 +40,12 @@ dictated into as other programs' text boxes.
 - **To speak English.** Dictation and the spoken commands are in English only.
 - **Windows 10 or 11 on a 64-bit Intel or AMD processor.** A PC with an ARM processor
   won't do: the packages it runs on are not made for one.
-- **Python, 64-bit, version 3.10 to 3.14**, installed before you start: from
-  [python.org](https://www.python.org/downloads/windows/) (the "Windows installer
-  (64-bit)") or from the Microsoft Store. The installer turns away a 32-bit Python, one
-  for ARM, and versions older or newer than those, and says which it found.
+- **Python, 64-bit, version 3.10 to 3.14.** If the PC has one, from
+  [python.org](https://www.python.org/downloads/windows/) or the Microsoft Store, the
+  installer uses it. If it has none, or only ones that won't do (a 32-bit Python, one
+  for ARM, or a version older or newer than those), the installer says what it found and
+  offers to fetch one for Linux Speaking alone: see
+  [A Python of its own](#a-python-of-its-own). There is nothing to install first.
 - **A microphone.** A headset works best.
 - **About 1.5 GB of disk space** in your user folder: some 650 MB for the two speech
   models the installer fetches, and the rest for the Python packages. The recommended
@@ -59,16 +61,15 @@ Nothing needs administrator rights.
 
 ## Installing
 
-1. **Install Python** if it isn't there (see above).
-2. **Get this repository.** On its GitHub page, click the green **Code** button, then
+1. **Get this repository.** On its GitHub page, click the green **Code** button, then
    **Download ZIP**, and extract the ZIP. Or clone it with git. Either way, the folder
    must not be `linux-speaking` in your user folder (`C:\Users\you\linux-speaking`):
    that is where the program installs itself, and the installer says so and stops if it
    is run from there. A ZIP extracts under another name, so this only matters if you
    clone: `git clone https://github.com/jontio/linux-speaking linux-speaking-source`.
-3. **Open PowerShell in that folder.** In File Explorer, open the folder, click in the
+2. **Open PowerShell in that folder.** In File Explorer, open the folder, click in the
    address bar, type `powershell` and press Enter.
-4. **Run the installer:**
+3. **Run the installer:**
 
    ```
    powershell -ExecutionPolicy Bypass -File install.ps1
@@ -77,6 +78,11 @@ Nothing needs administrator rights.
 It first asks one question: **Download the speech models now?** Press Enter for yes. Say
 no on a PC that is to leave the recognising to another computer, or to fetch models
 later from Settings. It asks once: an update keeps what you answered.
+
+On a PC with no Python that will do, it asks a second: **Fetch it now?** Press Enter for
+yes, and it fetches a Python for Linux Speaking alone, which changes nothing else on the
+PC: see [A Python of its own](#a-python-of-its-own). Say no, and it stops, having changed
+nothing, and says which Python to install yourself.
 
 It says which Python it is using, then:
 
@@ -99,7 +105,7 @@ what, in plain words, before it says "Done".
 Everything is in the one folder, `linux-speaking` in your user folder: the program
 (`app`), its Python packages (`venv`), the speech models (`models`), your settings
 (`settings.json`), and what it keeps as it runs (`state`: the log, and anything you
-record).
+record). If the installer fetched a Python, that is there too (`python`).
 
 ## The first run
 
@@ -191,6 +197,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | `$env:LS_NO_AUTOSTART = "1"` | Doesn't set it to start when you sign in. `"0"` sets it to start again. Left out, a first install sets it to start, and an update keeps what was chosen before: if the shortcut was removed, by you or by the tick box in Settings, it is not put back. |
 | `$env:LS_NO_START = "1"` | Doesn't start it now. |
 | `$env:LS_PYTHON = "C:\path\to\python.exe"` | Builds on that Python. A version, such as `"3.12"`, is taken as one for the `py` launcher. Without it, the newest suitable Python is found by itself. |
+| `$env:LS_FETCH_PYTHON = "1"` | Answers the installer's question about Python for you: if no Python on the PC will do, one is fetched for Linux Speaking alone. For installing with nobody at the keyboard. `"0"` answers no: it stops and says which Python to install. Where a Python that will do is found, nothing is fetched either way. See [A Python of its own](#a-python-of-its-own). |
 | `$env:LS_INSTALL_DIR = "D:\apps\linux-speaking"` | Installs there instead of your user folder. It must be a folder of its own: one that doesn't exist yet, or an earlier install. See below. |
 | `$env:LS_SKIP_PACKAGES = "1"` | Doesn't install or update the Python packages. |
 | `$env:LS_SKIP_MODELS = "1"` | Answers the installer's question about the speech models for you: they are not downloaded, which saves about 600 MB. For installing with nobody at the keyboard. The install finishes without them and says what to do next: see [Using another computer](OTHER-COMPUTER.md#a-small-computer-with-no-speech-model-of-its-own). `"0"` answers yes. |
@@ -201,6 +208,28 @@ settings, your recordings and the program itself, the installer closes it to oth
 accounts when it is put elsewhere, so that only you and the PC's administrators can
 open it, and says so. If it can't (a USB stick keeps no permissions at all), it warns
 you, and the user folder is the safer place.
+
+### A Python of its own
+
+Where no Python on the PC will do, the installer offers to fetch one. What it fetches
+is Python 3.14 as the Python Software Foundation publishes it, as plain files, in its
+"python" package on nuget.org: a download of about 15 MB that takes about 50 MB of disk.
+
+- **It goes in the install folder**, as `python`, and Linux Speaking alone uses it.
+- **Nothing else on the PC is changed.** Nothing is added to the registry, to the PATH or
+  to the list of installed programs, and there is no `py` launcher. A Python that is
+  already there, however old, is left exactly as it is, and so is whatever uses it.
+- **It is checked before it is used.** Windows checks the signature on Python itself,
+  and the installer goes on only if that is the Python Software Foundation's. If it is
+  not, or the download was cut short, what arrived is removed and the installer stops
+  and says why.
+- **An update keeps it.** Running the installer again finds it and asks nothing. To have
+  the newest Python 3.14 instead, delete the `python` folder and run the installer: it
+  offers to fetch one again.
+- **Uninstalling removes it** with the rest.
+
+It is not offered on a PC with an ARM processor or a 32-bit Windows, where the packages
+Linux Speaking runs on won't work, nor when `LS_PYTHON` names a Python.
 
 ## On a work network
 
@@ -214,6 +243,10 @@ Run the installer again afterwards and it carries on from there.
 
 If it is the Python packages that can't be fetched, that is pip's doing, and pip has
 its own settings for a proxy. The lines it prints say what it could not reach.
+
+A Python that the installer fetches comes from `api.nuget.org`, through Windows' proxy
+settings and certificates. If that can't be reached, the installer says so and stops,
+having changed nothing: install a Python yourself and run it again.
 
 ## Updating
 
@@ -247,12 +280,13 @@ are to go too. Anything but "yes" keeps them where they are, in the install fold
 a later install into the same folder finds them again. Adding `-Purge` to the command
 removes them without asking, and `-Keep` keeps them without asking.
 
-**What it removes:** the program, its Python packages, the speech models, your settings,
-the log, the training tools, the three shortcuts (Start menu, uninstall, and starting
-at sign-in), and the Visual Studio Code extension. Only what the installer and the app
+**What it removes:** the program, its Python packages, a Python that the installer
+fetched for it, the speech models, your settings, the log, the training tools, the three
+shortcuts (Start menu, uninstall, and starting at sign-in), and the Visual Studio Code
+extension. Only what the installer and the app
 put in the install folder is taken out of it.
 
-**What is left:** Python itself, which you installed; the folder you downloaded; and
+**What is left:** a Python that you installed yourself; the folder you downloaded; and
 the Visual Studio Code extension if VS Code's `code` command wasn't found, in which
 case remove "Linux Speaking" in VS Code's Extensions list.
 
@@ -266,6 +300,11 @@ Honestly: only partly. The Windows side is newer than the Linux one.
 - **This version's installer has not yet been run from start to finish.** It and the
   uninstaller have been checked for slips of syntax with Windows PowerShell 5.1, and
   read through. The installer of the version before was run, on one Windows 11 PC.
+- **Fetching a Python of its own has been tried by running that part of the installer
+  alone,** on one Windows 11 PC with Windows PowerShell 5.1: the Python was fetched and
+  checked, the packages were installed on it (Python 3.14), and the speech models
+  loaded. Changed and cut-short downloads were refused. It has not been tried on a PC
+  that really has no Python, nor with PowerShell 7.
 - **The unit tests pass** on Windows 11 with Python 3.11.
 - **The program itself has been used on one Windows 11 PC** with Microsoft 365, and
   nowhere else: not with other security programs, and not on a PC whose administrator

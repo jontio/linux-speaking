@@ -302,8 +302,12 @@ types a "#".
 
 The recogniser adds commas of its own inside a phrase, and they are kept, with one
 exception: the comma it puts after a greeting, as in "Hello, Bob", is left out, giving
-"Hello Bob". "Hello, how are you", "Hello, Monday works for me" and "Cheers, Bob" keep
-theirs. Untick **No comma after Hello or Hi** in Settings to have it back.
+"Hello Bob". It is the same after "hi", "hey", "hello there", "greetings", "welcome",
+"good morning", "kia ora" and "g'day". "Hello, how are you", "Hello, Monday works for me" and "Cheers, Bob" keep
+theirs. Further on in a sentence it goes too, after "hello", "hi" and "hey", where the
+name ends what is said or is joined on to more: "so if I say hello Jill and I say hello
+Peter". Where the name begins something new the comma stays, as in "I said hello, Bob
+said goodbye". Untick **No comma after Hello or Hi** in Settings to have it back.
 
 ### At the end of a phrase
 

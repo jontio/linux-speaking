@@ -107,18 +107,18 @@ well tested it is, and how to update and uninstall.
 
 ### On Windows
 
-1. Install a 64-bit **Python**, version 3.10 to 3.14, from
-   [python.org](https://www.python.org/downloads/windows/) or the Microsoft Store.
-2. Download this repository (the green **Code** button on GitHub, then **Download ZIP**)
+1. Download this repository (the green **Code** button on GitHub, then **Download ZIP**)
    and extract it.
-3. Open PowerShell in the extracted folder and run:
+2. Open PowerShell in the extracted folder and run:
 
    ```
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
 
-Nothing needs administrator rights. [Linux Speaking on Windows](docs/WINDOWS.md) has the
-details.
+It runs on a 64-bit **Python**, version 3.10 to 3.14. If the PC has none that will do,
+the installer offers to fetch one for itself, into its own folder, and leaves any Python
+that is already there as it is. Nothing needs administrator rights.
+[Linux Speaking on Windows](docs/WINDOWS.md) has the details.
 
 ## The first minute
 

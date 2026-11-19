@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **The sound sent to another computer is packed, and you choose how.** It used to go as
+  it is, 32 kB for each second of speech. Now it goes as FLAC, which halves it and gives
+  back exactly what was heard. **Sound sent**, in Settings under the other computer's
+  address, also offers Opus, about a tenth of the size for a slow or metered connection
+  with a little of the sound lost, and Raw, as before. Nothing more is installed for it.
+  A computer with an earlier version is sent the sound raw, so the two need not be
+  updated together, and Settings says when that is happening.
+- **A computer that shares its recogniser can be kept to one network.** Where it is on
+  more than one, Settings shows **Reachable from** under "Let other computers use this
+  one": every network this computer is on, as before, or one of them by name, such as
+  the home network or a VPN. It then answers there alone and shows the address to give
+  to the others. It follows that address if it changes, and if the computer isn't on
+  that network it answers nobody, and says so, until it is.
+- "No comma after Hello or Hi" knows more greetings: "Greetings Dave", "Hello there
+  Dave", "Welcome Dave", "Kia ora Dave" and "G'day Dave" lose the comma too. ("He sends
+  his greetings, Dave" and "You're welcome, Dave" keep theirs.)
+- "No comma after Hello or Hi" now also works further on in a sentence: "so if I say
+  hello Jill and I say hello Peter" used to keep both commas, because the greeting had to
+  start the sentence. A comma before a name that begins something new stays, as in "I
+  said hello, Bob said goodbye", and so does one after a word that is also a time of
+  day, as in "I saw her this morning, Bob".
+- **The key for sharing a recogniser can be changed.** "New key…", beside "Copy key" in
+  Settings, makes another in its place, after asking. Nobody is answered with the old
+  one from then on, so a key that was given out can be taken back.
+- **Windows: the installer can fetch its own Python.** On a PC with no Python that will
+  do (none, or only an old one), it now asks "Fetch it now?" and, on yes, fetches Python
+  3.14 as the Python Software Foundation publishes it into the install folder: about
+  15 MB to download, 50 MB on disk. Nothing else on the PC is changed, a Python that is
+  already there is left as it is, its signature is checked before it is used, and
+  uninstalling removes it. `LS_FETCH_PYTHON` (1 or 0) answers for an install with
+  nobody at the keyboard.
+- Windows: an update no longer stops with "Python wasn't found" when the install's own
+  Python still runs.
 - **A small computer needs no speech model of its own.** One with little disk space, or
   too slow to recognise speech, can leave all the listening to another computer. **The
   installer now asks whether to download the speech models**: answer no, then tick "Use

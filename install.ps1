@@ -4,8 +4,9 @@
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 #
-# It wants a 64-bit Python, 3.10 to 3.14, already installed (python.org or the Microsoft
-# Store). Everything goes in one folder, %USERPROFILE%\linux-speaking, and nothing needs
+# It runs on a 64-bit Python, 3.10 to 3.14 (from python.org or the Microsoft Store). On a
+# PC that has none that will do, it offers to fetch one for itself alone, into its own
+# folder. Everything goes in one folder, %USERPROFILE%\linux-speaking, and nothing needs
 # administrator rights. To update, get the new version and run this again. To remove it,
 # use "Uninstall Linux Speaking" in the Start menu, which runs the uninstall.ps1 that is
 # copied into that folder.
@@ -15,6 +16,8 @@
 #   LS_INSTALL_DIR       where to install: a folder of its own
 #   LS_PYTHON            the Python to build on: the full path of its python.exe, or a
 #                        version for the "py" launcher, such as 3.12
+#   LS_FETCH_PYTHON=1    if no Python on the PC will do, fetch one for Linux Speaking alone,
+#                        and don't ask (0: don't fetch one, and don't ask)
 #   LS_SKIP_PACKAGES=1   don't install or update the Python packages
 #   LS_SKIP_MODELS=1     don't download the speech models, and don't ask: for a small
 #                        computer that leaves the recognising to another one (0: download
@@ -55,7 +58,7 @@ if (-not $ownCopy -and ($source -eq $dir -or
 }
 # A folder that already holds other things is not taken over: the program wants one to
 # itself. (What an install of its own leaves there is no such thing.)
-$ours = @("app", "venv", "models", "training", "dictionaries", "state", "settings.json",
+$ours = @("app", "venv", "python", "python.new", "models", "training", "dictionaries", "state", "settings.json",
           "settings.json.new", "mail-key", "linux-speaking.ico", "linux-speaking.vsix", "uninstall.ps1")
 if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath "$dir\app\dictation")) {
     $others = @(Get-ChildItem -LiteralPath $dir -Force | Where-Object { $ours -notcontains $_.Name })
@@ -144,11 +147,155 @@ function Wrong($parts) {
     if ($minor -gt $newest) { return "it is newer than Linux Speaking has been tried with" }
     return $null
 }
+
+# A PC with no Python that will do can be given one for Linux Speaking alone: the Python
+# Software Foundation's own plain-files build, which it publishes as the "python" package
+# on nuget.org. It is unpacked into the install folder and nothing else on the PC is
+# touched: no registry, no PATH, no "py" launcher. A Python that is already here stays as
+# it is, which running python.org's installer beside an old one doesn't promise. The
+# uninstaller takes it away with the rest.
+$ownPython = "$dir\python"
+$fetchMinor = 14    # the newest that the packages have been tried with: it is still given fixes
+$pythonFeed = "https://api.nuget.org/v3-flatcontainer/python"
+function Open-Web($url) {
+    # Through Windows' own proxy settings, as whoever is signed in. Only the request is sent.
+    $request = [Net.WebRequest]::Create($url)
+    $request.Timeout = 30000
+    $request.ReadWriteTimeout = 60000
+    try { if ($request.Proxy) { $request.Proxy.Credentials = [Net.CredentialCache]::DefaultCredentials } } catch { }
+    return $request.GetResponse()
+}
+function Get-OwnPython {
+    # Fetches it into $ownPython. If it can't, it throws the reason in plain words, having
+    # left nothing of its own behind: one that was there before is still there.
+    $new = "$ownPython.new"
+    $package = Join-Path $env:TEMP "linux-speaking-python-$PID.zip"
+    $doing = "The list of Python versions could not be read from nuget.org"
+    try {
+        if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force }
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+        # Which one: the newest 3.$fetchMinor that is finished. (An alpha, a beta or a
+        # release candidate has more after its number, and is passed over.)
+        $response = Open-Web "$pythonFeed/index.json"
+        try {
+            $reader = New-Object IO.StreamReader($response.GetResponseStream())
+            $listed = ($reader.ReadToEnd() | ConvertFrom-Json).versions
+        } finally { $response.Close() }
+        $patch = -1
+        foreach ($one in @($listed)) {
+            if ("$one" -match "^3\.$fetchMinor\.(\d+)$") { $patch = [Math]::Max($patch, [int]$Matches[1]) }
+        }
+        if ($patch -lt 0) { throw "it lists no Python 3.$fetchMinor" }
+        $version = "3.$fetchMinor.$patch"
+
+        $doing = "Python $version could not be downloaded from nuget.org"
+        Write-Host "Downloading Python $version"
+        $response = Open-Web "$pythonFeed/$version/python.$version.nupkg"
+        try {
+            $length = $response.ContentLength
+            $from = $response.GetResponseStream()
+            $to = [IO.File]::Create($package)
+            try {
+                $buffer = New-Object byte[] 262144
+                $got = 0
+                $shown = [DateTime]::UtcNow
+                while (($count = $from.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $to.Write($buffer, 0, $count)
+                    $got += $count
+                    if (([DateTime]::UtcNow - $shown).TotalSeconds -ge 2) {
+                        $shown = [DateTime]::UtcNow
+                        if ($length -gt 0) { Write-Host ("  {0:N0} of {1:N0} MB" -f ($got / 1MB), ($length / 1MB)) }
+                        else { Write-Host ("  {0:N0} MB" -f ($got / 1MB)) }
+                    }
+                }
+            } finally { $to.Close() }
+        } finally { $response.Close() }
+        if ($length -gt 0 -and $got -ne $length) { throw "the download was cut short ($got of $length bytes arrived)" }
+
+        # The package is a ZIP, and Python is its "tools" folder.
+        $doing = "The Python that was downloaded could not be unpacked into $new"
+        Write-Host "Unpacking it"
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::OpenRead($package)
+        try {
+            foreach ($entry in $zip.Entries) {
+                if (-not $entry.FullName.StartsWith("tools/")) { continue }
+                $name = [Uri]::UnescapeDataString($entry.FullName.Substring(6)).Replace("/", "\")
+                if ($name -eq "" -or $name.EndsWith("\")) { continue }
+                $file = [IO.Path]::GetFullPath((Join-Path $new $name))
+                if (-not $file.StartsWith($new + "\", [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "it holds a file that would land outside its folder ($name)"
+                }
+                [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($file)) | Out-Null
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $file, $true)
+            }
+        } finally { $zip.Dispose() }
+
+        # Is it what it says it is? Python itself (its two programs, and the libraries
+        # that are Python) carries the Python Software Foundation's signature, which
+        # Windows checks. Then it has to run, and be one that would not be turned away.
+        $doing = "What was downloaded is not the Python that was asked for, and has been removed"
+        $signed = @(Get-ChildItem -LiteralPath $new -Force |
+            Where-Object { -not $_.PSIsContainer -and ($_.Name -like "python*.exe" -or $_.Name -like "python*.dll") })
+        foreach ($name in "python.exe", "pythonw.exe") {
+            if (@($signed | Where-Object { $_.Name -eq $name }).Count -eq 0) { throw "there is no $name in it" }
+        }
+        foreach ($file in $signed) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            $signer = ""
+            if ($signature.SignerCertificate) { $signer = "$($signature.SignerCertificate.Subject)" }
+            if ("$($signature.Status)" -ne "Valid") { throw "$($file.Name) has no signature that Windows accepts ($($signature.Status))" }
+            if ($signer -notmatch '(^|,\s*)O=Python Software Foundation(,|$)') { throw "$($file.Name) is signed by somebody else ($signer)" }
+        }
+        $doing = "The Python that was downloaded won't do, and has been removed"
+        $said = Probe @("$new\python.exe")
+        if (-not $said) { throw "it does not run on this PC (a PC set up by an employer may not allow it)" }
+        $why = Wrong ($said -split ';', 4)
+        if ($why) { throw $why }
+
+        $doing = "The new Python could not be put in place, in $ownPython"
+        if (Test-Path -LiteralPath $ownPython) { Remove-Item -LiteralPath $ownPython -Recurse -Force }
+        Rename-Item -LiteralPath $new -NewName (Split-Path -Leaf $ownPython)
+        Write-Host "Python $version is in $ownPython, and its signature is the Python Software Foundation's."
+    } catch {
+        $problem = $_.Exception
+        while ($problem.InnerException) { $problem = $problem.InnerException }
+        Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue
+        throw "${doing}: $($problem.Message)"
+    } finally {
+        Remove-Item -LiteralPath $package -Force -ErrorAction SilentlyContinue
+    }
+}
+function Ask-AboutPython($found) {
+    Write-Host ""
+    Write-Host "== Python"
+    if (@($found).Count -eq 0) {
+        Write-Host "Linux Speaking runs on Python, and none was found on this PC."
+    } else {
+        Write-Host "Linux Speaking runs on Python, and none on this PC will do. Found:"
+        foreach ($line in $found) { Write-Host $line }
+    }
+    Write-Host ""
+    Write-Host "The installer can fetch one for Linux Speaking alone: Python 3.$fetchMinor, as the Python"
+    Write-Host "Software Foundation publishes it, a download of about 15 MB that takes about 50 MB of"
+    Write-Host "disk. It goes inside Linux Speaking's folder and is removed with it. Nothing else on"
+    Write-Host "this PC is changed: a Python that is already here stays as it is."
+    Write-Host ""
+    while ($true) {
+        $answer = ([string](Read-Host "Fetch it now? [Y/n]")).Trim().ToLower()
+        if ($answer -eq "" -or $answer -eq "y" -or $answer -eq "yes") { return $true }
+        if ($answer -eq "n" -or $answer -eq "no") { return $false }
+        Write-Host "Please answer y for yes, or n for no."
+    }
+}
+
 $candidates = @()
 if ($env:LS_PYTHON) {
     if ($env:LS_PYTHON -match '^\d+(\.\d+)?$') { $candidates += , @("py", "-$($env:LS_PYTHON)") }
     else { $candidates += , @($env:LS_PYTHON) }
 } else {
+    # One that was fetched for this install before is the one it goes on with.
+    if (Test-Path -LiteralPath "$ownPython\python.exe") { $candidates += , @("$ownPython\python.exe") }
     # The newest that has been tried comes first; "py -3" alone would take the newest
     # there is, which may be newer than the packages are made for.
     foreach ($minor in $newest..$oldest) { $candidates += , @("py", "-3.$minor") }
@@ -171,24 +318,69 @@ foreach ($candidate in $candidates) {
     $line = "  Python $($parts[0]).$($parts[1]) at $($parts[3]): $why"
     if ($turnedAway -notcontains $line) { $turnedAway += $line }
 }
+$fetchPython = $false
 if (-not $python) {
     $wanted = "a 64-bit Python (for Intel and AMD processors), version 3.$oldest to 3.$newest"
     if ($env:LS_PYTHON -and $turnedAway.Count -eq 0) {
         Stop-Here "LS_PYTHON is set to $($env:LS_PYTHON), and no Python answers there." `
             "Give the full path of a python.exe, or a version for the py launcher, such as 3.12."
     }
-    if ($turnedAway.Count -eq 0) {
-        Stop-Here "Python wasn't found. Linux Speaking needs $wanted." `
-            "Install one from python.org (the `"Windows installer (64-bit)`") or from the Microsoft" `
-            "Store, then run this again. Nothing has been changed."
+    # A Python is only wanted to make the install's own copy of it from. Where that copy
+    # still runs, none is needed: nothing is asked, and nothing is fetched.
+    $ownStillRuns = $false
+    if (-not $env:LS_PYTHON -and (Test-Path -LiteralPath "$dir\venv\Scripts\python.exe")) {
+        $said = Probe @("$dir\venv\Scripts\python.exe")
+        if ($said -and -not (Wrong ($said -split ';', 4))) { $ownStillRuns = $true }
     }
-    Write-Host "No Python on this PC will do. Found:"
-    foreach ($line in $turnedAway) { Write-Host $line }
-    Stop-Here "Linux Speaking needs $wanted." `
-        "Install one from python.org (the `"Windows installer (64-bit)`") beside what is here, then" `
-        "run this again. If there is one this didn't find, say where, by typing this first:" `
-        "  `$env:LS_PYTHON = `"C:\path\to\python.exe`"" `
-        "Nothing has been changed."
+    if ($ownStillRuns) {
+        Write-Host "No Python was found to build on, and none is needed: this install's own still runs."
+    } else {
+        # One can be fetched for 64-bit Windows on an Intel or AMD processor, and for no
+        # other. Whoever named a Python with LS_PYTHON is told about that one instead.
+        $processor = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+        $canFetch = (-not $env:LS_PYTHON) -and ($processor -eq "AMD64")
+        $asked = $false
+        if ($canFetch) {
+            # LS_FETCH_PYTHON answers for somebody who isn't there to be asked: 1 for yes, 0 for no.
+            if ($env:LS_FETCH_PYTHON -eq "1") { $fetchPython = $true }
+            elseif ($env:LS_FETCH_PYTHON -eq "0") { }
+            elseif ($someoneToAsk) {
+                $asked = $true
+                $fetchPython = Ask-AboutPython $turnedAway
+            }
+        }
+        if ($fetchPython -and -not $asked) {
+            if ($turnedAway.Count -eq 0) { Write-Host "Python wasn't found on this PC." }
+            else {
+                Write-Host "No Python on this PC will do. Found:"
+                foreach ($line in $turnedAway) { Write-Host $line }
+            }
+            Write-Host "One is fetched for Linux Speaking alone, as LS_FETCH_PYTHON says."
+        }
+        if (-not $fetchPython) {
+            $offer = @()
+            if ($canFetch -and -not $asked -and $env:LS_FETCH_PYTHON -ne "0") {
+                $offer = @("(Run in a PowerShell window, this offers to fetch one itself. Or type first:  `$env:LS_FETCH_PYTHON = `"1`")")
+            }
+            if ($asked) { Write-Host "None is fetched." }
+            if ($turnedAway.Count -eq 0) {
+                $lead = "Python wasn't found. Linux Speaking needs $wanted."
+                if ($asked) { $lead = "Linux Speaking needs $wanted." }
+                Stop-Here $lead `
+                    "Install one from python.org (the `"Windows installer (64-bit)`") or from the Microsoft" `
+                    "Store, then run this again. Nothing has been changed." @offer
+            }
+            if (-not $asked) {
+                Write-Host "No Python on this PC will do. Found:"
+                foreach ($line in $turnedAway) { Write-Host $line }
+            }
+            Stop-Here "Linux Speaking needs $wanted." `
+                "Install one from python.org (the `"Windows installer (64-bit)`") beside what is here, then" `
+                "run this again. If there is one this didn't find, say where, by typing this first:" `
+                "  `$env:LS_PYTHON = `"C:\path\to\python.exe`"" `
+                "Nothing has been changed." @offer
+        }
+    }
 }
 
 # ---- the program ---------------------------------------------------------------------
@@ -231,6 +423,34 @@ if (-not $dir.StartsWith($userFolder + "\", [StringComparison]::OrdinalIgnoreCas
     }
 }
 
+# The Python that was offered above, if it was wanted. It is fetched here: into a folder
+# that is by now closed to other accounts, and before anything of an install that is
+# already here is replaced.
+if ($fetchPython) {
+    Say "Fetching Python for Linux Speaking alone"
+    try { Get-OwnPython }
+    catch {
+        $why = "$_"
+        $left = @("The install that is here has not been touched.")
+        if (-not $update) {
+            # A new install: the folders made a moment ago go again, if nothing is in them.
+            foreach ($made in "$dir\app", "$dir\models", $dir) {
+                if ((Test-Path -LiteralPath $made -PathType Container) -and
+                        @(Get-ChildItem -LiteralPath $made -Force).Count -eq 0) {
+                    Remove-Item -LiteralPath $made -Force -ErrorAction SilentlyContinue
+                }
+            }
+            $left = @("Nothing has been changed.")
+        }
+        if ($running.Count -gt 0) { $left += "(Linux Speaking was running, and was stopped for this. Start it from the Start menu.)" }
+        Stop-Here "" $why `
+            "If it was the connection, run this again. Or install one yourself, from python.org (the" `
+            "`"Windows installer (64-bit)`") or from the Microsoft Store, and run this again: it is" `
+            "then found by itself." @left
+    }
+    $python = "$ownPython\python.exe"
+}
+
 if (-not $ownCopy) {
     foreach ($folder in "dictation", "scripts", "vscode") {
         robocopy (Join-Path $source $folder) "$dir\app\$folder" /MIR /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -252,6 +472,8 @@ if (Test-Path -LiteralPath "$dir\venv") {
     $said = Probe @($py)
     $why = "it no longer runs"
     if ($said) { $why = Wrong ($said -split ';', 4) }
+    # One made from a Python that has just been replaced holds packages made for the old one.
+    if (-not $why -and $fetchPython) { $why = "the Python it was made from has been replaced" }
     if ($why) {
         Write-Host "The Python this install was set up with won't do any more ($why)."
         Write-Host "Setting it up again from nothing."
@@ -259,6 +481,10 @@ if (Test-Path -LiteralPath "$dir\venv") {
     }
 }
 if (-not (Test-Path -LiteralPath $py)) {
+    if (-not $python) {
+        Stop-Here "The install's own Python stopped running while this was at work, and there is no" `
+            "other to make it from. Run this again."
+    }
     & $python -m venv "$dir\venv"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $py)) {
         Stop-Here "Python could not make the install's own copy of itself in $dir\venv." `
