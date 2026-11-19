@@ -32,7 +32,10 @@ const inWord = (text, i) => LETTER.test(text[i]) ||
    LETTER.test(text[i - 1]) && LETTER.test(text[i + 1]));
 const BLANK_LINE = /\n[ \t\r]*(?=\n)/;
 
-let history = [];    // { uri, start, text } for recent phrases, newest last
+// Recent phrases, newest last: { uri, start, text, was }. `was` is what the phrase was said
+// over, if words were selected: see insert().
+let history = [];
+let undone = null;   // the phrase "undo that" has just taken back, for "redo that"
 let choices = null;  // { ranges, type, timer } while numbers are showing
 // After "correct ...": { uri, version, mark, range }, where the cursor was (counted from the
 // top of the file) and the words chosen, until something is said over them.
@@ -268,9 +271,19 @@ async function insert(editor, m) {
     const at = rest.search(/\p{L}/u);
     if (at >= 0 && rest[at] !== rest[at].toUpperCase() && rest[at].toUpperCase().length === 1) {
       const from = end.translate(0, at);
-      capital = { range: new vscode.Range(from, from.translate(0, 1)), text: rest[at].toUpperCase() };
+      capital = { range: new vscode.Range(from, from.translate(0, 1)), text: rest[at].toUpperCase(),
+        at, letter: rest[at] };
     }
   }
+  // What the words take the place of is kept, for "scratch that" to put back: what was
+  // selected, what is taken out on either side of it, and the letter made a capital.
+  const was = sel.isEmpty ? null : {
+    lead: unix(doc.getText(new vscode.Range(start, sel.start))),
+    chosen: unix(doc.getText(new vscode.Range(sel.start, sel.end))),
+    trail: unix(doc.getText(new vscode.Range(sel.end, end))),
+    corrected: Boolean(back),
+    capital: capital ? { at: capital.at, letter: capital.letter } : null,
+  };
   const oldEnd = doc.offsetAt(end);
   const done = await edit(editor, (builder) => {
     builder.replace(new vscode.Range(start, end), text);
@@ -284,8 +297,9 @@ async function insert(editor, m) {
     after = doc.positionAt(backTo(back.mark, back.start, back.end, doc.offsetAt(start), newEnd, newEnd - oldEnd));
   }
   await place(editor, after);
+  undone = null; // something new: there is nothing to redo now
   if (text) {
-    history.push({ uri: doc.uri.toString(), start, text });
+    history.push({ uri: doc.uri.toString(), start, text, was });
     if (history.length > HISTORY) history.shift();
   }
   return ok(back ? { text, back: true } : { text });
@@ -314,10 +328,43 @@ async function scratch(editor) {
     history.pop();
     return fail("nothing to scratch");
   }
-  history.pop();
+  const phrase = history.pop();
+  if (phrase.was) return putBack(editor, range, phrase.was);
   if (!(await edit(editor, (builder) => builder.delete(range)))) return fail("could not edit");
   await place(editor, range.start);
   return ok();
+}
+
+// "Scratch that" for a phrase that was said over selected words: it goes, and they come
+// back in its place, selected as they were, to be said again. Where "correct ..." chose
+// them, the cursor still goes back afterwards, to where it is now.
+async function putBack(editor, range, was) {
+  const doc = editor.document;
+  const old = was.lead + was.chosen + was.trail;
+  const cursor = doc.offsetAt(editor.selection.active);
+  const first = doc.offsetAt(range.start);
+  const last = doc.offsetAt(range.end);
+  let letter = null;
+  if (was.capital) {
+    // The letter after the phrase, made a capital for it.
+    const from = range.end.translate(0, was.capital.at);
+    const there = doc.validateRange(new vscode.Range(from, from.translate(0, 1)));
+    if (doc.getText(there) === was.capital.letter.toUpperCase()) letter = there;
+  }
+  const done = await edit(editor, (builder) => {
+    builder.replace(range, old);
+    if (letter) builder.replace(letter, was.capital.letter);
+  });
+  if (!done) return fail("could not edit");
+  const start = endOf(range.start, was.lead);
+  const words = new vscode.Range(start, endOf(start, was.chosen));
+  await select(editor, words);
+  if (was.corrected) {
+    const grew = doc.offsetAt(endOf(range.start, old)) - last;
+    const mark = cursor <= first ? cursor : cursor >= last ? cursor + grew : doc.offsetAt(words.end);
+    chose(editor, words, mark);
+  }
+  return ok({ restored: true });
 }
 
 // ---- finding words ---------------------------------------------------------------------
@@ -535,7 +582,13 @@ async function command(editor, m) {
     case "undo": {
       const range = lastRange(editor);
       await run("undo");
-      if (range) history.pop();
+      undone = range ? history.pop() : null;
+      return ok();
+    }
+    case "redo": {
+      await run("redo");
+      if (undone) history.push(undone); // the phrase is there again, for "scratch that"
+      undone = null;
       return ok();
     }
     case "scratch": return scratch(editor);

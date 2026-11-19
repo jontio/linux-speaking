@@ -20,7 +20,12 @@ What is done is one of
     ask first                  "say yes" has to be said before the rest is done
 
 A line that begins with a space, under one of these, is a further step, done after it.
-(Under a shortcut that types a text it is another line of the text, as it always was.)
+Under a shortcut that types a text it is another line of the text, as it always was:
+but for a line of keys, or a wait, which is a step there too, so that a text can be typed
+and Enter pressed after it:
+
+    git status = git status --short
+        keys: enter
 
 Only what is written there is ever done. A command has to be said by itself, as a phrase
 of its own, word for word; nothing that is said is passed to a program, or to a shell:
@@ -126,7 +131,15 @@ def parse(written: str):
     lines = written.split("\n")
     first = _step(lines[0])
     if first is None:
-        return None
+        # A text to type. If keys are to be pressed after it (or there is a wait), it is
+        # a command all the same: the text, and then those. Only those two: a line of an
+        # address may well begin "open:" or "type:", and is still part of the address.
+        at = next((n for n, line in enumerate(lines)
+                   if n and line.strip().lower().partition(":")[0].strip() in ("keys", "wait")
+                   and ":" in line), None)
+        if at is None:
+            return None
+        first, lines = ("type", "\n".join(lines[:at])), [""] + lines[at:]
     steps = [first]
     for line in lines[1:]:
         step = _step(line)

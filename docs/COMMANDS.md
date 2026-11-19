@@ -12,6 +12,7 @@ Everything you can say. Dictation and the commands are in English only. Back to 
 - [This program's own windows](#this-programs-own-windows)
 - [The microphone level](#the-microphone-level)
 - [Your own words](#your-own-words)
+- [Clicking by name](#clicking-by-name)
 - [Your own shortcuts](#your-own-shortcuts)
 - [Your own commands](#your-own-commands)
 - [Commands only](#commands-only)
@@ -114,10 +115,12 @@ The table gives the usual form of each, and the commoner other forms.
 | Say | What happens |
 |---|---|
 | wake up / go to sleep | Starts and stops dictation. These two can't be switched off |
+| click OK, click save | Presses the button, link, tick box, tab or menu of that name in the program in front. Off until ticked in Settings: see [Clicking by name](#clicking-by-name) |
 | wake / sleep | The same, in one word each, if **"Wake", "sleep"** is ticked in Settings. It is off to begin with: a lone "sleep" can then no longer be dictated, and one word is a little easier to set off by accident than two. "Wake up" and "go to sleep" go on working |
-| scratch that | Removes the last phrase; say it again for the one before |
+| scratch that | Removes the last phrase; say it again for the one before. A phrase said over selected words gives them back: see [Selecting and correcting](#selecting-and-correcting) |
 | that was a noise | Takes back what a rustle or a click was written as, and keeps the sound on this computer (see [Speech models](MODELS.md#that-was-a-noise)). Off until ticked in Settings |
 | undo that | Undoes the last change. Also "undo", "undo it" |
+| redo that | Does again what "undo that" has just taken back: the program's own Redo (in Kate, the phrase "undo that" took back goes in again). Also "redo", "redo it" |
 | backspace, backspace 3 | Removes characters before the cursor, 99 at most |
 | tab, tab 3, tab three times | The Tab key, once or several times, 20 at most. Also "press tab", "tab twice" |
 | space, space 3 | The space bar, once or several times, 20 at most |
@@ -144,9 +147,8 @@ The table gives the usual form of each, and the commoner other forms.
 | bold that, italicize that, underline that | Formats the selection or last phrase (not in Kate or other plain text; in VS Code, bold and italic only, in Markdown files) |
 | what can I say, open dictation settings, show microphone level, close that window | For [this program's own windows](#this-programs-own-windows) |
 
-All of them are on to begin with, apart from the three marked as off. Two things can't
-be said as commands: there is no "redo", and a tab can't be said in the middle of a
-phrase, only by itself.
+All of them are on to begin with, apart from the three marked as off. One thing can't
+be said: a tab in the middle of a phrase, only by itself.
 
 ## Selecting and correcting
 
@@ -158,6 +160,26 @@ without losing your place: say the new words and they take the place of the old 
 then the cursor goes back to where it was. "Unselect that" goes back and leaves the
 words as they were. Any other command leaves the cursor with the words ("space" is
 taken for words).
+
+**If the new words come out wrong, say "scratch that".** They go, and the old words are
+back and selected again, as they were before you spoke: say the new words once more.
+After "correct" the cursor still goes back to its place when you have, and "unselect
+that" goes back and leaves the old words. It is the same for words you selected by
+hand.
+
+- In Writer the words come back just as they were, bold or a link among them, as long
+  as nothing else has been done to the document since. Otherwise, and in Word and
+  Outlook, they come back as their letters, looking like the text around them.
+  Thunderbird keeps what is bold or a link where no space had to be taken out beside
+  the words.
+- In a box that is typed into (a browser, a chat box, Notepad) the words are typed
+  again. That is done for words on one line, up to 3000 characters (300 where keys go
+  in one at a time), and on Linux for words the keyboard can type: not "café". After
+  "correct" it also needs the text between the cursor and the words to be as it was.
+  Where it can't be done, the phrase only goes, or you are told there is nothing to
+  scratch.
+- "Undo that" is still the program's own Undo, whatever that takes back, and "redo
+  that" its Redo.
 
 **The words need not be written the way you said them.** Where they are there just as
 you said them, that place is taken. Otherwise these are found as well:
@@ -359,7 +381,10 @@ work, and so do the figures zero to nine.
 
 - **Capitals.** "Capital J" gives a capital. "All caps N A S A" puts the rest of what
   you say in capitals.
-- **Making a letter clear.** "B for bravo" and "B as in boy" give one b.
+- **Making a letter clear.** B, D, E, G, P, T and V sound alike, and no recogniser
+  tells them apart every time. "B for bravo" and "B as in boy" give one b, and it is
+  the word that settles which letter: said so, a letter can't be mistaken. "Bravo" by
+  itself does the same.
 - **Doubles.** "Double L" gives two. "Double U" is the letter W, however the
   recogniser writes it. For two of the letter u, as in "vacuum", say "U U".
 - **Accents** are said after the letter: "e acute" gives é and "a macron" gives ā.
@@ -473,6 +498,27 @@ At the very start of a sentence a name and an everyday word can't be told apart 
 capitals, so the system's dictionary decides. (Windows has none, so the installer
 fetches one.) Where there is no dictionary at all, your word wins there.
 
+## Clicking by name
+
+Tick **"Click" and the words on a button, link or menu in the window in front**, under
+**Other programs** in Settings, and you can press what a window shows by saying "click"
+and its name: "click OK", "click save", "click file", "click remember my choice".
+
+- It works on buttons, links, tick boxes, tabs, menus and the things in lists. The
+  window in front is asked what it has, through the desktop's accessibility service
+  (the one screen readers use), and the one you named is pressed through the same
+  service. No mouse is moved.
+- Say the name it shows. The start of a name will do: "click save" presses "Save", or
+  "Save As..." where there is no "Save". Of two names that fit, the shorter is taken.
+  "Click the save button" and "click on save" mean the same.
+- What is greyed out, or not showing, is not pressed.
+- If nothing in the window has that name, what you said is typed like any other words,
+  so "Click here to see more" can still be dictated. A phrase of more than six words
+  after "click" is always taken for a sentence.
+- Not every program says what is in its windows. Where one doesn't, nothing can be
+  found in it. On Linux the accessibility service has to be on, which the tick box for
+  dictating into other programs' text boxes sees to.
+
 ## Your own shortcuts
 
 A few words of your own can stand for a longer text of your own: say "my address" and
@@ -530,6 +576,16 @@ shut down    = ask first
 - A line that begins with a space, under a command, is a further step, done after the
   one before. There can be 12. If a step can't be done, a notice says so and the rest
   are left.
+- To type a text and press Enter after it, write the text and put the key under it:
+
+  ```
+  git status = git status --short
+      keys: enter
+  ```
+
+  Under a text, a line of `keys:` or a `wait:` is a step; any other line is another
+  line of the text, as in an address. Nothing is escaped in a text, so `\n` is typed
+  as those two characters.
 - The keys are `ctrl`, `shift`, `alt`, `win`, the letters and figures, `f1` to `f12`,
   `enter`, `tab`, `escape`, `space`, `backspace`, `delete`, `insert`, `home`, `end`,
   `pageup`, `pagedown`, `left`, `right`, `up`, `down`, `plus`, `minus`, `comma`,

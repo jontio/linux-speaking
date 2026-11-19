@@ -40,7 +40,8 @@ if HAVE_QT and ALONE:
 
     from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
     from PyQt6.QtGui import QDesktopServices, QFocusEvent, QKeyEvent, QWheelEvent
-    from PyQt6.QtWidgets import QApplication, QPushButton
+    from PyQt6.QtWidgets import QApplication, QPlainTextEdit, QPushButton
+    from PyQt6.QtTest import QTest
 
     from dictation import audio, autostart, config, control, hotkey, models, training, tray
     from dictation import settings as settings_module
@@ -127,6 +128,20 @@ if HAVE_QT and ALONE:
         QApplication.sendEvent(widget, event)
         return event.isAccepted()
 
+    def wheel_from(widget):
+        """One notch of the wheel with the pointer over `widget`, handed up from it to what
+        it is in until something takes it: which is what Qt does with a wheel that comes
+        from a real mouse. (One that a program sends is given to the one widget, and goes
+        no further.) Returns what took it, or None."""
+        while widget is not None:
+            event = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
+                                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                Qt.ScrollPhase.NoScrollPhase, False)
+            if QApplication.sendEvent(widget, event) and event.isAccepted():
+                return widget
+            widget = None if widget.isWindow() else widget.parentWidget()
+        return None
+
     def a_model(name):
         """Put something that counts as an installed Whisper model in the models folder."""
         os.makedirs(os.path.join(config.MODEL_DIR, name), exist_ok=True)
@@ -175,6 +190,105 @@ if HAVE_QT and ALONE:
                 wheel(window.models)  # scrolling past it, with the pointer over it
             self.assertEqual(window.models.currentIndex(), before)
             self.assertEqual(engine.asked, [])  # and no model was loaded
+
+    class TextInAPageThatScrolls(unittest.TestCase):
+        """Scrolling down Settings, the wheel stays with the page when the pointer comes
+        to rest on a box of text."""
+
+        def box(self):
+            box = tray.PageText()
+            self.addCleanup(box.deleteLater)
+            box.setPlainText("\n".join(f"line {n}" for n in range(60)))
+            box.setFixedHeight(80)
+            box.show()
+            QApplication.processEvents()
+            self.assertGreater(box.verticalScrollBar().maximum(), 0)   # it has more than it shows
+            return box      # (the wheel reaches such a box by its viewport, as the mouse does)
+
+        def click(self, box):
+            QTest.mouseClick(box.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+
+        def leave(self, box):
+            QApplication.sendEvent(box, QEvent(QEvent.Type.Leave))
+
+        def test_the_wheel_is_the_pages_while_the_box_is_only_passed_over(self):
+            box = self.box()
+            for _ in range(3):
+                self.assertFalse(wheel(box.viewport()))  # left for the page to scroll by
+            self.assertEqual(box.verticalScrollBar().value(), 0)
+            self.assertEqual(box.focusPolicy(), Qt.FocusPolicy.StrongFocus)  # nor is it given the keyboard by it
+
+        def test_clicked_the_wheel_is_its_own(self):
+            box = self.box()
+            self.click(box)
+            self.assertTrue(wheel(box.viewport()))
+            self.assertGreater(box.verticalScrollBar().value(), 0)
+
+        def test_until_the_pointer_leaves_it(self):
+            box = self.box()
+            self.click(box)
+            self.leave(box)
+            self.assertFalse(wheel(box.viewport()))
+            self.assertEqual(box.verticalScrollBar().value(), 0)
+
+        def test_having_the_keyboard_is_not_enough(self):
+            # It was typed in a while ago, and still has the keyboard: the page is being
+            # scrolled past it now.
+            box = self.box()
+            box.hasFocus = lambda: True
+            self.assertFalse(wheel(box.viewport()))
+            self.assertEqual(box.verticalScrollBar().value(), 0)
+
+        def test_at_the_end_of_its_text_the_wheel_goes_on_to_the_page(self):
+            box = self.box()
+            self.click(box)
+            bar = box.verticalScrollBar()
+            bar.setValue(bar.maximum())
+            self.assertFalse(wheel(box.viewport()))
+
+        def test_the_wheel_over_its_own_scroll_bar_is_the_pages_too(self):
+            box = self.box()
+            bar = box.verticalScrollBar()
+            self.assertFalse(wheel(bar))
+            self.assertEqual(bar.value(), 0)
+            QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))   # taken hold of
+            QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
+            bar.setValue(0)
+            self.assertTrue(wheel(bar))
+            self.assertGreater(bar.value(), 0)
+
+        def test_the_boxes_of_text_in_settings_are_such(self):
+            window = tray.SettingsWindow(Engine())
+            self.addCleanup(window.deleteLater)
+            found = window.findChildren(QPlainTextEdit)
+            self.assertEqual(len(found), 2)                  # My words, My shortcuts and commands
+            self.assertTrue(all(isinstance(box, tray.PageText) for box in found))
+            self.assertIs(window.shortcuts.lineWrapMode(), QPlainTextEdit.LineWrapMode.NoWrap)
+
+        def test_scrolling_down_settings_over_a_long_list_of_shortcuts_moves_the_page(self):
+            from PyQt6.QtWidgets import QScrollArea
+            window = tray.SettingsWindow(Engine())
+            self.addCleanup(window.deleteLater)
+            window.shortcuts.setPlainText("\n".join(f"word {n} = text {n}" for n in range(40)))
+            window.shortcuts_timer.stop()                    # nothing is to be saved by this
+            window.resize(window.width(), 300)
+            window.show()
+            QApplication.processEvents()
+            page, box = window.findChild(QScrollArea).verticalScrollBar(), window.shortcuts.verticalScrollBar()
+            self.assertGreater(page.maximum(), 0)
+            self.assertGreater(box.maximum(), 0)
+            window.shortcuts.setFocus()                      # it was typed in last, even
+            took = wheel_from(window.shortcuts.viewport())   # the pointer is over the box
+            self.assertGreater(page.value(), 0)              # and it is the page that moved
+            self.assertEqual(box.value(), 0)
+            self.assertIs(took, window.findChild(QScrollArea).viewport())
+            was = page.value()
+            self.assertIs(wheel_from(box), took)             # over the box's own scroll bar, too
+            self.assertGreater(page.value(), was)
+            self.assertEqual(box.value(), 0)
+            self.click(window.shortcuts)                     # clicked, the box moves
+            self.assertIs(wheel_from(window.shortcuts.viewport()), window.shortcuts.viewport())
+            self.assertGreater(box.value(), 0)
 
     class Keyboard(unittest.TestCase):
         def test_escape_closes_a_window(self):
@@ -313,6 +427,29 @@ if HAVE_QT and ALONE:
             self.assertEqual(self.own.request(scratch), {"ok": True})
             self.assertEqual(self.box.toPlainText(), "")
             self.assertFalse(self.own.request(scratch)["ok"])  # nothing is left to take back
+
+        def test_undo_that_and_redo_that_are_the_boxes_own(self):
+            self.own.request({"op": "insert", "text": "First."})
+            self.own.request({"op": "insert", "text": " Second."})
+            self.assertEqual(self.own.request({"op": "command", "name": "undo"}), {"ok": True})
+            self.assertEqual(self.box.toPlainText(), "First.")
+            self.assertEqual(self.own.request({"op": "command", "name": "redo"}), {"ok": True})
+            self.assertEqual(self.box.toPlainText(), "First. Second.")
+
+        def test_scratch_puts_back_the_words_a_phrase_was_said_over(self):
+            self.box.setPlainText("the black cat sat")
+            cursor = self.box.textCursor()
+            cursor.setPosition(4)
+            cursor.setPosition(9, cursor.MoveMode.KeepAnchor)
+            self.box.setTextCursor(cursor)
+            self.own.request({"op": "insert", "text": "white,", "delete_after": 1})
+            self.assertEqual(self.box.toPlainText(), "the white,cat sat")
+            scratch = {"op": "command", "name": "scratch", "arg": ""}
+            self.assertEqual(self.own.request(scratch), {"ok": True, "restored": True})
+            self.assertEqual(self.box.toPlainText(), "the black cat sat")
+            self.assertEqual(self.box.textCursor().selectedText(), "black")   # to be said again
+            self.own.request({"op": "insert", "text": "grey"})
+            self.assertEqual(self.box.toPlainText(), "the grey cat sat")
 
         def test_the_other_commands_it_knows_and_the_rest_it_does_not(self):
             self.own.request({"op": "insert", "text": "A line"})
@@ -485,6 +622,53 @@ if HAVE_QT and ALONE:
             for words in ("\"Wake up\"", "\"Go to sleep\"", "\"Scratch that\"", "\"Comma\"",
                           settings_module.HELP["scratch"], "Editing", "Punctuation"):
                 self.assertIn(words, page)
+
+        def test_what_is_said_goes_into_the_find_box_while_it_has_the_keyboard(self):
+            own = self.window.own
+            self.window.on_find_focus(True)                       # as when it is clicked in
+            self.window.show()
+            self.window.on_find_focus(True)
+            self.assertIs(self.engine.targets.own, own)
+            self.assertEqual(own.request({"op": "status"}), {"ok": True, "ready": True})
+            self.assertEqual(own.request({"op": "insert", "text": "Select"}), {"ok": True, "text": "Select"})
+            self.assertEqual(self.window.find.text(), "Select")
+            self.assertIn("select", self.window.shown)            # and the list narrowed to it
+            self.assertNotIn("say:comma", self.window.shown)
+            self.assertEqual(own.request({"op": "context"}),
+                             {"ok": True, "before": "Select", "after": "", "selected": ""})
+            # A second word goes after the first, on the one line it has.
+            own.request({"op": "insert", "text": " all\u2029"})
+            self.assertEqual(self.window.find.text(), "Select all")
+            self.assertEqual(own.request({"op": "command", "name": "scratch"})["ok"], True)
+            self.assertEqual(self.window.find.text(), "Select")
+            own.request({"op": "command", "name": "select_all"})
+            own.request({"op": "insert", "text": "comma"})        # said over what is selected
+            self.assertEqual(self.window.find.text(), "comma")
+            # Taken back, what it was said over is there again, and selected again.
+            self.assertEqual(own.request({"op": "command", "name": "scratch"}),
+                             {"ok": True, "restored": True})
+            self.assertEqual((self.window.find.text(), self.window.find.selectedText()),
+                             ("Select", "Select"))
+            own.request({"op": "insert", "text": "comma"})
+            self.assertEqual(self.window.find.text(), "comma")
+            self.assertEqual(own.request({"op": "insert", "text": "", "delete_before": 2})["ok"], True)
+            self.assertEqual(self.window.find.text(), "com")
+            self.assertEqual(own.request({"op": "command", "name": "scratch"}),
+                             {"ok": False, "why": "nothing to scratch"})   # it was changed since
+            # Left, or its window closed, it is no longer where words go.
+            self.window.on_find_focus(False)
+            self.assertIsNone(self.engine.targets.own)
+            self.window.on_find_focus(True)
+            self.window.hide()
+            self.assertIsNone(self.engine.targets.own)
+            self.window.find.setText("")
+
+        def test_it_does_not_take_the_words_from_another_box_that_has_them(self):
+            other = object()
+            self.engine.targets.own = other                       # the welcome window's box, say
+            self.addCleanup(setattr, self.engine.targets, "own", None)
+            self.window.on_find_focus(False)
+            self.assertIs(self.engine.targets.own, other)
 
         def test_it_lists_the_persons_own_commands(self):
             self.engine.settings.shortcuts = {"new tab": "keys: ctrl+t",
@@ -736,6 +920,16 @@ if HAVE_QT and ALONE:
             self.engine.asked.clear()
             self.said = []
             self.t.say = lambda title, message, icon, ms: self.said.append((title, message, ms))
+
+        def test_a_window_of_its_own_takes_leave_to_come_forward_before_it_asks_for_the_keyboard(self):
+            from unittest import mock
+            order = []
+            window = SimpleNamespace(isMinimized=lambda: False, show=lambda: order.append("show"),
+                                     raise_=lambda: order.append("raise"),
+                                     activateWindow=lambda: order.append("keyboard"))
+            with mock.patch.object(tray.actions, "let_come_forward", lambda: order.append("leave")):
+                tray.bring(window)
+            self.assertEqual(order, ["show", "leave", "raise", "keyboard"])
 
         def test_commands_only_shows_on_the_icon_and_is_not_in_the_menu(self):
             self.assertFalse(hasattr(self.t, "commands_only"))

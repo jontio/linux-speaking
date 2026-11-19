@@ -39,6 +39,7 @@ ITEMS = (
          "and saves that sound in a folder)", "Hearing", default=False),
     Item("scratch", "\"Scratch that\"", "Editing"),
     Item("undo", "\"Undo that\"", "Editing"),
+    Item("redo", "\"Redo that\"", "Editing"),
     Item("delete", "\"Delete that\"", "Editing"),
     Item("delete_words", "\"Delete last word\"  (or \"delete last 3 words\")", "Editing"),
     Item("spell", "\"Spell that\"  (opens a box to spell a word letter by letter)", "Editing"),
@@ -87,6 +88,10 @@ ITEMS = (
          "typed as $150)", "Formatting"),
     Item("other_apps", "Dictate into other programs' text boxes  (uses the desktop's "
          "accessibility service)", "Other programs", default=False),
+    # The whole of it is shown: what it says in brackets would be moved to its help, and
+    # "Click OK" by itself read as one command, not as "click" and whatever is there.
+    Item("click", "\"Click\" and the words on a button, link or menu in the window in front",
+         "Other programs", default=False),
     Item("vscode_cpp", "VS Code C/C++ coding commands  (in .c, .cpp, .h and .hpp files)",
          "Programming"),
     Item("app", "\"What can I say\", \"open dictation settings\", \"show microphone level\", "
@@ -170,8 +175,10 @@ HELP = {
                        "Parakeet v2. They have to be installed.",
     "short_wake": "\"Wake\" said by itself wakes dictation, and \"sleep\" by itself puts it to "
                   "sleep. \"Wake up\" and \"go to sleep\" go on working.",
-    "scratch": "Takes back the last phrase you dictated. Said again, it takes back the one before.",
+    "scratch": "Takes back the last phrase you dictated. Said again, it takes back the one before. "
+               "If the phrase was said over words that were selected, they come back, selected again.",
     "undo": "The program's own Undo: it takes back the last change, whatever made it.",
+    "redo": "The program's own Redo: it does again what \"undo that\" has just taken back.",
     "delete": "Removes what is selected. With nothing selected, removes the last phrase you dictated.",
     "delete_words": "Removes the last word before the cursor, or the last few: \"delete last 3 "
                     "words\".",
@@ -267,6 +274,15 @@ HELP = {
                     "you tick this, and a command that runs a program has to be two words or "
                     "more. Begin a command with \"ask first\" and it waits for you to say "
                     "\"yes\". Pressing keys and opening files and web pages don't need this.",
+    "click": "Say \"click\" and the name that a button, a link, a tick box, a tab or a menu "
+             "shows, and it is pressed: \"click OK\", \"click save\", \"click file\". The window "
+             "in front is asked, through the desktop's accessibility service, what it has "
+             "that can be pressed, and the one of that name is pressed through the same "
+             "service: no mouse is moved. The start of a name will do, where no shorter name "
+             "has those words. If nothing there has the name, what you said is typed like "
+             "any other words. Not every program says what is in its windows: where one "
+             "doesn't, nothing can be found in it. Off to begin with: ticked, a phrase that "
+             "begins with \"click\" is looked for as a name before it is taken for words.",
     "app": "For working this program's own windows without the mouse. \"What can I say\" opens "
            "the list of everything that can be said. \"Open dictation settings\" opens this "
            "window. \"Show microphone level\" opens the level meter. \"Close that window\" "

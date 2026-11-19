@@ -103,7 +103,7 @@ class OverTheNetwork(unittest.TestCase):
         self.assertEqual(header, {"kind": "phrase", "awake": True, "prompt": "Dear Sam,\n“Thanks”",
                                   "model": "medium.en", "otherwise": ["small.en"], "quick": False,
                                   "exact": False, "sure": False, "speech_only": True,
-                                  "wake_same": True, "code": False})
+                                  "wake_same": True, "code": False, "letters": False})
         self.assertEqual(length, 16000)
         self.assertAlmostEqual(peak, 0.5, places=3)
 
@@ -296,9 +296,9 @@ class There:
         self.calls, self.down = [], False
 
     def hear(self, kind, audio, awake, prompt="", model="", otherwise=(), quick=False,
-             exact=False, speech_only=True, wake_same=True, code=False):
+             exact=False, speech_only=True, wake_same=True, code=False, letters=False):
         self.quick_asked, self.exact_asked, self.speech_only_asked = quick, exact, speech_only
-        self.wake_same_asked, self.code_asked = wake_same, code
+        self.wake_same_asked, self.code_asked, self.letters_asked = wake_same, code, letters
         self.calls.append((kind, awake, prompt, model, tuple(otherwise)))
         if self.down:
             raise remote.RemoteError("The other computer can't be reached.")
@@ -359,8 +359,9 @@ class Offloading(unittest.TestCase):
     def test_the_other_computer_is_told_when_it_is_source_code(self):
         self.offload.transcribe(self.audio, True, "names", exact=True, code=True)
         self.assertTrue(self.there.code_asked and self.there.exact_asked)
-        self.offload.transcribe(self.audio, True, "letters", exact=True)
+        self.offload.transcribe(self.audio, True, "letters", exact=True, letters=True)
         self.assertFalse(self.there.code_asked)
+        self.assertTrue(self.there.letters_asked)             # and when it is the spelling box
 
     def test_too_long_to_be_wake_up_is_never_sent(self):
         self.offload.wake = True
@@ -425,7 +426,7 @@ class Guests(unittest.TestCase):
                 self.lock = threading.RLock()
                 self._loaded = {"small.en": object(), "base.en": object()}
                 self._guests, self.helper_name, self.dictation_name = [], "small.en", "base.en"
-                self._code_name, self._code_used = "", 0.0
+                self._extras = {}
                 self.not_speech, self.ignored, self.quick = 0.7, "tap", False
 
             def _model(self, name):

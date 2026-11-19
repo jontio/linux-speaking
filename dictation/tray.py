@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections
 import os
 import queue
+import re
 import signal
 import socket
 import subprocess
@@ -536,11 +537,17 @@ def alive(thing) -> bool:
 
 
 def bring(window) -> None:
-    """Show one of the app's windows and put it in front, with the keyboard."""
+    """Show one of the app's windows and put it in front, with the keyboard.
+
+    On Windows a program that isn't in front may not put a window there: and this one
+    never is when a window of its own is asked for by voice. The window came up, but the
+    keyboard stayed with the program that had it, so what was typed, or dictated, went
+    there. Leave is taken first: see actions.let_come_forward."""
     if window.isMinimized():
         window.showNormal()
     else:
         window.show()
+    actions.let_come_forward()
     window.raise_()
     window.activateWindow()
 
@@ -568,6 +575,48 @@ class Chooser(QComboBox):
             self.showPopup()
             return
         super().keyPressEvent(event)
+
+
+class PageText(QPlainTextEdit):
+    """A box of text in a page that scrolls.
+
+    Qt's own takes the mouse wheel whenever the pointer is over it and it has more lines
+    than it shows. Scrolling down the page, the pointer came to rest on such a box, and
+    the wheel then turned the box and the page stood still. Here the wheel is the page's,
+    until the box is clicked: then it is the one being worked in, and the wheel is its
+    own for as long as the pointer stays on it. (At either end of its text Qt hands the
+    wheel on to the page.) That it has the keyboard is not enough: it keeps that long
+    after it was typed in, and the page is scrolled past it again."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # not by the wheel
+        self.wheel_is_mine = False
+        for bar in (self.verticalScrollBar(), self.horizontalScrollBar()):
+            bar.installEventFilter(self)   # the wheel over its own scroll bars, likewise
+
+    def mousePressEvent(self, event) -> None:
+        self.wheel_is_mine = True
+        super().mousePressEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.wheel_is_mine = False
+        super().leaveEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        if self.wheel_is_mine:
+            super().wheelEvent(event)
+        else:
+            event.ignore()  # the page it is in scrolls instead
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in (self.verticalScrollBar(), self.horizontalScrollBar()):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self.wheel_is_mine = True
+            elif event.type() == QEvent.Type.Wheel and not self.wheel_is_mine:
+                event.ignore()
+                return True     # not for the bar: handed on to the page
+        return super().eventFilter(watched, event)
 
 
 class TipsByKeyboard(QObject):
@@ -1722,7 +1771,7 @@ class SettingsWindow(Window):
                       "and figures were heard. Keep the list short.")
         note.setWordWrap(True)
         layout.addWidget(note)
-        self.words = QPlainTextEdit()
+        self.words = PageText()
         self.words.setPlainText("\n".join(self.engine.settings.words))
         self.words.setTabChangesFocus(True)
         self.words.setFixedHeight(self.words.fontMetrics().lineSpacing() * 5 + 16)
@@ -1759,13 +1808,14 @@ class SettingsWindow(Window):
         note.setWordWrap(True)
         layout.addWidget(note)
         example = QLabel("my address = 12 High Street\n    Dunedin 9016\n"
+                         "git status = git status --short\n    keys: enter\n"
                          "new tab = keys: ctrl+t\n"
                          "my notes = open: ~/notes.txt\n"
                          "build it = run: make -C ~/project")
         example.setStyleSheet("font-family: monospace; padding-left: 16px;")
         example.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(example)
-        self.shortcuts = QPlainTextEdit()
+        self.shortcuts = PageText()
         # As it is typed, spaces at the start of a line and all: they mean something here.
         self.shortcuts.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.shortcuts.setPlainText(
@@ -4219,10 +4269,12 @@ class HelpWindow(Window):
         layout.addWidget(note)
         row = QHBoxLayout()
         label = QLabel(alt("Find:"))
-        self.find = QLineEdit()
+        self.find = FindBox()
         self.find.setClearButtonEnabled(True)
-        self.find.setPlaceholderText("Type a word to narrow the list, such as select or comma")
+        self.find.setPlaceholderText("Type or say a word to narrow the list, such as select or comma")
         self.find.setAccessibleName("Find in the list of what can be said")
+        self.own = OwnLine(self.find)      # dictation goes into it while it has the keyboard
+        self.find.focused.connect(self.on_find_focus)
         label.setBuddy(self.find)
         self.find.textChanged.connect(lambda _: self.fill())
         self.count = QLabel()
@@ -4301,6 +4353,37 @@ class HelpWindow(Window):
         self.find.selectAll()
         super().showEvent(event)
 
+    def hideEvent(self, event) -> None:
+        self.on_find_focus(False)
+        super().hideEvent(event)
+
+    def on_find_focus(self, has: bool) -> None:
+        """What is said goes into the Find box while it has the keyboard, so that the list
+        can be narrowed by voice: the engine is told of the box then, and told it is
+        gone the moment it isn't. (As the welcome window does for its box to try in.)"""
+        targets = getattr(self.engine, "targets", None)
+        if targets is None:
+            return
+        if has and self.isVisible():
+            targets.own = self.own
+        elif getattr(targets, "own", None) is self.own:
+            targets.own = None
+
+
+class FindBox(QLineEdit):
+    """A box of one line that says when it gains and loses the keyboard, as TryBox does:
+    what is said goes into it only while it has it."""
+
+    focused = pyqtSignal(bool)
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.focused.emit(True)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.focused.emit(False)
+
 
 class TryBox(QPlainTextEdit):
     """The box in the welcome window to try dictating in. It says when it gains and
@@ -4337,7 +4420,10 @@ class OwnTarget(QObject):
     def __init__(self, box: QPlainTextEdit):
         super().__init__(box)
         self.box = box
-        self.history = []  # what was put in, the last last: (where, the text)
+        # What was put in, the last last: (where, the text, what it took the place of).
+        # The third is None unless words were selected: then (what was taken out just
+        # before them, the words, what was taken out just after them).
+        self.history = []
         self.asked.connect(self.on_asked)
 
     def request(self, message: dict) -> dict:
@@ -4404,6 +4490,9 @@ class OwnTarget(QObject):
             if name == "undo":
                 self.box.undo()
                 return {"ok": True}
+            if name == "redo":
+                self.box.redo()
+                return {"ok": True}
             if name == "new_paragraph":
                 return self.insert(PARAGRAPH, 0, 0, False)
             if name == "new_line":
@@ -4427,13 +4516,17 @@ class OwnTarget(QObject):
         keep, move = QTextCursor.MoveMode.KeepAnchor, QTextCursor.MoveOperation
         cursor = self.box.textCursor()
         cursor.beginEditBlock()  # one step for the box's own Undo
+        lead = chosen = trail = ""
         if cursor.hasSelection():
+            chosen = self.plain(cursor.selectedText())
             cursor.removeSelectedText()
         if delete_before:
             cursor.movePosition(move.Left, keep, delete_before)
+            lead = self.plain(cursor.selectedText())
             cursor.removeSelectedText()
         if delete_after:
             cursor.movePosition(move.Right, keep, delete_after)
+            trail = self.plain(cursor.selectedText())
             cursor.removeSelectedText()
         start = cursor.position()
         cursor.insertText(text)
@@ -4452,24 +4545,94 @@ class OwnTarget(QObject):
         self.box.setTextCursor(cursor)
         self.box.ensureCursorVisible()
         if text:
-            self.history.append((start, text))
+            self.history.append((start, text, (lead, chosen, trail) if chosen else None))
             del self.history[:-self.HISTORY]
         return {"ok": True, "text": text}
 
     def scratch(self) -> dict:
-        """Take back the last thing put in, if it is still where it was put."""
+        """Take back the last thing put in, if it is still where it was put. If it was
+        said over words that were selected, they come back, selected as they were."""
         if not self.history:
             return {"ok": False, "why": "nothing to scratch"}
-        start, text = self.history.pop()
+        start, text, was = self.history.pop()
+        keep = QTextCursor.MoveMode.KeepAnchor
         cursor = QTextCursor(self.box.document())
         cursor.setPosition(start)
-        cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor,
-                            len(text))
+        cursor.movePosition(QTextCursor.MoveOperation.Right, keep, len(text))
         if self.plain(cursor.selectedText()) != text:
             return {"ok": False, "why": "nothing to scratch"}  # it has been changed since
-        cursor.removeSelectedText()
+        if was is None:
+            cursor.removeSelectedText()
+            self.box.setTextCursor(cursor)
+            return {"ok": True}
+        lead, chosen, trail = was
+        cursor.insertText(lead + chosen + trail)   # in place of the phrase: one step to undo
+        cursor.setPosition(start + len(lead))
+        cursor.setPosition(start + len(lead) + len(chosen), keep)
         self.box.setTextCursor(cursor)
-        return {"ok": True}
+        return {"ok": True, "restored": True}
+
+
+class OwnLine(OwnTarget):
+    """The same for a box of one line: the Find box of "What can I say?". What is said is
+    put in on its one line, and "scratch that" and "undo that" take it back."""
+
+    name = "the Find box"
+
+    def chosen(self) -> tuple:
+        """Where what is selected starts and ends: both the cursor, if nothing is."""
+        if self.box.hasSelectedText():
+            start = self.box.selectionStart()
+            return start, start + len(self.box.selectedText())
+        return self.box.cursorPosition(), self.box.cursorPosition()
+
+    def around(self) -> tuple:
+        text = self.box.text()
+        start, end = self.chosen()
+        return text[:start][-self.AROUND:], text[end:][:self.AROUND], text[start:end]
+
+    def insert(self, text: str, delete_before: int, delete_after: int,
+               capitalise_next: bool) -> dict:
+        # It has one line: a line break in what is said is a space, or nothing at an end.
+        # The spaces the engine put before or after the words are its own, and are kept.
+        breaks = "\n" + PARAGRAPH + LINE
+        one = re.sub(f"[ \t]*[{breaks}]+[ \t]*", " ", text)
+        if text[:1] in breaks and text[:1]:
+            one = one.lstrip(" ")
+        if text[-1:] in breaks and text[-1:]:
+            one = one.rstrip(" ")
+        text = one
+        first, last = self.chosen()
+        whole = self.box.text()
+        start = max(0, first - delete_before)
+        end = min(len(whole), last + delete_after)
+        if not text and start == end:
+            return {"ok": True, "text": ""}
+        self.box.setSelection(start, end - start)
+        if text:
+            self.box.insert(text)             # in place of what is selected, as one step to undo
+        else:
+            self.box.del_()
+        if text:
+            was = (whole[start:first], whole[first:last], whole[last:end]) if last > first else None
+            self.history.append((start, text, was))
+            del self.history[:-self.HISTORY]
+        return {"ok": True, "text": text}
+
+    def scratch(self) -> dict:
+        if not self.history:
+            return {"ok": False, "why": "nothing to scratch"}
+        start, text, was = self.history.pop()
+        if self.box.text()[start:start + len(text)] != text:
+            return {"ok": False, "why": "nothing to scratch"}  # it has been changed since
+        self.box.setSelection(start, len(text))
+        if was is None:
+            self.box.del_()
+            return {"ok": True, "text": text}
+        lead, chosen, trail = was
+        self.box.insert(lead + chosen + trail)
+        self.box.setSelection(start + len(lead), len(chosen))
+        return {"ok": True, "restored": True}
 
 
 class WelcomeWindow(Window):

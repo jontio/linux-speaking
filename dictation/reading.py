@@ -166,7 +166,7 @@ class Ear:
     itself, and whether somebody is speaking. For a display of the level."""
 
     def __init__(self, boost: float = 1.0):
-        made = SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO)
+        made = SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO, flat_ms=0)
         self._segmenter = Segmenter(made)
         self._boost = boost
         self._warmup = -(-made.warmup_ms // made.frame_ms)  # frames still to hear of the room
@@ -216,7 +216,7 @@ class Cutter:
     """
 
     def __init__(self, boost: float = 1.0):
-        made = SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO)
+        made = SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO, flat_ms=0)
         self._segmenter = Segmenter(made)
         self._warmup = made.warmup_ms // made.frame_ms    # frames spent measuring the room
         self._onset = made.start_ms // made.frame_ms      # frames of speech before it counts

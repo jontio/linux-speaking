@@ -182,6 +182,66 @@ function runTests() {
   cmd("all_caps");
   check("another command in between ends it", [Boolean(say("crane").back), end()], [false, "a crane and a gooses done again twice"]);
   check("correct, not there", cmd("correct", "zebra").why, "can't find that");
+  // "Scratch that" after words were said over a selection: the phrase goes and they come
+  // back, selected as they were.
+  const chosen = () => H({ op: "text" }).selected;
+  cmd("doc_end");
+  say(P + "the quick brown cat jumps");
+  cmd("select", "cat", { nearest: true });
+  say("dog");
+  let put = cmd("scratch");
+  check("scratch after select puts the words back, selected", [put.restored, end(), chosen()], [true, "the quick brown cat jumps", "cat"]);
+  say("fox");
+  check("and they can be said again", end(), "the quick brown fox jumps");
+  cmd("doc_end");
+  cmd("correct", "fox", { nearest: true });
+  say("dog");
+  put = cmd("scratch");
+  check("scratch after correct puts them back, selected", [put.restored, end(), chosen()], [true, "the quick brown fox jumps", "fox"]);
+  check("said again, the cursor still goes back", Boolean(say("wolf").back), true);
+  say(" high");
+  check("to the end, where it was", end(), "the quick brown wolf jumps high");
+  cmd("correct", "high", { nearest: true });
+  say("higher");
+  cmd("scratch");
+  check("scratch after correcting the word the cursor is right after", [end(), chosen()], ["the quick brown wolf jumps high", "high"]);
+  say("far");
+  say(" away");
+  check("and the cursor is after the new word", end(), "the quick brown wolf jumps far away");
+  cmd("line_start");
+  cmd("correct", "wolf", { nearest: true });
+  say("hound");
+  cmd("scratch");
+  check("scratch after correct with the cursor before the words", [end(), chosen()], ["the quick brown wolf jumps far away", "wolf"]);
+  say("hare");
+  say("See ");
+  check("and it goes back before them", end(), "See the quick brown hare jumps far away");
+  cmd("doc_end");
+  cmd("correct", "hare", { nearest: true });
+  say("stoat");
+  cmd("scratch");
+  cmd("unselect");
+  say("!");
+  check("unselect after it goes back to where the cursor was", end(), "See the quick brown hare jumps far away!");
+  cmd("select", "brown", { nearest: true });
+  say("grey.", { delete_after: 1, capitalise_next: true });
+  check("a space taken out and a capital given beside the words", end(), "See the quick grey.Hare jumps far away!");
+  cmd("scratch");
+  check("both are put right with them", [end(), chosen()], ["See the quick brown hare jumps far away!", "brown"]);
+  cmd("select", "away", { nearest: true });
+  cmd("bold");
+  check("a word made bold", doc.queryCommandState("bold"), true);
+  say("off");
+  cmd("scratch");
+  check("words that were bold come back bold", [end(), chosen(), doc.queryCommandState("bold")],
+    ["See the quick brown hare jumps far away!", "away", true]);
+  check("and only they are bold", doc.body.lastChild.innerHTML.replace(/&nbsp;/g, " "),
+    "See the quick brown hare jumps far <b>away</b>!");
+  cmd("unselect");
+  cmd("doc_end");
+  say(" Yes");
+  put = cmd("scratch");
+  check("a phrase that took nothing's place only goes, as ever", [put.restored, end()], [undefined, "See the quick brown hare jumps far away!"]);
   // "Bold that" and "cap that" with nothing selected work on the last phrase, and leave
   // the cursor after it: what is said next must not take its place.
   cmd("doc_end");
@@ -195,6 +255,11 @@ function runTests() {
   check("all caps that on the last phrase leaves nothing selected", [H({ op: "text" }).selected, end()], ["", "meeting at noon SEE YOU THERE"]);
   say(" then");
   check("and the next words follow that too", end(), "meeting at noon SEE YOU THERE then");
+  cmd("undo");
+  const taken = end();
+  check("redo that brings back what undo that took",
+    [taken !== "meeting at noon SEE YOU THERE then", cmd("redo").ok, end()],
+    [true, true, "meeting at noon SEE YOU THERE then"]);
   cmd("doc_end");
   say(P + "He said 'hello' to the boys\u2019 dog, and don't forget");
   check("a word with quote marks round it is found", [cmd("select", "hello", { nearest: true }).ok, H({ op: "text" }).selected], [true, "hello"]);

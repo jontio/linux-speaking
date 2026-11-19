@@ -35,7 +35,7 @@ has no connection with Dragon or its makers.
   phrase starts with a space and a capital. Put it mid-sentence and it doesn't.
 - **Punctuation by name.** "Comma", "full stop", "question mark", "new line", "new
   paragraph".
-- **Editing commands.** Scratch that, undo that, backspace, delete last word. Select a
+- **Editing commands.** Scratch that, undo that, redo that, backspace, delete last word. Select a
   word or phrase, then dictate over it to replace it. "Correct" a word further up, and
   the cursor goes back to where you were.
 - **Numbered choices.** If "select fox" matches several places, a small number appears

@@ -683,7 +683,8 @@ class Client:
 
     def hear(self, kind: str, audio, awake: bool, prompt: str = "", model: str = "",
              otherwise=(), quick: bool = False, exact: bool = False, sure: bool = False,
-             speech_only: bool = True, wake_same: bool = True, code: bool = False) -> dict:
+             speech_only: bool = True, wake_same: bool = True, code: bool = False,
+             letters: bool = False) -> dict:
         """One piece of listening. `kind` is "phrase", or "alone" for a second or so of
         sound with nothing to go on. `model` is the one wanted there; if it hasn't got
         it, the first of `otherwise` that it has, else its own choice. `quick` asks for
@@ -697,7 +698,7 @@ class Client:
         header = {"kind": kind, "awake": bool(awake), "prompt": prompt, "model": model,
                   "otherwise": list(otherwise), "quick": bool(quick), "exact": bool(exact),
                   "sure": bool(sure), "speech_only": bool(speech_only),
-                  "wake_same": bool(wake_same), "code": bool(code)}
+                  "wake_same": bool(wake_same), "code": bool(code), "letters": bool(letters)}
         return self._send("POST", "/hear", pack(header, to_pcm(audio)))
 
     def _addresses(self, until: float) -> list:
@@ -899,17 +900,18 @@ class Offload:
         self.ignored = ""
 
     def transcribe(self, audio, awake: bool, prompt: str = "", exact: bool = False,
-                   code: bool = False) -> str:
+                   code: bool = False, letters: bool = False) -> str:
         too_long = not awake and len(audio) > config.WAKE_MAX_SECONDS * config.RATE
         if (awake or self.wake) and not too_long:
-            reply = self._ask("phrase", audio, awake, prompt, exact, code)
+            reply = self._ask("phrase", audio, awake, prompt, exact, code, letters)
             if reply is not None:
                 self.not_speech = _likelihood(reply.get("not_speech"))
                 self.ignored = str(reply.get("ignored", ""))
                 return str(reply.get("text", ""))
         local = self._local()
         text = local.transcribe(audio, awake, prompt, **({"exact": True} if exact else {}),
-                                **({"code": True} if code else {}))
+                                **({"code": True} if code else {}),
+                                **({"letters": True} if letters else {}))
         self.not_speech = getattr(local, "not_speech", 0.0)
         self.ignored = getattr(local, "ignored", "")
         return text
@@ -921,13 +923,13 @@ class Offload:
         return self._local().hear_alone(audio)
 
     def _ask(self, kind: str, audio, awake: bool, prompt: str, exact: bool = False,
-             code: bool = False):
+             code: bool = False, letters: bool = False):
         if self._clock() < self._down_until:
             return None
         try:
             reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
                                      self.quick, exact, speech_only=self.speech_only,
-                                     code=code)
+                                     code=code, letters=letters)
             if not isinstance(reply, dict):
                 raise RemoteError("The other computer's answer was not understood.")
         except Exception as e:

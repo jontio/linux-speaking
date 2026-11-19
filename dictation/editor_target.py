@@ -308,18 +308,26 @@ class EditorTarget:
         start, end = self._span(o)
         back = self._correcting(o, start, end)
         length = self.T.get_character_count(o) if back is not None else 0
+        self._undone = None               # something new: there is nothing to redo now
         edits = 0
+        # What the words take the place of is kept, for "scratch that" to put back: what
+        # was selected, and the spaces taken out on either side of it.
+        lead = chosen = trail = ""
+        capital = None
         if start != end:  # dictating over a selection replaces it
+            chosen = self.T.get_text(o, start, end)
             self._place(o, start)
             self.E.delete_text(o, start, end)
             edits += 1
         position = start
         if delete_before:
             delete_before = min(delete_before, position)
+            lead = self.T.get_text(o, position - delete_before, position)
             self.E.delete_text(o, position - delete_before, position)
             position -= delete_before
             edits += 1
         if delete_after:
+            trail = self.T.get_text(o, position, position + delete_after)
             self.E.delete_text(o, position, position + delete_after)
             edits += 1
         if text:
@@ -335,6 +343,7 @@ class EditorTarget:
                         self.E.delete_text(o, after + i, after + i + 1)
                         self._put(o, after + i, c.upper())
                         edits += 2
+                        capital = (self._count(rest[:i]), c)
                     break
         if back is not None:
             # After "correct ...": back to where the cursor was before it.
@@ -343,7 +352,9 @@ class EditorTarget:
         else:
             self._place(o, after)
         if text:
-            self.history.append({"start": position, "text": text, "edits": edits})
+            self.history.append({"start": position, "text": text, "edits": edits,
+                                 "was": (lead, chosen, trail, back is not None, capital)
+                                 if chosen else None})
             del self.history[:-HISTORY]
         return {"ok": True, "text": text, **({"back": True} if back is not None else {})}
 
@@ -366,11 +377,40 @@ class EditorTarget:
             if self.history:
                 self.history.pop()
             return {"ok": False, "why": "nothing to scratch"}
-        self.history.pop()
+        was = self.history.pop().get("was")
+        if was is not None:
+            return self._put_back(o, found, was)
         self._place(o, found[0])
         self.E.delete_text(o, found[0], found[1])
         self._place(o, found[0])
         return {"ok": True}
+
+    def _put_back(self, o, found: tuple, was: tuple) -> dict:
+        """ "Scratch that" for a phrase that was said over selected words: it goes, and
+        they come back in its place, selected as they were, to be said again. Where
+        "correct ..." chose them, the cursor still goes back afterwards, to where it is
+        now."""
+        lead, chosen, trail, corrected, capital = was
+        caret = self.T.get_caret_offset(o)
+        start, end = found
+        if capital is not None:
+            # The letter after the phrase, made a capital for it.
+            at = end + capital[0]
+            if self.T.get_text(o, at, at + 1) == capital[1].upper():
+                self.E.delete_text(o, at, at + 1)
+                self._put(o, at, capital[1])
+        self._place(o, start)
+        self.E.delete_text(o, start, end)
+        old = lead + chosen + trail
+        self._put(o, start, old)
+        first = start + self._count(lead)
+        last = first + self._count(chosen)
+        self._select(o, first, last)
+        if corrected:
+            grew = self._count(old) - (end - start)
+            mark = caret if caret <= start else caret + grew if caret >= end else last
+            self.correction = (mark, first, last, chosen)
+        return {"ok": True, "restored": True}
 
     # ---- undo, through the editor's own menu ---------------------------------------
     def _menu_item(self, o, wanted: str, depth=0):
@@ -389,12 +429,43 @@ class EditorTarget:
     def _undo(self, o) -> dict:
         item = self._menu_item(self._app, "undo") if self._app is not None else None
         if item is None or item.get_action_iface() is None:
-            # No menu to press: taking back the last phrase is the next best thing.
-            return self._scratch(o)
+            # No menu to press: taking back the last phrase is the next best thing. It is
+            # kept, with where it was, so that "redo that" can put it back.
+            found = self._last(o)
+            phrase = self.history[-1] if found is not None else None
+            reply = self._scratch(o)
+            self._undone = None
+            if reply.get("ok") and phrase is not None and not reply.get("restored"):
+                self._undone = dict(phrase, start=found[0], typed=True)
+            return reply
         # One spoken phrase can be several edits to the editor. Undo them together.
-        times = self.history.pop()["edits"] if self._last(o) is not None else 1
-        for _ in range(times):
+        phrase = self.history.pop() if self._last(o) is not None else None
+        for _ in range(phrase["edits"] if phrase else 1):
             self.A.Action.do_action(item, 0)
+        self._undone = phrase             # for "redo that": it was that many steps
+        return {"ok": True}
+
+    def _redo(self, o) -> dict:
+        item = self._menu_item(self._app, "redo") if self._app is not None else None
+        phrase, self._undone = getattr(self, "_undone", None), None
+        if item is None or item.get_action_iface() is None:
+            # No menu to press. If "undo that" took back a phrase for want of one, that
+            # phrase goes back where it was, as long as the cursor is still there.
+            start, end = self._span(o)
+            if not phrase or not phrase.get("typed") or start != end or start != phrase["start"]:
+                return {"ok": False, "why": "nothing to redo"}
+            del phrase["typed"]
+            self._put(o, start, phrase["text"])
+            self._place(o, start + self._count(phrase["text"]))
+            self.history.append(phrase)   # it is there again, for "scratch that"
+            return {"ok": True}
+        if phrase and phrase.get("typed"):
+            phrase = None                 # taken back without the menu: its Redo knows nothing of it
+        # As many steps as "undo that" took back: the phrase it was, whole.
+        for _ in range(phrase["edits"] if phrase else 1):
+            self.A.Action.do_action(item, 0)
+        if phrase:
+            self.history.append(phrase)
         return {"ok": True}
 
     # ---- moving -----------------------------------------------------------------------
@@ -420,6 +491,8 @@ class EditorTarget:
             return self._insert(o, LINE, 0, 0, False)
         if name == "undo":
             return self._undo(o)
+        if name == "redo":
+            return self._redo(o)
         if name == "scratch":
             return self._scratch(o)
         if name == "delete":

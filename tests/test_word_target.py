@@ -259,5 +259,112 @@ class Correct(unittest.TestCase):
         self.assertFalse(self.say(" more").get("back"))
 
 
+class ScratchPutsBack(Correct):
+    """ "Scratch that" after words were said over a selection: the phrase goes and the
+    words it took the place of are back, selected as they were."""
+
+    def test_after_select(self):
+        self.cmd("select", "cat")
+        self.say("lion")
+        self.assertEqual(self.document.text, "the lion sat on the mat")
+        reply = self.cmd("scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, True))
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (4, 7)))
+        self.say("tiger")                     # said again, it takes their place as before
+        self.assertEqual((self.document.text, self.at()), ("the tiger sat on the mat", (9, 9)))
+
+    def test_after_correct_they_can_be_said_again_and_the_cursor_still_goes_back(self):
+        self.cmd("correct", "cat")
+        self.assertTrue(self.say("lion").get("back"))
+        self.assertEqual(self.at(), (23, 23))
+        self.assertTrue(self.cmd("scratch").get("restored"))
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (4, 7)))
+        self.assertTrue(self.say("leopard").get("back"))
+        self.assertEqual((self.document.text, self.at()), ("the leopard sat on the mat", (26, 26)))
+
+    def test_after_correct_with_the_cursor_before_the_words(self):
+        self.open("the cat sat on the mat", at=0)
+        self.cmd("correct", "mat")
+        self.say("carpet")
+        self.cmd("scratch")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (19, 22)))
+        self.assertTrue(self.say("rug").get("back"))
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the rug", (0, 0)))
+
+    def test_after_correct_of_the_word_right_before_the_cursor(self):
+        self.cmd("correct", "mat")
+        self.say("rug")
+        self.cmd("scratch")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (19, 22)))
+        self.assertTrue(self.say("carpet").get("back"))
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the carpet", (25, 25)))
+
+    def test_unselect_after_it_goes_back_to_where_the_cursor_was(self):
+        self.cmd("correct", "cat")
+        self.say("lion")
+        self.cmd("scratch")
+        self.cmd("unselect")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (22, 22)))
+
+    def test_the_spaces_taken_out_beside_them_come_back_too(self):
+        self.cmd("select", "cat")
+        self.say("lion,", delete_after=1)
+        self.assertEqual(self.document.text, "the lion,sat on the mat")
+        self.cmd("scratch")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (4, 7)))
+        self.cmd("select", "sat")
+        self.say(",", delete_before=1)
+        self.assertEqual(self.document.text, "the cat, on the mat")
+        self.cmd("scratch")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (8, 11)))
+
+    def test_words_selected_by_hand(self):
+        self.document.selection.SetRange(8, 11)
+        self.say("stood")
+        self.cmd("scratch")
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (8, 11)))
+
+    def test_a_phrase_that_took_nothings_place_only_goes(self):
+        self.say(" today")
+        reply = self.cmd("scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, None))
+        self.assertEqual((self.document.text, self.at()), ("the cat sat on the mat", (22, 22)))
+
+    def test_said_twice_takes_back_the_phrase_before_as_ever(self):
+        self.say(" today")
+        self.cmd("select", "cat")
+        self.say("lion")
+        self.cmd("scratch")
+        self.assertEqual(self.document.text, "the cat sat on the mat today")
+        self.cmd("scratch")
+        self.assertEqual(self.document.text, "the cat sat on the mat")
+
+    def test_select_that_and_format_that_still_find_the_last_phrase(self):
+        self.say(" today")
+        self.assertTrue(self.cmd("select_last")["ok"])
+        self.assertEqual(self.at(), (23, 28))
+
+    def test_words_with_a_table_cell_mark_among_them_are_not_kept(self):
+        self.open("one\x07two")
+        self.document.selection.SetRange(2, 5)
+        self.say("x")
+        self.assertIsNone(self.cmd("scratch").get("restored"))
+
+
+class Redo(Correct):
+    """ "Redo that" is Word's own Redo."""
+
+    def test_it_is_asked_of_word_and_nothing_is_left_selected(self):
+        asked = []
+        self.document.selection.Document = SimpleNamespace(Redo=lambda times: asked.append(times) or True)
+        self.document.selection.SetRange(4, 7)
+        self.assertEqual(self.cmd("redo"), {"ok": True})
+        self.assertEqual((asked, self.at()), ([1], (7, 7)))
+
+    def test_nothing_to_redo(self):
+        self.document.selection.Document = SimpleNamespace(Redo=lambda times: False)
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+
+
 if __name__ == "__main__":
     unittest.main()

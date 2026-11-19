@@ -226,5 +226,168 @@ class Correct(unittest.TestCase):
         self.assertFalse(self.say(" more").get("back"))
 
 
+class ScratchPutsBack(Correct):
+    """ "Scratch that" after words were said over a selection: the phrase goes and the
+    words it took the place of are back, selected as they were."""
+
+    def at(self):
+        return self.box.text, self.box.chosen
+
+    def test_after_select(self):
+        self.cmd("select", "cat")
+        self.say("lion")
+        reply = self.cmd("scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, True))
+        self.assertEqual(self.at(), ("the cat sat on the mat", (4, 7)))
+        self.say("tiger")
+        self.assertEqual((self.box.text, self.box.caret), ("the tiger sat on the mat", 9))
+
+    def test_after_correct_they_can_be_said_again_and_the_cursor_still_goes_back(self):
+        self.cmd("correct", "cat")
+        self.say("lion")
+        self.assertTrue(self.cmd("scratch").get("restored"))
+        self.assertEqual(self.at(), ("the cat sat on the mat", (4, 7)))
+        self.assertTrue(self.say("leopard").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the leopard sat on the mat", 26))
+
+    def test_after_correct_with_the_cursor_before_the_words(self):
+        self.box.caret = 0
+        self.cmd("correct", "mat")
+        self.say("carpet")
+        self.cmd("scratch")
+        self.assertEqual(self.at(), ("the cat sat on the mat", (19, 22)))
+        self.assertTrue(self.say("rug").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the rug", 0))
+
+    def test_after_correct_of_the_word_right_before_the_cursor(self):
+        self.cmd("correct", "mat")
+        self.say("rug")
+        self.cmd("scratch")
+        self.assertEqual(self.at(), ("the cat sat on the mat", (19, 22)))
+        self.assertTrue(self.say("carpet").get("back"))
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the carpet", 25))
+
+    def test_unselect_after_it_goes_back_to_where_the_cursor_was(self):
+        self.cmd("correct", "cat")
+        self.say("lion")
+        self.cmd("scratch")
+        self.cmd("unselect")
+        self.assertEqual((self.box.text, self.box.caret, self.box.chosen),
+                         ("the cat sat on the mat", 22, None))
+
+    def test_the_spaces_taken_out_beside_them_come_back_too(self):
+        self.cmd("select", "cat")
+        self.say("lion,", delete_after=1)
+        self.assertEqual(self.box.text, "the lion,sat on the mat")
+        self.cmd("scratch")
+        self.assertEqual(self.at(), ("the cat sat on the mat", (4, 7)))
+        self.cmd("select", "sat")
+        self.say(",", delete_before=1)
+        self.assertEqual(self.box.text, "the cat, on the mat")
+        self.cmd("scratch")
+        self.assertEqual(self.at(), ("the cat sat on the mat", (8, 11)))
+
+    def test_the_capital_given_to_the_next_letter_goes_again(self):
+        self.cmd("select", "cat")
+        self.say("lion.", capitalise_next=True)
+        self.assertEqual(self.box.text, "the lion. Sat on the mat")
+        self.cmd("scratch")
+        self.assertEqual(self.at(), ("the cat sat on the mat", (4, 7)))
+
+    def test_a_phrase_that_took_nothings_place_only_goes(self):
+        self.say(" today")
+        reply = self.cmd("scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, None))
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the mat", 22))
+
+    def test_said_twice_takes_back_the_phrase_before_as_ever(self):
+        self.say(" today")
+        self.cmd("select", "cat")
+        self.say("lion")
+        self.cmd("scratch")
+        self.assertEqual(self.box.text, "the cat sat on the mat today")
+        self.cmd("scratch")
+        self.assertEqual(self.box.text, "the cat sat on the mat")
+
+
+class UndoAndRedo(Correct):
+    """ "Undo that" and "redo that" press the editor's own menu: as many times as the
+    phrase was edits, so that it goes and comes back whole."""
+
+    def setUp(self):
+        super().setUp()
+        self.pressed = []
+        item = lambda name: SimpleNamespace(name=name, get_action_iface=lambda: object())
+        self.menu = {"undo": item("undo"), "redo": item("redo")}
+        self.target._app = object()
+        self.target._menu_item = lambda app, wanted: self.menu.get(wanted)
+        self.target.A = SimpleNamespace(Action=SimpleNamespace(
+            do_action=lambda item, n: self.pressed.append(item.name)))
+
+    def test_redo_is_as_many_steps_as_the_undo_was(self):
+        self.say(" today,", delete_before=1)          # two edits: a space out, the words in
+        self.assertTrue(self.cmd("undo")["ok"])
+        self.assertEqual(self.pressed, ["undo", "undo"])
+        self.assertTrue(self.cmd("redo")["ok"])
+        self.assertEqual(self.pressed[2:], ["redo", "redo"])
+        # The phrase is known again, so "scratch that" can still take it back.
+        self.assertTrue(self.cmd("scratch")["ok"])
+
+    def test_once_where_no_phrase_was_undone(self):
+        self.cmd("redo")
+        self.assertEqual(self.pressed, ["redo"])
+        self.cmd("redo")
+        self.assertEqual(self.pressed, ["redo", "redo"])
+
+    def test_something_said_in_between_leaves_one_step(self):
+        self.say(" today,", delete_before=1)
+        self.cmd("undo")
+        self.box.text, self.box.caret = "the cat sat on the mat", 22   # as the editor's Undo leaves it
+        self.say(" now")
+        self.pressed.clear()
+        self.cmd("redo")
+        self.assertEqual(self.pressed, ["redo"])
+
+    def test_an_editor_with_no_menus_to_press_takes_the_phrase_back_and_puts_it_back(self):
+        # Kate is one: "undo that" there is the last phrase taken back, as "scratch that".
+        self.menu.clear()
+        self.say(" today")
+        self.assertTrue(self.cmd("undo")["ok"])
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the mat", 22))
+        self.assertEqual(self.cmd("redo"), {"ok": True})
+        self.assertEqual((self.box.text, self.box.caret), ("the cat sat on the mat today", 28))
+        self.assertEqual(self.pressed, [])
+        # It is known again, so it can be taken back again: and redone only the once.
+        self.assertTrue(self.cmd("scratch")["ok"])
+        self.assertEqual(self.box.text, "the cat sat on the mat")
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+
+    def test_not_if_the_cursor_has_moved_or_something_was_said_since(self):
+        self.menu.clear()
+        self.say(" today")
+        self.cmd("undo")
+        self.box.caret = 3
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+        self.box.caret = 22
+        self.say(" today")
+        self.cmd("undo")
+        self.say(" now")
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+        self.assertEqual(self.box.text, "the cat sat on the mat now")
+
+    def test_nothing_to_redo_with_no_menu_and_nothing_undone(self):
+        self.menu.clear()
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+
+    def test_words_put_back_by_undo_are_not_redone(self):
+        self.menu.clear()
+        self.cmd("select", "cat")
+        self.say("lion")
+        self.assertTrue(self.cmd("undo").get("restored"))
+        self.cmd("unselect")
+        self.assertEqual(self.cmd("redo"), {"ok": False, "why": "nothing to redo"})
+        self.assertEqual(self.box.text, "the cat sat on the mat")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -52,5 +52,19 @@ class Keys(unittest.TestCase):
         self.assertEqual(typable(""), "")
 
 
+class TypedBack(unittest.TestCase):
+    """What "scratch that" would type back has to be what the keyboard can type."""
+
+    def test_only_words_that_would_be_the_same_typed_again(self):
+        from dictation.web_target import WebBoxTarget
+        target = WebBoxTarget.__new__(WebBoxTarget)
+        self.assertTrue(target._types_back("plain words, 100% (ok)?"))
+        self.assertFalse(target._types_back("caf\u00e9"))
+        self.assertFalse(target._types_back("a \u2014 b"))
+        self.assertFalse(target._types_back("one\ntwo"))
+        self.assertFalse(target._types_back("see " + OBJECT + " here"))
+        self.assertFalse(target._types_back(""))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,21 @@ class Correct(unittest.TestCase):
         heard = self.say(program, "Correct the dog.")
         self.assertEqual(heard, "Correct the dog.  (nothing to type into)")
 
+    def test_the_log_says_when_scratch_that_put_words_back(self):
+        # The words themselves never go in the log: only that they are back.
+        program = Program()
+        program.request = lambda message: {"ok": True, "restored": True}
+        with mock.patch("dictation.engine.log") as log:
+            engine = self.engine(program)
+            engine.handle_text("Scratch that.", True)
+        self.assertEqual(log.call_args[0][0],
+                         "command scratch: ok, and the words it was said over are back")
+        program.request = lambda message: {"ok": True}
+        with mock.patch("dictation.engine.log") as log:
+            engine = self.engine(program)
+            engine.handle_text("Scratch that.", True)
+        self.assertEqual(log.call_args[0][0], "command scratch: ok")
+
     def test_switched_off_it_is_only_words(self):
         program = Program()
         with mock.patch("dictation.engine.log"):
@@ -145,7 +160,7 @@ class ARetrainedModel(unittest.TestCase):
         ears.lock, ears._guests = threading.RLock(), []
         ears._loaded = dict(loaded)
         ears.dictation_name, ears.helper_name = in_use, "base.en"
-        ears._code_name, ears._code_used = "", 0.0
+        ears._extras = {}
         ears._is_transducer = lambda name: True
         ears.made = []
         ears._transducer = lambda name: ears._loaded.setdefault(name, ears.made.append(name) or "new")

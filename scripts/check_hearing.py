@@ -3,8 +3,14 @@ your own voice.
 
 It shows something to say, records you saying it, and gives that one recording to each
 model in turn. So every model hears exactly the same sound, and the count at the end is a
-fair one. About five minutes. Nothing leaves this computer, and nothing is kept but the
-table of results (what was to be said, and what each model wrote).
+fair one. About six minutes. Nothing leaves this computer. What is kept, in the program's
+state folder, is the table of results and, in a folder called "hearing-check", the
+recordings themselves (your voice saying these letters and phrases), so that another way
+of hearing can be tried on them later without your saying it all again:
+
+    ... check_hearing.py --again      goes through the kept recordings once more
+
+Delete that folder when you no longer want them kept.
 
 Run it with the Python that Linux Speaking runs on, with the microphone turned off in
 Linux Speaking itself, or it would hear you as well:
@@ -40,10 +46,10 @@ from dictation.segmenter import END, START, Segmenter, SegmenterConfig  # noqa: 
 from dictation.settings import Settings, model_label  # noqa: E402
 
 # (what to say, the letters it should give)
-LETTERS = [("J", "j"), ("O", "o"), ("N", "n"), ("T", "t"), ("I", "i"), ("B", "b"), ("D", "d"),
-           ("E", "e"), ("G", "g"), ("P", "p"), ("M", "m"), ("S", "s"), ("F", "f"), ("C", "c"),
-           ("capital J", "J"), ("capital B", "B"), ("B as in bravo", "b"),
-           ("S as in sierra", "s"), ("J O N", "jon"), ("T I", "ti")]
+LETTERS = [(letter.upper(), letter) for letter in "abcdefghijklmnopqrstuvwxyz"] + [
+    ("capital J", "J"), ("capital B", "B"), ("B as in bravo", "b"), ("D as in delta", "d"),
+    ("E as in echo", "e"), ("P as in papa", "p"), ("S as in sierra", "s"), ("T as in tango", "t"),
+    ("J O N", "jon"), ("T I", "ti")]
 SIGNS = ["question mark", "full stop", "comma", "exclamation mark", "colon", "semicolon",
          "new paragraph", "new line"]
 # (what to say, whether it should wake)
@@ -70,10 +76,15 @@ class Hearing:
             self.ears._model(name)
 
     def letters(self) -> dict:
-        ways = {}
+        ways = {"the spelling box as it is now": lambda sound: self.ears.letters(sound, spelling.PROMPT)}
         if SMALL in self.whispers:
-            ways[f"{named(SMALL)}, told to expect letters (as now)"] = lambda sound: \
+            ways[f"{named(SMALL)}, told to expect letters, the usual way (as it was)"] = lambda sound: \
                 self.ears._transcribe(sound, True, spelling.PROMPT, SMALL, False)
+            ways[f"{named(SMALL)}, told to expect letters, the short window"] = lambda sound: \
+                self.ears._hear_short(self.ears._model(SMALL), sound, spelling.PROMPT)
+        if MEDIUM in self.whispers:
+            ways[f"{named(MEDIUM)}, told to expect letters, the usual way"] = lambda sound: \
+                self.ears._transcribe(sound, True, spelling.PROMPT, MEDIUM, False)
         if self.parakeet:
             ways[named(self.parakeet)] = lambda sound: \
                 self.ears._by_transducer(self.parakeet, sound, speech_only=False)
@@ -227,6 +238,59 @@ def dictation_is_on() -> bool:
         return False
 
 
+def kept_folder() -> str:
+    return os.path.join(os.path.dirname(config.STATE_FILE), "hearing-check")
+
+
+def keep(at: int, said: str, sound) -> None:
+    """Keep one recording, named by its place and what was to be said."""
+    import wave
+    folder = kept_folder()
+    try:
+        os.makedirs(folder, exist_ok=True)
+        slug = "-".join("".join(c if c.isalnum() else " " for c in said.lower()).split())
+        with wave.open(os.path.join(folder, f"{at:03d}-{slug}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(config.RATE)
+            w.writeframes((np.clip(sound, -1.0, 1.0) * 32767).astype(np.int16).tobytes())
+    except OSError:
+        pass
+
+
+def again(chosen: str) -> int:
+    """Go through the kept recordings once more, with every way of hearing as it is now,
+    and print the table. No window, and nothing is recorded."""
+    import glob
+    import wave
+    files = sorted(glob.glob(os.path.join(kept_folder(), "*.wav")))
+    if not files:
+        print(f"There are no kept recordings in {kept_folder()}: run the check first.")
+        return 1
+    todo = plan(Hearing(chosen))
+    results = {}
+    for path in files:
+        try:
+            at = int(os.path.basename(path)[:3])
+            part, said, judge, ways = todo[at]
+        except (ValueError, IndexError):
+            continue
+        with wave.open(path) as w:
+            sound = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        results[at] = {}
+        for way, hear in ways.items():
+            started = time.monotonic()
+            try:
+                text = str(hear(sound) or "")
+            except Exception as e:
+                text = f"({type(e).__name__})"
+            results[at][way] = (text, bool(judge(text)), time.monotonic() - started)
+    text = report(todo, results)
+    save(text)
+    print(text)
+    return 0
+
+
 def save(text: str) -> str:
     path = os.path.join(os.path.dirname(config.STATE_FILE), "hearing-check.txt")
     try:
@@ -249,9 +313,11 @@ def main() -> int:
         heard = pyqtSignal(int, str)         # what was made of it, in a line
         ended = pyqtSignal(str)              # it is over: why, if something went wrong
 
-    app = QApplication(sys.argv)
     settings = Settings.load()
     chosen = settings.model or config.AWAKE_MODEL
+    if "--again" in sys.argv[1:]:
+        return again(chosen)
+    app = QApplication(sys.argv)
     bridge = Bridge()
     state = {"todo": [], "results": {}, "paused": False, "again": False, "skip": False,
              "over": False}
@@ -332,6 +398,8 @@ def main() -> int:
                 return
             if sound is None:
                 continue                    # a button was pressed while it listened: see above
+            if not self_check:
+                keep(at, said, sound)       # so that it can be gone through again: see again()
             answers = {}
             for way, hear in ways.items():
                 started = time.monotonic()
@@ -371,7 +439,10 @@ def main() -> int:
         where = save(text)
         say.setText("")
         top.setText((why + "\n" if why else "") + "Finished."
-                    + (f" The table is also kept in {where}" if where else ""))
+                    + (f" The table is also kept in {where}" if where else "")
+                    + ("" if self_check else f"\nThe recordings are kept in {kept_folder()} so that "
+                       "this can be gone through again without your saying it all again. "
+                       "Delete that folder when you no longer want them kept."))
         last.setText("")
         bar.setValue(len(state["results"]))
         for button in (pause, again, skip, finish):

@@ -96,7 +96,9 @@ class WordTarget:
         # screen pixels to show numbers over matches, and with [] to take them away.
         self.show_numbers = None
         self.lexicon = Lexicon.load_default()
-        self.history = []             # Word ranges of recent phrases, newest last
+        # Recent phrases, newest last: (its Word range, what it was said over). The second
+        # is None for a phrase that took nothing's place: see _insert.
+        self.history = []
         self._choices = None          # (window handle, [ranges]) while numbers are showing
         self._choices_mark = None     # and where the cursor was, if they are for "correct ..."
         # After "correct ...": (window handle, a range where the cursor was, the range of
@@ -344,13 +346,20 @@ class WordTarget:
         def change():
             at = front.selection.Range
             length = at.StoryLength if back is not None else 0
+            # What the words take the place of is kept, for "scratch that" to put back:
+            # what was selected, and the spaces taken out on either side of it.
+            lead = chosen = trail = ""
+            capital = None
             if at.Start != at.End:
+                chosen = at.Text or ""
                 at.Text = ""              # dictating over a selection replaces it
             if delete_before:
                 at.SetRange(max(0, at.Start - delete_before), at.Start)
+                lead = at.Text or ""
                 at.Text = ""
             if delete_after:
                 at.SetRange(at.Start, at.Start + delete_after)
+                trail = at.Text or ""
                 at.Text = ""
             at.InsertAfter(for_word(text))
             spoken = at.Duplicate
@@ -363,6 +372,7 @@ class WordTarget:
                             letter = at.Duplicate
                             letter.SetRange(at.End + units(rest[:i]), at.End + units(rest[:i + 1]))
                             letter.Case = UPPER_CASE
+                            capital = letter
                         break
             if back is not None:
                 # After "correct ...": back to where the cursor was before it.
@@ -371,7 +381,11 @@ class WordTarget:
                 went.append(to)
             at.Select()
             if text:
-                self.history.append(spoken)
+                # (A table's cell mark can't be written back, so words that had one among
+                # them are not kept.)
+                was = (lead, chosen, trail, back is not None, capital) \
+                    if chosen and "\x07" not in lead + chosen + trail else None
+                self.history.append((spoken, was))
                 del self.history[:-HISTORY]
 
         self._record(front, "Dictation", change)
@@ -381,7 +395,7 @@ class WordTarget:
         """The newest remembered phrase that is still in this document, or None."""
         here = front.selection.Range
         while self.history:
-            phrase = self.history[-1]
+            phrase = self.history[-1][0]
             try:
                 if phrase.InStory(here) and phrase.Start != phrase.End:
                     return phrase
@@ -397,14 +411,38 @@ class WordTarget:
         phrase = self._last(front)
         if phrase is None:
             return {"ok": False, "why": "nothing to scratch"}
-        self.history.pop()
+        was = self.history.pop()[1]
 
         def remove():
             phrase.Text = ""
             phrase.Select()
 
-        self._record(front, "Scratch that", remove)
-        return {"ok": True}
+        def put_back():
+            # The phrase was said over words that were selected: by hand, or by "select
+            # ..." or "correct ...". Those words come back in its place, selected as they
+            # were, so that they can be said again. After "correct ..." the cursor still
+            # goes back afterwards, to where it is now.
+            lead, chosen, trail, corrected, capital = was
+            here = front.selection.End
+            beyond = here - phrase.End if here >= phrase.End else None
+            try:
+                if capital is not None and capital.InStory(phrase) and (capital.Text or "").isupper():
+                    capital.Case = LOWER_CASE    # the letter after it, made a capital for it
+            except Exception:
+                pass                             # that letter has gone since
+            phrase.Text = lead + chosen + trail
+            words = phrase.Duplicate
+            words.SetRange(phrase.Start + units(lead), phrase.Start + units(lead + chosen))
+            words.Select()
+            self._correction = None
+            if corrected:
+                to = min(here, phrase.Start) if beyond is None else phrase.End + beyond
+                mark = phrase.Duplicate
+                mark.SetRange(to, to)
+                self._correction = (front.handle, mark, words)
+
+        self._record(front, "Scratch that", remove if was is None else put_back)
+        return {"ok": True, **({} if was is None else {"restored": True})}
 
     # ---- commands -----------------------------------------------------------------------
     def _command(self, front, name: str, arg: str, take_nearest: bool = False) -> dict:
@@ -419,6 +457,12 @@ class WordTarget:
             if not selection.Document.Undo(1):
                 return {"ok": False, "why": "nothing to undo"}
             # Undo can leave the restored text selected; the next phrase would replace it.
+            front.selection.Collapse(COLLAPSE_END)
+            return {"ok": True}
+        if name == "redo":
+            if not selection.Document.Redo(1):
+                return {"ok": False, "why": "nothing to redo"}
+            # As after Undo: what came back is not to be left selected.
             front.selection.Collapse(COLLAPSE_END)
             return {"ok": True}
         if name == "scratch":

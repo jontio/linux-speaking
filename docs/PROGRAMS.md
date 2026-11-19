@@ -141,4 +141,6 @@ What to know:
 - In a chat box "new line" is Shift+Enter, and "press enter" sends the message, as the
   Enter key does there.
 - "Scratch that" takes back the last phrase only while it is still what is just before
-  the cursor.
+  the cursor. After "correct ..." the cursor has gone back from the phrase: then it is
+  taken back, and the old words typed again, as long as the text between the two is as
+  it was. See [Selecting and correcting](COMMANDS.md#selecting-and-correcting).

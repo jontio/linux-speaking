@@ -34,6 +34,21 @@ class AsTheyAreWritten(unittest.TestCase):
         self.assertEqual(actions.parse("ask first\nrun: systemctl poweroff"),
                          [("ask",), ("run", "systemctl poweroff")])
 
+    def test_keys_under_a_text_are_pressed_after_it_is_typed(self):
+        # As it is natural to write it: the text, and under it the key to press.
+        self.assertEqual(actions.parse("git status --short\nkeys: enter"),
+                         [("type", "git status --short"), ("keys", ["enter"])])
+        self.assertEqual(actions.parse("Dear all,\nplease find attached\nwait: 1\nkeys: ctrl+enter"),
+                         [("type", "Dear all,\nplease find attached"), ("wait", 1.0), ("keys", ["ctrl+enter"])])
+        # A line of an address that begins with another of the words is still the address.
+        for written in ("12 High Street\nopen: 9 to 5", "The form\ntype: residential\nrun: by the council"):
+            self.assertIsNone(actions.parse(written), written)
+        with self.assertRaises(ValueError) as raised:
+            actions.parse("git status\nkeys:")                      # as when the key is not yet filled in
+        self.assertIn("no keys", str(raised.exception))
+        found, problems = parse_shortcuts("git status = git status --short\n    keys: enter\n")
+        self.assertEqual((found, problems), ({"git status": "git status --short\nkeys: enter"}, []))
+
     def test_keys_by_their_other_names(self):
         self.assertEqual(actions.chords("Control+Esc alt+F4 win+d ctrl+plus shift+Return ctrl+Page Up"),
                          ["ctrl+escape", "alt+f4", "win+d", "ctrl+plus", "shift+enter", "ctrl+pageup"])
@@ -297,6 +312,13 @@ class SaidAloud(Quiet):
         engine.handle_text("sign off", True)
         self.assertEqual(engine._doer.did, [])
         self.assertIn("insert", [op for op, _ in engine.targets.asked])
+
+    def test_a_text_with_enter_after_it_is_typed_and_then_enter_is_pressed(self):
+        engine = engine_with({"git status": "git status --short\nkeys: enter"})
+        engine.handle_text("Git status.", True)
+        asked = [op for op, _ in engine.targets.asked]
+        self.assertIn("insert", asked)
+        self.assertEqual(engine._doer.did, [("keys", "enter")])
 
     def test_a_type_step_types(self):
         engine = engine_with({"new note": "keys: ctrl+n\ntype: Notes for today"})

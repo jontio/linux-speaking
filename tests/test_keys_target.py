@@ -4,7 +4,7 @@ from unittest import mock
 
 from dictation.formatting import LINE, PARAGRAPH
 from dictation.keys_target import (READ, Box, KeysTarget, around, as_one_piece, box_kind, drawn_after,
-                                   keystrokes, place_in, placed,
+                                   keystrokes, left_between, place_in, placed,
                                    program_name, takes_text_whole,
                                    right_to_left, says_empty, steps_for_insert,
                                    arrow_length, presses, steps_back, steps_for_text, typed_length)
@@ -289,6 +289,14 @@ class TargetTests(unittest.TestCase):
             [("press", "enter", 1)], [("press", "ctrl+left", 3)], [("press", "ctrl+a", 1)],
             [("press", "home", 1), ("press", "shift+end", 1), ("press", "backspace", 1)]])
 
+    def test_redo_is_the_key_this_system_uses_for_it(self):
+        import os
+        self.assertTrue(self.ask(op="command", name="redo")["ok"])
+        self.assertEqual(self.typed, [[("press", "ctrl+y" if os.name == "nt" else "ctrl+shift+z", 1)]])
+        self.typed.clear()
+        self.ask(op="command", name="undo")
+        self.assertEqual(self.typed, [[("press", "ctrl+z", 1)]])
+
     def test_delete_several_lines(self):
         self.ask(op="command", name="delete_line", arg="3")
         self.assertEqual(self.typed, [[("press", "home", 1), ("press", "shift+down", 2),
@@ -405,6 +413,159 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(self.ask(op="command", name="go_to_line", arg="3")["why"], "unknown command")
         self.assertEqual(self.ask(op="move", steps=[])["why"], "unknown request")
         self.assertEqual(self.ask(op="command", name="bold")["why"], "plain text has no formatting")
+
+
+class ScratchPutsBackTests(unittest.TestCase):
+    """ "Scratch that" after a phrase was said over selected words: the phrase goes, and
+    the words are typed again in its place and selected as they were."""
+
+    TEXT = "the cat sat on the mat"
+
+    def setUp(self):
+        self.box = Box("the ", " sat on the mat", "cat", "x.exe")
+        self.typed = []
+        self.target = KeysTarget(lambda: True, look=lambda: self.box, press=self.typed.append)
+
+    def ask(self, **message):
+        return self.target.request(message)
+
+    def chosen(self, mark, found=(4, 7), text=TEXT):
+        self.target._chose(text, mark, found)
+        self.box = Box(text[:found[0]], text[found[1]:], text[found[0]:found[1]], "x.exe")
+
+    def test_after_words_were_selected(self):
+        self.ask(op="insert", text="lion")
+        self.box = Box("the lion", " sat on the mat", "", "x.exe")
+        reply = self.ask(op="command", name="scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, True))
+        self.assertEqual(self.typed[-1], [("press", "backspace", 4), ("type", "cat"),
+                                          ("press", "shift+left", 3)])
+        self.assertIsNone(self.target._correction)
+
+    def test_the_space_taken_out_beside_them_comes_back_and_is_not_selected(self):
+        self.ask(op="insert", text="lion,", delete_after=1)
+        self.box = Box("the lion,", "sat on the mat", "", "x.exe")
+        self.ask(op="command", name="scratch")
+        self.assertEqual(self.typed[-1], [("press", "backspace", 5), ("type", "cat "),
+                                          ("press", "left", 1), ("press", "shift+left", 3)])
+        self.box = Box("the cat ", " on the mat", "sat", "x.exe")
+        self.ask(op="insert", text=",", delete_before=1)
+        self.box = Box("the cat,", " on the mat", "", "x.exe")
+        self.ask(op="command", name="scratch")
+        self.assertEqual(self.typed[-1], [("press", "backspace", 1), ("type", " sat"),
+                                          ("press", "shift+left", 3)])
+
+    def test_after_correct_the_cursor_is_taken_to_the_phrase_first(self):
+        self.chosen(mark=22)
+        self.ask(op="insert", text="lion")
+        self.assertEqual(self.typed[-1], [("press", "right", 15)])
+        self.box = Box("the lion sat on the mat", "", "", "x.exe")
+        self.assertTrue(self.ask(op="command", name="scratch").get("restored"))
+        self.assertEqual(self.typed[-1], [("press", "left", 15), ("press", "backspace", 4),
+                                          ("type", "cat"), ("press", "shift+left", 3)])
+        # The words are chosen as "correct ..." left them: said again, the cursor goes back.
+        self.box = Box("the ", " sat on the mat", "cat", "x.exe")
+        self.assertTrue(self.ask(op="insert", text="tiger").get("back"))
+        self.assertEqual(self.typed[-1], [("press", "right", 15)])
+
+    def test_after_correct_with_the_cursor_before_the_words(self):
+        self.chosen(mark=0)
+        self.ask(op="insert", text="lion")
+        self.box = Box("", "the lion sat on the mat", "", "x.exe")
+        self.assertTrue(self.ask(op="command", name="scratch").get("restored"))
+        self.assertEqual(self.typed[-1], [("press", "right", 8), ("press", "backspace", 4),
+                                          ("type", "cat"), ("press", "shift+left", 3)])
+        self.box = Box("the ", " sat on the mat", "cat", "x.exe")
+        self.assertTrue(self.ask(op="insert", text="tiger").get("back"))
+        self.assertEqual(self.typed[-1], [("press", "left", 9)])
+
+    def test_after_correct_of_the_word_right_before_the_cursor(self):
+        self.chosen(mark=22, found=(19, 22))
+        self.ask(op="insert", text="rug")
+        self.box = Box("the cat sat on the rug", "", "", "x.exe")
+        self.assertTrue(self.ask(op="command", name="scratch").get("restored"))
+        self.assertEqual(self.typed[-1], [("press", "backspace", 3), ("type", "mat"),
+                                          ("press", "shift+left", 3)])
+        self.box = Box("the cat sat on the ", "", "mat", "x.exe")
+        self.assertTrue(self.ask(op="insert", text="carpet").get("back"))
+
+    def test_not_if_the_cursor_or_the_text_has_moved_since(self):
+        self.chosen(mark=22)
+        self.ask(op="insert", text="lion")
+        keys = len(self.typed)
+        self.box = Box("the lion sat on the mat and more", "", "", "x.exe")
+        self.assertEqual(self.ask(op="command", name="scratch")["why"], "nothing to scratch")
+        self.assertEqual(len(self.typed), keys)       # and no key was pressed
+
+    def test_the_phrase_is_the_one_that_was_said_not_the_same_word_before_the_cursor(self):
+        # "the" (the second one) is said again as "mat": the text now ends "mat mat", and
+        # the one to take back is the first of those.
+        self.chosen(mark=22, found=(15, 18))
+        self.ask(op="insert", text="mat")
+        self.box = Box("the cat sat on mat mat", "", "", "x.exe")
+        self.ask(op="command", name="scratch")
+        self.assertEqual(self.typed[-1], [("press", "left", 4), ("press", "backspace", 3),
+                                          ("type", "the"), ("press", "shift+left", 3)])
+
+    def test_too_far_to_go_back_leaves_the_cursor_after_the_phrase_and_it_is_put_back_there(self):
+        text = "the cat sat " + "and sat " * 50
+        self.chosen(mark=len(text), text=text)
+        self.assertTrue(self.ask(op="insert", text="lion").get("too_far"))
+        self.box = Box("the lion", text[7:], "", "x.exe")
+        self.assertTrue(self.ask(op="command", name="scratch").get("restored"))
+        self.assertEqual(self.typed[-1], [("press", "backspace", 4), ("type", "cat"),
+                                          ("press", "shift+left", 3)])
+
+    def test_words_that_would_not_be_the_same_typed_again_are_not_kept(self):
+        for selected in ("one\ttwo", "one\r\ntwo", "see \ufffc here", "x" * 301):
+            self.target.history.clear()
+            self.box = Box("a ", " c", selected, "x.exe")
+            self.ask(op="insert", text="b")
+            self.box = Box("a b", " c", "", "x.exe")
+            reply = self.ask(op="command", name="scratch")
+            self.assertEqual((reply.get("ok"), reply.get("restored")), (True, None), selected[:8])
+            self.assertEqual(self.typed[-1], [("press", "backspace", 1)])
+
+    def test_a_long_selection_is_kept_where_keys_go_in_a_burst(self):
+        self.target._paced = lambda: False
+        self.box = Box("a ", " c", "x" * 301, "x.exe")
+        self.ask(op="insert", text="b")
+        self.box = Box("a b", " c", "", "x.exe")
+        self.assertTrue(self.ask(op="command", name="scratch").get("restored"))
+
+    def test_a_phrase_that_took_nothings_place_only_goes(self):
+        self.box = Box("Hello ", "", "", "x.exe")
+        self.ask(op="insert", text="world.")
+        self.box = Box("Hello world.", "", "", "x.exe")
+        reply = self.ask(op="command", name="scratch")
+        self.assertEqual((reply.get("ok"), reply.get("restored")), (True, None))
+        self.assertEqual(self.typed[-1], [("press", "backspace", 6)])
+
+    def test_caps_on_the_last_phrase_still_works_and_then_it_only_goes(self):
+        self.ask(op="insert", text="lion")
+        self.box = Box("the lion", " sat on the mat", "", "x.exe")
+        self.ask(op="command", name="all_caps")
+        self.box = Box("the LION", " sat on the mat", "", "x.exe")
+        self.assertIsNone(self.ask(op="command", name="scratch").get("restored"))
+        self.assertEqual(self.typed[-1], [("press", "backspace", 4)])
+
+
+class LeftBetweenTests(unittest.TestCase):
+    TEXT = "the cat sat on the mat"
+
+    def test_a_cursor_that_was_after_the_words(self):
+        self.assertEqual(left_between((self.TEXT, 22, 4, 7)), ("after", " sat on the mat"))
+        self.assertEqual(left_between((self.TEXT, 22, 4, 7), delete_after=1), ("after", "sat on the mat"))
+
+    def test_one_that_was_before_them(self):
+        self.assertEqual(left_between((self.TEXT, 0, 4, 7)), ("before", "the "))
+        self.assertEqual(left_between((self.TEXT, 0, 4, 7), delete_before=1), ("before", "the"))
+        self.assertEqual(left_between((self.TEXT, 4, 4, 7), delete_before=1), ("before", ""))
+
+    def test_one_that_is_left_right_at_their_end(self):
+        self.assertIsNone(left_between((self.TEXT, 7, 4, 7)))
+        self.assertIsNone(left_between((self.TEXT, 5, 4, 7)))
+        self.assertIsNone(left_between((self.TEXT, 8, 4, 7), delete_after=1))
 
 
 class _EditBox:

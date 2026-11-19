@@ -348,8 +348,10 @@ class NearMisses(unittest.TestCase):
         self.assertEqual(interpret("Backspace twenty-one", True), Command("backspace", "21"))
         self.assertEqual(interpret("Delete the last thirty words", True), Command("delete_words", "30"))
 
-    def test_redo_is_not_a_command(self):
-        self.assertEqual(interpret("Redo.", True), Dictation("Redo."))  # no program has it yet
+    def test_redo_is_a_command_as_undo_is(self):
+        self.assertEqual(interpret("Redo.", True), Command("redo"))
+        self.assertEqual(interpret("Redo that.", True), Command("redo"))
+        self.assertEqual(interpret("Redo.", True, frozenset({"redo"})), Dictation("Redo."))
 
 
 class WhileNumbersShow(unittest.TestCase):

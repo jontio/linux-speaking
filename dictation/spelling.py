@@ -30,7 +30,7 @@ LETTERS = {
     "k": "k", "kay": "k", "okay": "k", "kilo": "k",
     "l": "l", "el": "l", "ell": "l", "lima": "l",
     "m": "m", "em": "m", "mike": "m",
-    "n": "n", "en": "n", "november": "n",
+    "n": "n", "en": "n", "in": "n", "november": "n",   # "in" is how N is often written
     "o": "o", "oh": "o", "owe": "o", "oscar": "o",
     "p": "p", "pee": "p", "pea": "p", "papa": "p",
     "q": "q", "queue": "q", "cue": "q", "quebec": "q",
@@ -67,16 +67,26 @@ CAPITALS = {"caps", "capitals", "capital", "uppercase"}
 ACCENTS = {"macron": "COMBINING MACRON", "acute": "COMBINING ACUTE ACCENT",
            "grave": "COMBINING GRAVE ACCENT", "umlaut": "COMBINING DIAERESIS",
            "circumflex": "COMBINING CIRCUMFLEX ACCENT", "cedilla": "COMBINING CEDILLA"}
-DONE = {"done", "finished", "finish", "insert", "enter", "accept"}
-CANCEL = {"cancel", "abort"}
+# With the ways a recogniser has written them when it expected letters: "dumb" for
+# "done", "council" for "cancel". Nothing else that is said into the box sounds so.
+DONE = {"done", "finished", "finish", "insert", "enter", "accept", "dumb", "dun", "dunn"}
+CANCEL = {"cancel", "abort", "council", "counsel", "console"}
 PHRASES = {  # whole phrases, after normalising
     "that's it": "done", "thats it": "done", "all done": "done", "i'm done": "done",
     "never mind": "cancel", "nevermind": "cancel", "forget it": "cancel",
     "scratch that": "backspace", "delete that": "backspace", "undo that": "backspace",
     "start again": "clear", "start over": "clear", "clear that": "clear",
 }
-BACKSPACE = {"backspace", "delete", "back"}
+BACKSPACE = {"backspace", "delete", "back", "markspace"}
 CLEAR = {"clear", "reset"}
+
+
+# The radio alphabet: words that can't be mistaken for one another, as letters can.
+RADIO = {word: word[0] for word in (
+    "alpha alfa bravo charlie delta echo foxtrot golf hotel india juliet juliett kilo lima "
+    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey whisky "
+    "xray yankee zulu").split()}
+_AS_IN = ("in", "for", "like")
 
 
 def parse(raw: str) -> tuple[list, list]:
@@ -94,6 +104,14 @@ def parse(raw: str) -> tuple[list, list]:
     joined = " ".join(tokens)
     if joined in PHRASES:
         return [PHRASES[joined]], []
+    if joined == "an":
+        return ["n"], []     # the letter N, said by itself: "A, N" is written as two
+    # "B as in bravo" is said so that the letter can't be mistaken: so it is the word
+    # that settles it, whatever the letter was heard as. ("We are in Bravo" is how a
+    # recogniser once wrote it.)
+    if 3 <= len(tokens) <= 6 and tokens[-1] in RADIO and tokens[-2] in _AS_IN:
+        letter = RADIO[tokens[-1]]
+        return [letter.upper() if set(tokens[:-2]) & (CAPITAL | CAPITALS) else letter], []
     steps: list = []
     unknown: list = []
     capital = shout = False
@@ -114,7 +132,12 @@ def parse(raw: str) -> tuple[list, list]:
             continue
         if lettered and i + 1 < len(tokens) and (
                 token in ("for", "like") or pair == ("as", "in") and i + 2 < len(tokens)):
-            # "B for bravo", "B as in boy": the word only says which letter was meant.
+            # "B for bravo", "B as in boy": the word says which letter was meant, and
+            # is what to go by if the letter itself was heard as another.
+            word = tokens[i + 1] if token != "as" else tokens[i + 2]
+            meant = RADIO.get(word) or (word[0] if word.isalpha() and len(word) > 1 else "")
+            if meant and steps and len(steps[-1]) == 1 and steps[-1].lower() != meant:
+                steps[-1] = meant.upper() if steps[-1].isupper() else meant
             i += 2 if token != "as" else 3
             lettered = False
             continue
@@ -161,6 +184,30 @@ def parse(raw: str) -> tuple[list, list]:
             steps.append(add)
         i += 1
     return steps, unknown
+
+
+COMMAND_STEPS = frozenset({"done", "cancel", "backspace", "clear"})
+
+
+def choose(by_letters: str, by_words: str) -> str:
+    """Of two hearings of one thing said into the spelling box, the one to go by.
+
+    `by_letters` is the model that tells letters apart best, told to expect letters;
+    `by_words` is the model chosen for dictation, which knows the voice and is the better
+    at whole words. Told to expect letters, the first wrote "dumb" for "done"; left to
+    itself, the second writes "And" for N. So a word of command goes by the second where
+    it wrote one and nothing else; where the first wrote nothing the box knows, the
+    second is taken if it did; and letters go by the first.
+
+    Measured on 140 letters and words in four voices: 110 right by the first alone, 85
+    by the second, 115 by the two so. The second never took a letter for a command."""
+    first, first_unknown = parse(by_letters)
+    second, second_unknown = parse(by_words)
+    if second and not second_unknown and all(step in COMMAND_STEPS for step in second):
+        return by_words
+    if not first or first_unknown:
+        return by_words if second and not second_unknown else by_letters
+    return by_letters
 
 
 def apply(spelled: str, steps: list) -> tuple[str, str]:

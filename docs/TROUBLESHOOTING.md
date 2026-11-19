@@ -93,6 +93,16 @@ Five things say what the program is doing:
 - **A sentence that begins with "Select" or "Correct" selected something.** The words
   after it were found near the cursor, so it was taken for the command, and a notice
   said what was selected. Say "unselect that", and say the sentence in two parts.
+- **The spelling box is slow to show a letter.** It measures over its first three
+  letters how long the Medium model takes on this computer, and goes over to the Small
+  one if that is more than a second, so the fourth letter on should be quicker. The
+  log says so when it does. **Or it mishears more letters than it did:** it may have
+  gone over to Small on a day the computer was busy. What it found is in the file
+  `spelling-speed.json` (on Linux in `~/.local/state/linux-speaking`, on Windows in
+  the `state` folder of the install folder): delete it and restart the program to have
+  it measured again. The limit can be changed with
+  `LS_SPELL_SLOW`, in seconds, [as below](#settings-that-are-environment-variables):
+  a big number keeps Medium whatever it takes.
 - **It writes "yeah" or "okay" when you made a noise.** See
   [Noises written as words](MODELS.md#noises-written-as-words).
 - **The other computer is no longer used for recognition.** Both computers need this

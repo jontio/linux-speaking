@@ -48,7 +48,11 @@ class Ops:
         self.desktop = self.smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
         self.toolkit = self.smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
         self.lexicon = Lexicon.load_default()
-        self.history = []  # (document, text range) of recent phrases, newest last
+        # Recent phrases, newest last: (document, text range, what it was said over, the
+        # text put in). The third is None unless words were selected: then (what was
+        # taken out just before them, the words, what was taken out just after them,
+        # whether "correct ..." chose them).
+        self.history = []
         self.choices = None  # (document, [text ranges]) while numbered matches are showing
         self.choices_mark = None  # and where the cursor was, if they are for "correct ..."
         # After "correct ...": (document, where the cursor was, the words chosen, whether
@@ -95,9 +99,11 @@ class Ops:
                 reply["selected"] = True  # what is dictated will replace the selection
             return reply
         if op == "text":  # the whole document, for tests
+            look = doc.getCurrentController().getViewCursor()
             return {"ok": True, "text": doc.getText().getString(),
                     "rubies": self._rubies(doc), "modified": doc.isModified(),
-                    "selected": doc.getCurrentController().getViewCursor().getString()}
+                    "selected": look.getString(),
+                    "bold": look.getPropertyValue("CharWeight") == BOLD}
         if op == "move":  # cursor movement described by the engine
             return self._move(doc, message.get("steps", []))
         if op == "insert":  # the engine has already fitted the text to its surroundings
@@ -126,7 +132,7 @@ class Ops:
     def _last(self, doc):
         """The newest remembered phrase in this document, or None."""
         while self.history:
-            owner, rng = self.history[-1]
+            owner, rng = self.history[-1][:2]
             if owner == doc:  # a fresh proxy each time, so compare by value
                 try:
                     rng.getString()
@@ -194,12 +200,16 @@ class Ops:
         try:
             cursor = text.createTextCursorByRange(view.getStart())
             cursor.gotoRange(view.getEnd(), True)
+            # What the words take the place of is kept, for "scratch that" to put back.
+            chosen, lead, trail = cursor.getString(), "", ""
             cursor.setString("")  # dictating over a selection replaces it
             if ins.delete_before:
                 cursor.goLeft(ins.delete_before, True)
+                lead = cursor.getString()
                 cursor.setString("")
             if ins.delete_after:
                 cursor.goRight(ins.delete_after, True)
+                trail = cursor.getString()
                 cursor.setString("")
             piece = ""
             for ch in ins.text + "\0":
@@ -224,7 +234,8 @@ class Ops:
                     rest.setString(upper)
             spoken = text.createTextCursorByRange(cursor.getEnd())
             spoken.goLeft(len(ins.text), True)
-            self.history.append((doc, spoken))
+            self.history.append((doc, spoken, (lead, chosen, trail, back is not None)
+                                 if chosen else None, ins.text))
             del self.history[:-HISTORY]
             view.gotoRange(cursor.getEnd(), False)
             if back is not None:
@@ -295,6 +306,14 @@ class Ops:
                 return {"ok": False, "why": "nothing to undo"}
             undo.undo()
             # Undo can leave the restored text selected; the next phrase would replace it.
+            doc.getCurrentController().getViewCursor().collapseToEnd()
+            return {"ok": True}
+        if name == "redo":
+            undo = doc.getUndoManager()
+            if not undo.isRedoPossible():
+                return {"ok": False, "why": "nothing to redo"}
+            undo.redo()
+            # As after Undo: what came back is not to be left selected.
             doc.getCurrentController().getViewCursor().collapseToEnd()
             return {"ok": True}
         if name == "scratch":
@@ -371,7 +390,9 @@ class Ops:
         rng = self._last(doc)
         if rng is None:
             return {"ok": False, "why": "nothing to scratch"}
-        self.history.pop()
+        was, put_in = self.history.pop()[2:4]
+        if was is not None and self._put_back(doc, view, rng, was, put_in):
+            return {"ok": True, "restored": True}
 
         def remove():
             rng.setString("")
@@ -379,6 +400,66 @@ class Ops:
 
         self._edit(doc, "Scratch that", remove)
         return {"ok": True}
+
+    def _put_back(self, doc, view, rng, was, put_in):
+        """ "Scratch that" for a phrase that was said over selected words: it goes, and
+        they come back in its place, selected as they were, to be said again. Where
+        "correct ..." chose them, the cursor still goes back afterwards, to where it is
+        now. False if they can't be put back: then the phrase only goes, as ever.
+
+        Putting the phrase in was one step for Writer's Undo. If that is still the last
+        thing done to the document, it is undone: the words come back just as they were,
+        bold or a footnote mark among them and all. Otherwise they are written back as
+        plain text, which a line break among them rules out.
+        """
+        lead, chosen, trail, corrected = was
+        old = lead + chosen + trail
+        text = rng.getText()
+        mark, at_end = None, False
+        if corrected:
+            try:
+                mark = text.createTextCursorByRange(view.getEnd())
+                at_end = text.compareRegionEnds(mark, rng) == 0
+            except Exception:
+                mark = None  # the cursor is in another part of the document than the words
+        start = text.createTextCursorByRange(rng.getStart())
+        found = None
+        undo = doc.getUndoManager()
+        try:
+            whole = PARAGRAPH not in put_in and LINE not in put_in and rng.getString() == put_in
+            if whole and undo.isUndoPossible() and undo.getCurrentUndoActionTitle() == "Dictation":
+                undo.undo()
+                found = self._find_beside(text, start, old)
+                if found is None:
+                    undo.redo()  # that was not it, or the words can't be told as text
+        except Exception:
+            found = None
+        if found is None:
+            if "\n" in old or "\r" in old or rng.getString() == "":
+                return False
+            self._edit(doc, "Scratch that", lambda: rng.setString(old))
+            found = text.createTextCursorByRange(rng.getStart())
+            found.gotoRange(rng.getEnd(), True)
+        words = text.createTextCursorByRange(found.getStart())
+        words.goRight(len(lead), False)
+        words.goRight(len(chosen), True)
+        doc.getCurrentController().select(words)
+        if mark is not None:
+            if at_end:
+                mark = text.createTextCursorByRange(found.getEnd())
+            self._chose(doc, mark)
+        return True
+
+    @staticmethod
+    def _find_beside(text, at, words):
+        """A cursor over `words` where they start or end at `at`, or None if they do
+        neither."""
+        for go in ("goRight", "goLeft"):
+            probe = text.createTextCursorByRange(at)
+            getattr(probe, go)(len(words), True)
+            if probe.getString() == words:
+                return probe
+        return None
 
     def _format(self, doc, view, name):
         selected = not view.isCollapsed()
@@ -417,7 +498,7 @@ class Ops:
                 if selected:
                     doc.getCurrentController().select(again)
                 else:
-                    self.history[-1] = (doc, again)
+                    self.history[-1] = (doc, again) + self.history[-1][2:]
 
         self._edit(doc, "Format that", apply)
         return {"ok": True}

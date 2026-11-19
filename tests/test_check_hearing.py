@@ -31,10 +31,11 @@ class Counting(unittest.TestCase):
     def test_every_way_is_asked_about_everything_and_judged_for_what_it_is(self):
         todo = check.plan(Hears(one="J.", two="Wake up."))
         self.assertEqual(len(todo), len(check.LETTERS) + len(check.SIGNS) + len(check.WAKING))
-        part, said, judge, ways = todo[0]
+        part, said, judge, ways = todo[9]                 # the tenth letter of the alphabet
         self.assertEqual((said, sorted(ways)), ("J", ["one", "two"]))
         self.assertTrue(judge("J."))
         self.assertFalse(judge("Yay."))
+        self.assertEqual([item[1] for item in todo[:26]], list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
         signs = [item for item in todo if item[1] == "question mark"][0]
         self.assertTrue(signs[2]("Question mark."))
         self.assertFalse(signs[2]("?"))
@@ -47,8 +48,8 @@ class Counting(unittest.TestCase):
 
     def test_the_table_counts_each_way_and_lists_what_it_got_wrong(self):
         todo = check.plan(Hears(small="J.", parakeet=""))
-        results = {0: {"small": ("J.", True, 1.0), "parakeet": ("", False, 0.1)},
-                   1: {"small": ("Oh.", True, 1.2), "parakeet": ("O.", True, 0.1)}}
+        results = {9: {"small": ("J.", True, 1.0), "parakeet": ("", False, 0.1)},
+                   14: {"small": ("Oh.", True, 1.2), "parakeet": ("O.", True, 0.1)}}
         table = check.report(todo, results)
         self.assertIn("Letters, for the spelling box  (2 said)", table)
         self.assertIn("2 of 2 right, 1.10 s each: small", table)
@@ -56,6 +57,18 @@ class Counting(unittest.TestCase):
         self.assertIn('you said "J": it wrote ""', table)
         self.assertNotIn("Punctuation", table)       # nothing of it was said
         self.assertIn("Nothing was said.", check.report(todo, {}))
+
+    def test_a_recording_is_kept_under_its_place_and_what_was_to_be_said(self):
+        import tempfile
+        import wave
+        from unittest import mock
+        import numpy as np
+        folder = tempfile.mkdtemp()
+        with mock.patch.object(check, "kept_folder", lambda: folder):
+            check.keep(27, "B as in bravo", np.zeros(1600, dtype=np.float32))
+        self.assertEqual(os.listdir(folder), ["027-b-as-in-bravo.wav"])
+        with wave.open(os.path.join(folder, "027-b-as-in-bravo.wav")) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getnframes()), (16000, 1, 1600))
 
     def test_with_nothing_to_compare_there_is_nothing_to_ask(self):
         self.assertEqual(check.plan(Hears()), [])

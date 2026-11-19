@@ -38,6 +38,13 @@ COMMANDS = {
     "undo this": "undo",
     "undue that": "undo",   # ways Whisper may hear "undo that"
     "on do that": "undo",   # ("and do that" is not one of them: people say it)
+    "redo that": "redo",
+    "redo": "redo",
+    "redo it": "redo",
+    "redo this": "redo",
+    "re do that": "redo",   # as "Re-do that." comes out
+    "re do it": "redo",
+    "re do": "redo",
     "delete that": "delete",
     "that was a noise": "noise",  # takes back what a noise was written as, and keeps the sound
     "that was noise": "noise",
@@ -416,7 +423,32 @@ def _selecting(phrase: str, raw: str, disabled) -> Command | None:
                 first and _THEN_PUNCTUATION.match(raw, first.end())):
             return None
         return Command(said, words)
-    return None
+    return _clicking(phrase, raw, disabled)
+
+
+CLICK = "click"
+MAX_CLICK_WORDS = 6   # a button's name is short: more words than this is a sentence
+
+
+def _clicking(phrase: str, raw: str, disabled) -> Command | None:
+    """ "Click OK" presses the button, the link, the tick box or the menu of that name in
+    the program in front. If nothing there has the name, the engine types the phrase
+    instead, as it does for "select" with words that aren't there. Like "select", it is
+    given away as a sentence by punctuation straight after the word, or by its length."""
+    if CLICK in disabled or not phrase.startswith(CLICK + " "):
+        return None
+    words = phrase[len(CLICK) + 1:].split()
+    if words[:1] == ["on"]:
+        words = words[1:]
+    if words[:1] == ["the"] and len(words) > 1:
+        words = words[1:]
+    if len(words) > 1 and words[-1] in ("button", "link", "tab", "menu", "checkbox"):
+        words = words[:-1]
+    first = re.search(r"\b" + CLICK + r"\b", raw, re.IGNORECASE)
+    if not words or len(words) > MAX_CLICK_WORDS or (
+            first and _THEN_PUNCTUATION.match(raw, first.end())):
+        return None
+    return Command(CLICK, " ".join(words))
 
 
 def interpret(raw: str, awake: bool, disabled=frozenset()) -> Command | Dictation | None:

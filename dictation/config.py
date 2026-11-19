@@ -150,6 +150,18 @@ WAKE_MODEL = os.environ.get("LS_WAKE_MODEL", AWAKE_MODEL)
 # dictated and let go when none has been for this many seconds.
 CODE_MODELS = tuple(name for name in os.environ.get("LS_CODE_MODELS", "medium.en").split(",") if name)
 CODE_MODEL_IDLE = float(os.environ.get("LS_CODE_MODEL_IDLE", "600"))
+# The spelling box is heard by the first of these that is installed, whichever model is
+# chosen for dictation: single letters are the hardest thing there is to tell apart, and
+# measured over the alphabet in five voices Medium with its hint got 106 of 130, Small 93,
+# and the Parakeets 62 and 73. It is loaded and let go as the model for source code is.
+SPELL_MODELS = tuple(name for name in os.environ.get("LS_SPELL_MODELS", "medium.en,small.en").split(",") if name)
+# But a letter has to come back quickly, or the box is a trial to use. A model that takes
+# longer than this, in seconds, to hear one on this computer is passed over for the next:
+# how long each took is measured as the box is used, and remembered in this file.
+# (Medium took 0.65 s on one computer, which is well enough, and 1.4 s on another, which
+# with the dictation model's own hearing made each letter a wait of nearly two seconds.)
+SPELL_SLOW = float(os.environ.get("LS_SPELL_SLOW", "1.0"))
+SPELL_SPEEDS = os.path.join(os.path.dirname(STATE_FILE), "spelling-speed.json")
 # "Wake up" is listened for on short phrases only: longer sound, such as a video
 # playing, is not transcribed at all while asleep.
 WAKE_MAX_SECONDS = float(os.environ.get("LS_WAKE_MAX_SECONDS", "6"))

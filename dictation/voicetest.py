@@ -315,7 +315,7 @@ def phrases(samples, boost: float = 1.0) -> list:
     import collections
     import numpy as np
     from .segmenter import END, START, Segmenter, SegmenterConfig
-    segmenter = Segmenter(SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO))
+    segmenter = Segmenter(SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO, flat_ms=0))
     preroll = collections.deque(maxlen=config.PREROLL_FRAMES)
     found, phrase = [], []
     for at in range(0, len(samples) - config.FRAME + 1, config.FRAME):

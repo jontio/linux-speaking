@@ -58,6 +58,9 @@ EXTENDED |= {"insert", "pageup", "pagedown", "win"}
 # pressed as many times as the command says.
 COMMAND_KEYS = {
     "press_enter": "enter", "undo": "ctrl+z", "select_all": "ctrl+a",
+    # Redo: Ctrl+Y on Windows. On Linux that is Ctrl+Shift+Z, which a browser and the
+    # programs built from one take, and so do most others there.
+    "redo": "ctrl+y" if os.name == "nt" else "ctrl+shift+z",
     "line_end": "end", "line_start": "home", "doc_top": "ctrl+home", "doc_end": "ctrl+end",
     "word_left": "ctrl+left", "word_right": "ctrl+right", "line_up": "up", "line_down": "down",
 }
@@ -152,6 +155,24 @@ def steps_back(mark: int, start: int, end: int, typed: int, delete_before: int =
     new_end = new_start + typed
     move = back_to(mark, start, end, new_start, new_end, new_end - end - delete_after) - new_end
     return [("press", "right" if move > 0 else "left", abs(move))] if move else []
+
+
+def left_between(chose: tuple, delete_before: int = 0, delete_after: int = 0):
+    """After "correct ...", once other words have been said over the ones it chose and the
+    cursor has gone back: which side of the new words the cursor is on, and the text that
+    lies between it and them. ("after", text) or ("before", text), or None for a cursor
+    that is right at their end.
+
+    `chose` is (the box's text, where the cursor was, the start and the end of the words
+    chosen), as it was when they were chosen.
+    """
+    text, mark, start, end = chose
+    if mark >= end:
+        between = text[min(mark, end + delete_after):mark]
+        return ("after", between) if between else None
+    if mark <= start:
+        return "before", text[mark:max(mark, start - delete_before)]
+    return None
 
 
 def box_kind(window_class: str) -> str:
@@ -271,6 +292,18 @@ def program_name(exe: str) -> str:
     return NAMES.get(stem.lower(), stem[:1].upper() + stem[1:]) or "another program"
 
 
+class Typed(str):
+    """A phrase as it was typed, with what "scratch that" needs to put things back as they
+    were before it.
+
+    `was`: what it was typed over, if words were selected: (what was taken out just
+    before them, the words, what was taken out just after them). `correction`: what
+    "correct ..." remembered, if that is what chose them. `back`: where the cursor went
+    afterwards, as left_between() gives it.
+    """
+    was = back = correction = None
+
+
 class Box:
     """A text box that has the keyboard, as read through UI Automation."""
 
@@ -289,8 +322,8 @@ class KeysTarget:
         self.lexicon = Lexicon.load_default()
         self.history = []                 # what was typed lately, newest last
         # After "correct ...": (where the cursor was, start and end of the words chosen,
-        # the words, what came just before them, more for a box asked by message), until
-        # something is said over them.
+        # the words, what came just before them, more for a box asked by message, and the
+        # box's text with those three places in it), until something is said over them.
         self._correction = None
         self.seen = ""                    # what last had the keyboard, for the log
         self._look = look                 # for tests: returns a Box or None
@@ -590,20 +623,20 @@ class KeysTarget:
         start, end = found
         self._correction = (presses(text[:mark]), presses(text[:start]), presses(text[:end]),
                             text[start:end], text[max(0, start - LEAD):start],
-                            edit and (*edit, text, mark, start, end))
+                            edit and (*edit, text, mark, start, end), (text, mark, start, end))
 
     def _correcting(self, box):
         """Where the cursor was before "correct ...", with the start and end of the words
-        it chose, counted in presses of an arrow key, and what is kept for a box asked by
-        message, if those words are still what is selected. Forgotten either way: the
-        next thing said or done settles it."""
+        it chose, counted in presses of an arrow key, what is kept for a box asked by
+        message, and all that was remembered, if those words are still what is selected.
+        Forgotten either way: the next thing said or done settles it."""
         correction, self._correction = self._correction, None
         if correction is None:
             return None
-        mark, start, end, words, lead, edit = correction
+        mark, start, end, words, lead, edit = correction[:6]
         if box.selected != words or not box.before.endswith(lead):
             return None
-        return mark, start, end, edit
+        return mark, start, end, edit, correction
 
     def _paced(self) -> bool:
         """Whether keys go to the program in front one at a time, about a hundred a second."""
@@ -653,8 +686,30 @@ class KeysTarget:
         winapi.tap_shift(window)
         return True
 
+    def _types_back(self, text: str) -> bool:
+        """Whether `text`, read from a box, would be the same again if it were typed
+        there: one line of ordinary characters. (A Tab goes to the next box of a form,
+        and a line break isn't one thing in every program.)"""
+        return bool(text) and not any(c in text for c in "\n\r\t\ufffc" + PARAGRAPH + LINE)
+
+    def _taken(self, box, delete_before: int, delete_after: int):
+        """What a phrase said now takes the place of, for "scratch that" to put back:
+        (what is taken out just before the selection, the selection, what is taken out
+        just after it). None with nothing selected, or where it couldn't be typed back
+        as it was, or is longer than gets typed back."""
+        if not box.selected:
+            return None
+        lead = box.before[len(box.before) - delete_before:] if delete_before else ""
+        trail = box.after[:delete_after]
+        whole = lead + box.selected + trail
+        if len(whole) > (FAR_PACED if self._paced() else FAR) or not self._types_back(whole):
+            return None
+        return lead, box.selected, trail
+
     def _insert(self, box, text: str, delete_before: int, delete_after: int) -> dict:
         back = self._correcting(box)
+        phrase = Typed(text)
+        phrase.was = self._taken(box, delete_before, delete_after)
         if not (text and not delete_before and not delete_after and self._hand_over(text)):
             steps = steps_for_insert(text, delete_before, delete_after, bool(box.selected))
             if steps:
@@ -662,15 +717,49 @@ class KeysTarget:
         reply = {"ok": True, "text": text}
         if back is not None:
             # After "correct ...": back to where the cursor was before it.
-            mark, start, end, edit = back
+            mark, start, end, edit, phrase.correction = back
             went = bool(edit) and self._back_in_edit(edit, text, delete_before, delete_after)
             went = went or self._go_back(
                 steps_back(mark, start, end, arrow_length(text), delete_before, delete_after))
             reply["back" if went else "too_far"] = True
+            if went:
+                phrase.back = left_between(phrase.correction[6], delete_before, delete_after)
         if text:
-            self.history.append(text)
+            self.history.append(phrase)
             del self.history[:-HISTORY]
         return reply
+
+    def _away(self, box, phrase):
+        """The arrow keys that take the cursor to the end of the last phrase, where that
+        was said after "correct ..." and the cursor then went back to where it had been:
+        a list, or None if the text between the two is no longer what it was (something
+        has been typed or the cursor moved since), or is more than can be read."""
+        side, between = phrase.back
+        typed = plain_breaks(as_one_piece(phrase)).translate(UNSEEN)
+        gap = plain_breaks(between).translate(UNSEEN)
+        if len(typed) + len(gap) >= READ:
+            return None
+        if side == "after":
+            if not plain_breaks(box.before).translate(UNSEEN).endswith(typed + gap):
+                return None
+            return [("press", "left", presses(between))] if between else []
+        if not plain_breaks(box.after).translate(UNSEEN).startswith(gap + typed):
+            return None
+        return [("press", "right", presses(between) + arrow_length(phrase))]
+
+    def _put_back(self, phrase, away: list) -> dict:
+        """ "Scratch that" for a phrase that was said over selected words: it goes, and
+        they are typed again in its place and selected as they were, to be said again.
+        Where "correct ..." chose them, the cursor still goes back afterwards."""
+        lead, chosen, trail = phrase.was
+        steps = away + [("press", "backspace", typed_length(phrase))]
+        steps += steps_for_text(lead + chosen + trail)
+        if trail:
+            steps.append(("press", "left", arrow_length(trail)))
+        steps.append(("press", "shift+left", arrow_length(chosen)))
+        self._press(steps)
+        self._correction = phrase.correction
+        return {"ok": True, "restored": True}
 
     def _last(self, before: str):
         """The last phrase typed, if it is still what is just before the cursor."""
@@ -698,11 +787,22 @@ class KeysTarget:
             if name == "delete" and box.selected:
                 self._press([("press", "backspace", 1)])
                 return {"ok": True}
+            newest = self.history[-1] if self.history else None
+            if getattr(newest, "was", None) and getattr(newest, "back", None) and not box.selected:
+                # Said over words that "correct ..." chose, and the cursor went back from
+                # it: it is not what is before the cursor, but where it is, is known.
+                away = self._away(box, newest)
+                if away is None:
+                    self.history.clear()
+                    return {"ok": False, "why": "nothing to scratch"}
+                return self._put_back(self.history.pop(), away)
             last = self._last(before)
             if last is None or box.selected:
                 self.history.clear()
                 return {"ok": False, "why": "nothing to scratch"}
             self.history.pop()
+            if getattr(last, "was", None) and not getattr(last, "back", None):
+                return self._put_back(last, [])
             self._press([("press", "backspace", typed_length(last))])
             return {"ok": True}
         if name == "select_last":

@@ -98,6 +98,8 @@ def run(word, doc):
     check("delete before and after", text(), "a-ef")
     ask(op="command", name="undo")
     check("one undo takes back the whole phrase", text(), "abcdef")
+    check("redo that puts it back", (ask(op="command", name="redo").get("ok"), text()), (True, "a-ef"))
+    check("redo with nothing to do again", ask(op="command", name="redo").get("why"), "nothing to redo")
     reset("hello", 0)
     ask(op="insert", text="Well. ", capitalise_next=True)
     check("capital for what follows", text(), "Well. Hello")
@@ -238,6 +240,68 @@ def run(word, doc):
           (bool(ask(op="insert", text="crane").get("back")), text().split("\r")[-1]),
           (False, "a crane and a goose done again twice"))
     check("correct, not there", ask(op="command", name="correct", arg="zebra").get("why"), "can't find that")
+
+    # ---- "scratch that" after words were said over a selection: they come back, selected
+    def say(words, **extra):
+        return ask(op="insert", text=words, **extra)
+
+    def cmd(name, arg="", **extra):
+        return ask(op="command", name=name, arg=arg, **extra)
+
+    reset("the quick brown cat jumps")
+    cmd("select", "cat", nearest=True)
+    say("dog")
+    reply = cmd("scratch")
+    check("scratch after select puts the words back, selected",
+          (reply.get("restored"), text(), selection.Text), (True, "the quick brown cat jumps", "cat"))
+    say("fox")
+    check("and they can be said again", text(), "the quick brown fox jumps")
+    selection.EndKey(6, 0)
+    cmd("correct", "fox", nearest=True)
+    say("dog")
+    reply = cmd("scratch")
+    check("scratch after correct puts them back, selected",
+          (reply.get("restored"), text(), selection.Text), (True, "the quick brown fox jumps", "fox"))
+    check("said again, the cursor still goes back", bool(say("wolf").get("back")), True)
+    say(" high")
+    check("to the end, where it was", text(), "the quick brown wolf jumps high")
+    cmd("correct", "high", nearest=True)
+    say("higher")
+    cmd("scratch")
+    check("scratch after correcting the word the cursor is right after",
+          (text(), selection.Text), ("the quick brown wolf jumps high", "high"))
+    say("far")
+    say(" away")
+    check("and the cursor is after the new word", text(), "the quick brown wolf jumps far away")
+    selection.SetRange(0, 0)
+    cmd("correct", "wolf", nearest=True)
+    say("hound")
+    cmd("scratch")
+    check("scratch after correct with the cursor before the words",
+          (text(), selection.Text), ("the quick brown wolf jumps far away", "wolf"))
+    say("hare")
+    say("See ")
+    check("and it goes back before them", text(), "See the quick brown hare jumps far away")
+    selection.EndKey(6, 0)
+    cmd("correct", "hare", nearest=True)
+    say("stoat")
+    cmd("scratch")
+    cmd("unselect")
+    say("!")
+    check("unselect after it goes back to where the cursor was", text(), "See the quick brown hare jumps far away!")
+    cmd("select", "brown", nearest=True)
+    say("grey.", delete_after=1, capitalise_next=True)
+    check("a space taken out and a capital given beside the words", text(), "See the quick grey.Hare jumps far away!")
+    cmd("scratch")
+    check("both are put right with them",
+          (text(), selection.Text), ("See the quick brown hare jumps far away!", "brown"))
+    cmd("unselect")
+    selection.EndKey(6, 0)
+    say(" Yes")
+    reply = cmd("scratch")
+    check("a phrase that took nothing's place only goes, as ever",
+          (reply.get("restored"), text()), (None, "See the quick brown hare jumps far away!"))
+    check("one step for Word's own Undo", (doc.Undo(1), text()), (True, "See the quick brown hare jumps far away! Yes"))
 
     # ---- formatting
     reset("plain ")

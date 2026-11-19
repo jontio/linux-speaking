@@ -20,7 +20,10 @@
     ((text[i] === "'" || text[i] === "\u2019") && i > 0 && i + 1 < text.length &&
      LETTER.test(text[i - 1]) && LETTER.test(text[i + 1]));
 
-  let history = [];    // the text of recent phrases, newest last
+  // Recent phrases, newest last: { text, range, was }. `range` is where it was put, kept
+  // as the text around it changes; `was` is what it was said over, if words were
+  // selected: see taken().
+  let history = [];
   let choices = null;  // { ranges, layer, timer } while numbers are showing
   // After "correct ...": { mark, range, where }, the place the cursor was at, the words
   // chosen, and whether the cursor was "before", "among" or "after" them, until something
@@ -117,12 +120,42 @@
   }
 
   // ---- inserting ---------------------------------------------------------------
+  // Text as it is compared letter for letter: a space the editor keeps as one that
+  // doesn't break is a space, and a line break is not a letter.
+  const exact = (t) => t.replace(/\u00a0/g, " ").replace(/[\u2028\u2029\r\n]/g, "");
+
+  // What a phrase said now takes the place of, for "scratch that" to put back: the words
+  // selected (and how they are written, if there is more to them than letters: bold, a
+  // link), with what is taken out on either side of them. Null with nothing selected, or
+  // with a line break among what is: that is not put back.
+  function taken(m, corrected) {
+    const s = sel();
+    if (s.isCollapsed) return null;
+    const holder = document.createElement("div");
+    holder.appendChild(s.getRangeAt(0).cloneContents());
+    for (const inside of holder.querySelectorAll("*")) {
+      if (inside.nodeName === "BR" || BLOCKS.has(inside.nodeName)) return null;
+    }
+    const chosen = holder.textContent;
+    if (!chosen || /[\n\r]/.test(chosen)) return null;
+    const beside = around();
+    return {
+      lead: m.delete_before ? beside.before.slice(-m.delete_before) : "",
+      chosen,
+      trail: m.delete_after ? beside.after.slice(0, m.delete_after) : "",
+      html: holder.querySelector("*") ? holder.innerHTML : null,
+      corrected,
+      capital: null,
+    };
+  }
+
   function insert(m) {
     const s = sel();
     if (!s.rangeCount) return fail("no cursor");
     const text = m.text || "";
     if (!text && !m.delete_before && !m.delete_after) return ok({ text: "" });
     const back = correcting();
+    const was = taken(m, Boolean(back));
     if (!s.isCollapsed) run("delete"); // dictating over a selection replaces it
     if (m.delete_before) { extend("backward", m.delete_before); run("delete"); }
     if (m.delete_after) { extend("forward", m.delete_after); run("delete"); }
@@ -134,6 +167,14 @@
       else piece += ch;
     }
     flush();
+    let range = null;
+    if (was && text && s.rangeCount && s.isCollapsed) {
+      // Where the phrase is, kept as the text around it changes: once the cursor has gone
+      // back after "correct ...", it is by this that "scratch that" finds it.
+      extend("backward", Array.from(text).length);
+      if (exact(s.toString()) === exact(text)) range = s.getRangeAt(0).cloneRange();
+      s.collapseToEnd();
+    }
     if (m.capitalise_next) {
       const rest = around().after;
       const at = rest.search(/\p{L}/u);
@@ -142,10 +183,11 @@
         extend("forward", 1);
         run("insertText", rest[at].toUpperCase());
         move("backward", at + 1);
+        if (was) was.capital = { at, letter: rest[at] };
       }
     }
     if (text) {
-      history.push(text);
+      history.push({ text, range, was });
       if (history.length > 20) history.shift();
     }
     if (back && back.where !== "among" && s.rangeCount) {
@@ -165,7 +207,7 @@
   // Select the last phrase, if the cursor is still right after it.
   function selectLast() {
     if (!history.length) return false;
-    const text = history[history.length - 1];
+    const text = history[history.length - 1].text;
     const s = sel();
     if (!s.rangeCount) return false;
     if (!s.isCollapsed) s.collapseToEnd();
@@ -176,10 +218,67 @@
   }
 
   function scratch() {
+    const phrase = history[history.length - 1];
+    if (phrase && phrase.was && putBack(phrase)) {
+      history.pop();
+      return ok({ restored: true });
+    }
     if (!selectLast()) return fail("nothing to scratch");
     run("delete");
     history.pop();
     return ok();
+  }
+
+  // "Scratch that" for a phrase that was said over selected words: it goes, and they come
+  // back in its place, selected as they were, to be said again. Where "correct ..." chose
+  // them, the cursor still goes back afterwards, to where it is now. False, with nothing
+  // changed, if the phrase is neither where it was put nor right before the cursor.
+  function putBack(phrase) {
+    const s = sel();
+    if (!s.rangeCount) return false;
+    const was = phrase.was;
+    const mark = was.corrected ? placeNow() : null;
+    let atEnd = true;
+    if (phrase.range && phrase.text && exact(phrase.range.toString()) === exact(phrase.text)) {
+      if (mark) {
+        // Whether the cursor is right after the phrase: then it is to be after the words too.
+        atEnd = false;
+        if (mark.compareBoundaryPoints(Range.END_TO_END, phrase.range) >= 0) {
+          const gap = document.createRange();
+          gap.setStart(phrase.range.endContainer, phrase.range.endOffset);
+          gap.setEnd(mark.endContainer, mark.endOffset);
+          atEnd = gap.toString() === "";
+        }
+      }
+      setSelection(phrase.range.cloneRange());
+    } else if (!selectLast()) {
+      return false;
+    }
+    // In place of the phrase, which is selected. Words with more to them than letters
+    // (bold, a link) go back as they were written, where nothing else has to go in
+    // beside them: otherwise as their letters.
+    if (was.html && !was.lead && !was.trail) run("insertHTML", was.html);
+    else run("insertText", was.lead + was.chosen + was.trail);
+    if (was.capital) {
+      // The letter after the phrase, made a capital for it.
+      const rest = around().after;
+      const at = was.capital.at;
+      if (rest[at] === was.capital.letter.toUpperCase()) {
+        move("forward", at);
+        extend("forward", 1);
+        run("insertText", was.capital.letter);
+        move("backward", at + 1);
+      }
+    }
+    const end = placeNow();
+    move("backward", Array.from(was.trail).length);
+    extend("backward", Array.from(was.chosen).length);
+    if (squash(s.toString()) !== squash(was.chosen)) {
+      s.collapseToEnd(); // put back, but not to be told apart from what is around them
+      return true;
+    }
+    if (mark) chose(s.getRangeAt(0), atEnd ? end : mark);
+    return true;
   }
 
   // ---- finding words --------------------------------------------------------------
@@ -380,7 +479,7 @@
     }
     const changed = CASES[name](s.toString());
     run("insertText", changed);
-    if (last) history[history.length - 1] = changed;
+    if (last) history[history.length - 1].text = changed;
     else extend("backward", Array.from(changed).length);
     return ok();
   }
@@ -406,6 +505,7 @@
       case "new_paragraph": return insert({ text: PARAGRAPH });
       case "new_line": return insert({ text: LINE });
       case "undo": run("undo"); return ok();
+      case "redo": run("redo"); return ok();
       case "scratch": return scratch();
       case "delete":
         if (s.isCollapsed) return scratch();

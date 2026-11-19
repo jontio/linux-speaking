@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- **"Redo that."** It does again what "undo that" has just taken back: the program's
+  own Redo, in Word, Outlook, Writer, Thunderbird and Visual Studio Code. In a box that
+  is typed into it is the key for it: Ctrl+Y on Windows, Ctrl+Shift+Z on Linux. In
+  Kate, where "undo that" takes back the last phrase, it puts that phrase back. "Redo"
+  and "redo it" do the same. It has its own line in Settings, under Editing, beside
+  "Undo that". In a sentence it is only words: "I will redo that section" is typed.
+- **"Scratch that" after "select" or "correct" puts the old words back.** A phrase said
+  over selected words takes their place. "Scratch that" then took the phrase away and
+  left nothing where the words had been. Now they come back, selected as they were, so
+  they can be said again straight away; after "correct" the cursor still goes back to
+  its place once they have been. A space that was taken out beside them, and a capital
+  given to the next word, are put right too. It is the same for words selected by
+  hand. In Writer they come back just as they were, bold and all. In a box that is
+  typed into they are typed again, which is done for words on one line.
+- A shortcut can type its text and then press a key: write the text, and under it, on
+  a line that begins with a space, `keys: enter`. (A `\n` in a text was never an Enter:
+  nothing is escaped, so that a Windows path can be written as it is.)
+- **The spelling box hears letters better, and sooner.** It is now heard by the Medium
+  Whisper model where that is installed (loaded when the box is first used, let go ten
+  minutes after), told to expect letters, through a short listening window. Over the
+  alphabet and a few "B as in bravo"s in three voices that was 88 of 105 right at 0.7
+  seconds each, where it had been 72 at 1.1 seconds. Letters that sound alike (B, D, E,
+  G, P, T, V) are still the ones missed: for those, "B as in bravo" now goes by the
+  word, whatever the letter was heard as, even where the letter was heard as words
+  ("We are in Bravo" is how a recogniser once wrote it).
+- **And the model you dictate with hears the spelling box as well.** It knows your
+  voice and is the better at whole words: told to expect letters, the other wrote
+  "dumb" for "done". So a word of command ("done", "cancel", "backspace", "start again")
+  goes by your own model, letters go by the one that is best at letters, and where
+  that one wrote nothing the box knows, yours is taken. The two together got 117 of 140
+  letters and words right in four voices, where the one alone got 111. "In" and "an"
+  said by themselves are the letter N.
+- **The spelling box keeps up on a slower computer.** The Medium model is the best at
+  letters and the slowest over them, and on some computers each letter was a wait. How
+  long it takes is now measured as the box is used, over three letters. Where it takes
+  more than a second at its quickest, the Small model hears the box from then on,
+  beside the model you dictate with: 84 of 102 letters and words right where Medium
+  got 89, in a third of the time (on a laptop where Medium made each letter a wait of
+  two seconds, three quarters of a second).
+  What was found is remembered, and written in the log. The model is also loaded as
+  the box opens, not when the first letter has been said, and it follows one way of
+  writing a letter, not five, which was a sixth quicker and no worse. (A shorter
+  listening window was tried too, and cost too many letters to be worth it.)
+- In Settings, the mouse wheel scrolls the page when the pointer passes over the My
+  words box or the My shortcuts and commands box, where it used to stop and scroll the
+  box. Click into a box and the wheel is that box's.
+- **"Click OK".** A new option under Other programs in Settings: say "click" and the
+  name that a button, a link, a tick box, a tab or a menu shows, and it is pressed.
+  The window in front is asked what it has through the desktop's accessibility service,
+  and the one you named is pressed through the same service: no mouse is moved. If
+  nothing there has the name, the words are typed as words. Off to begin with.
+- **"What can I say?" can be narrowed by voice.** What you say while its Find box has
+  the keyboard goes into the box: say "select" and the list shows what has to do with
+  selecting. "Scratch that", "undo that", "select all" and the spelling box work there.
+- On Windows, a window of this program's own that is opened by voice now takes the
+  keyboard. It came up, but the keyboard stayed with the program that had it, so what
+  was typed or said went there and not into the window.
 - **Commands of your own.** A line under **My shortcuts and commands** in Settings can
   do something where a shortcut types something: `new tab = keys: ctrl+t` presses keys,
   `my notes = open: ~/notes.txt` opens a file, a folder or a web page, and `build it =
@@ -44,6 +101,27 @@
   level as a fan or a hiss does, also ends the phrase, and is taken as the room from
   then on. Talking that goes soft still rises and falls, and is kept as talking. The log
   says when a phrase ended this way, or at the limit.
+- **And where the room's noise rises and falls** (a fan that roars, a keyboard, wind on
+  the microphone), so that no pause shows at all, the voice itself is watched: a voice
+  has a pitch and such a noise has none. When a voice has been heard in a phrase and
+  then not for a second and a quarter, the phrase is over, though the sound goes on.
+  When a voice starts in the middle of the room's noise, the noise before it is left
+  out. And a phrase that ran to the limit with no voice in it at all is taken as the
+  room, which stops such a noise from starting one twenty-second phrase after another.
+  Measured on recorded sentences with a noise starting as the speaker did: acted on
+  about two seconds after the last word, where it had been about sixteen. Dictating in
+  a whisper is listened to as before: nothing is cut for want of a voice that was never
+  there.
+- **And where what is left is flat and has a pitch of its own** (a fan, an electrical
+  hum), which neither of those two catches, it is the flatness that gives it away:
+  talking rises and falls with every syllable, and of ten thousand one-second stretches
+  of recorded sentences not one was flat. A second of flat sound after something
+  clearly louder ends the phrase. A sound that is flat from its start for two seconds is
+  no phrase at all: nothing of it is taken down, it is the room from then on, and while
+  the room is flat like that a voice need only be a little louder than it to be heard.
+  A long "ummm" is not mistaken for it. Measured on recorded sentences with such a hum
+  coming on as the speaker began, at a quarter and at half the loudness of the voice:
+  acted on under a second after the last word, where it had been fifteen.
 - On Windows, what a command of your own opens or runs now comes to the front. Windows
   keeps a program that isn't in front from putting a window there, and this one lives in
   the tray: a folder opened by voice opened behind the other windows.

@@ -49,12 +49,30 @@ while dictation is asleep. So how quickly it wakes is how quick that model is, a
 Parakeet answers several times sooner than a Whisper model.
 
 One thing a Parakeet can't do is take a hint: be shown words to expect. So with a
-Parakeet chosen, the Small Whisper model is kept beside it for the two things that lean
-on a hint, the spelling box and the short second listen for punctuation said after a
-pause. Source code, in C and C++ files, leans on its hint most (the names in the file):
-it is heard by the Medium Whisper model if that is installed, which is loaded when you
-first dictate code and let go ten minutes after the last of it, and by Small if not.
-With a Whisper model chosen, that one model does all of this.
+Parakeet chosen, the Small Whisper model is kept beside it for the short second listen
+for punctuation said after a pause, which leans on one.
+
+Two things are heard by the Medium Whisper model where it is installed, whichever model
+you have chosen, because they are the hardest to hear and Medium does them best. It is
+loaded when it is first needed and let go ten minutes after it was last used; without
+it, Small does them.
+
+- **The spelling box.** Single letters are the hardest thing there is to tell apart.
+  Measured over the alphabet in five voices, Medium told to expect letters got 106 of
+  130 right, Small 93, and the Parakeets 62 and 73. No model gets them all: B, D, E, G,
+  P, T and V sound alike. Say **"B as in bravo"**, or just **"bravo"**, for a letter
+  that is misheard: then it is the word that settles it. The model you dictate with
+  hears the box as well, and settles the words of command, such as "done", which it is
+  the better at.
+
+  Medium is also the slowest over a letter, and a letter that is waited for is no good
+  either. So how long it takes on your computer is measured as you use the box, over
+  three letters, and where that is more than a second Small hears the box from then
+  on, in about a third of the time: with the model you dictate with beside it, 84 of
+  102 letters and words right where Medium got 89. The log says when that has
+  happened. To have it measured again, see
+  [Troubleshooting](TROUBLESHOOTING.md#on-either-system).
+- **Source code** in C and C++ files, which leans on a hint of the names in the file.
 Which model hears *you* best is for [the voice test](#testing-the-models-on-your-voice)
 to say.
 

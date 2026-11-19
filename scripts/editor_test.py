@@ -104,6 +104,10 @@ check("typed", text().endswith(" last words"), True)
 undo = cmd("undo")
 time.sleep(0.5)
 check("undo that takes back the phrase", (undo.get("ok"), text()), (True, before_undo))
+redo = cmd("redo")
+time.sleep(0.5)
+check("redo that brings it back", (redo.get("ok"), text().endswith(" last words")), (True, True))
+check("and it can still be scratched", (cmd("scratch").get("ok"), text()), (True, before_undo))
 cmd("doc_end")
 say(" one two three")
 cmd("word_left", "2")
@@ -184,5 +188,63 @@ cmd("all_caps")
 check("another command in between ends it", (bool(say("fourth").get("back")), text().split("\n")[-1]),
       (False, "fourth rows end again twice"))
 check("correct, not there", cmd("correct", "zebra").get("why"), "can't find that")
+
+# "Scratch that" after words were said over a selection: the phrase goes and they come
+# back, selected as they were.
+def last():
+    return text().split("\n")[-1]
+
+
+def chosen():
+    return r(op="text")["selected"]
+
+
+cmd("doc_end")
+say(PARAGRAPH + "the quick brown cat jumps")
+cmd("select", "cat")
+say("dog")
+back = cmd("scratch")
+check("scratch after select puts the words back, selected",
+      (back.get("restored"), last(), chosen()), (True, "the quick brown cat jumps", "cat"))
+say("fox")
+check("and they can be said again", last(), "the quick brown fox jumps")
+cmd("doc_end")
+cmd("correct", "fox")
+say("dog")
+back = cmd("scratch")
+check("scratch after correct puts them back, selected",
+      (back.get("restored"), last(), chosen()), (True, "the quick brown fox jumps", "fox"))
+check("said again, the cursor still goes back", bool(say("wolf").get("back")), True)
+say(" high")
+check("to the end, where it was", last(), "the quick brown wolf jumps high")
+cmd("correct", "high")
+say("higher")
+cmd("scratch")
+check("scratch after correcting the word the cursor is right after",
+      (last(), chosen()), ("the quick brown wolf jumps high", "high"))
+say("far")
+say(" away")
+check("and the cursor is after the new word", last(), "the quick brown wolf jumps far away")
+cmd("line_start")
+cmd("correct", "wolf")
+say("hound")
+cmd("scratch")
+check("scratch after correct with the cursor before the words",
+      (last(), chosen()), ("the quick brown wolf jumps far away", "wolf"))
+say("hare")
+say("See ")
+check("and it goes back before them", last(), "See the quick brown hare jumps far away")
+cmd("doc_end")
+cmd("select", "brown")
+say("grey.", delete_after=1, capitalise_next=True)
+check("a space taken out and a capital given beside the words", last(), "See the quick grey.Hare jumps far away")
+cmd("scratch")
+check("both are put right with them", (last(), chosen()), ("See the quick brown hare jumps far away", "brown"))
+cmd("unselect")
+cmd("doc_end")
+say(" Yes")
+back = cmd("scratch")
+check("a phrase that took nothing's place only goes, as ever",
+      (back.get("restored"), last()), (None, "See the quick brown hare jumps far away"))
 print("failures:", failures, flush=True)
 sys.exit(1 if failures else 0)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import collections
+import json
 import math
 import os
 import queue
@@ -23,9 +24,9 @@ from .targets import Targets
 from .vscode_target import VSCodeTarget
 from .words import Lexicon, repetitive
 from .settings import Settings, available_models, model_label
-from .segmenter import END, FELL_AWAY, LIMIT, START, Segmenter, SegmenterConfig
+from .segmenter import END, FELL_AWAY, LIMIT, NO_VOICE, ROOM, START, Segmenter, SegmenterConfig
 from .selecting import variants
-from . import (accessibility, actions, audio, coding, endings, models, money, opinions, quick, remote,
+from . import (accessibility, actions, audio, clicking, coding, endings, models, money, opinions, quick, remote,
                speech, spelling, training, vocabulary, voicetest)
 from .status import State, Status
 
@@ -152,6 +153,7 @@ def normalise(audio):
 
 
 SHORT_WINDOW_FRAMES = 1000  # ten seconds of sound, as Whisper counts it
+SHORT_SECONDS = 9.0         # sound up to this long goes through that window whole
 GUEST_MODELS = 3            # how many models are kept loaded for other computers
 
 
@@ -189,8 +191,9 @@ class Transcriber:
         self.quick = False  # give Whisper only as much sound as the phrase needs: see quick.py
         self.speech_only = True  # a noise Parakeet wrote a word for is left out: see speech.py
         self.left_out = ""       # what the last phrase was written as, if it was left out as a noise
-        self._code_name = ""     # the Whisper loaded for source code beside a Parakeet, if one is
-        self._code_used = 0.0    # and when it last heard any
+        self._extras = {}        # Whisper models loaded for source code or for spelling: when last used
+        self._letter_times = {}  # how long each model took to hear a letter, the last few times
+        self._letter_speeds = None  # and what was found before: see _too_slow
         self.not_speech = 0.0  # for the last phrase heard asleep: how likely it was noise
         self.ignored = ""      # and what it was taken for, if it was ignored as noise
         self.helper_name = config.WAKE_MODEL  # the Whisper that helps a Parakeet: see the class
@@ -259,7 +262,7 @@ class Transcriber:
             else:
                 self._model(name)
             self.dictation_name = name
-            self._code_name = ""
+            self._extras = {}
             for other in list(self._loaded):
                 if other not in self._in_use():
                     del self._loaded[other]  # free its memory
@@ -268,8 +271,7 @@ class Transcriber:
         """The models that are to stay loaded: the chosen one, its helper if it is a
         Parakeet, the one hearing source code just now, and the guests'."""
         helper = (self.helper_name,) if self._is_transducer(self.dictation_name) else ()
-        code = (self._code_name,) if getattr(self, "_code_name", "") else ()
-        return (self.dictation_name, *helper, *code, *self._guests)
+        return (self.dictation_name, *helper, *getattr(self, "_extras", {}), *self._guests)
 
     def _whisper_name(self, code: bool = False) -> str:
         """The Whisper model for listening that leans on a hint: the chosen model if it
@@ -279,24 +281,94 @@ class Transcriber:
             return self.dictation_name
         if not code:
             return self.helper_name
-        if not getattr(self, "_code_name", ""):
-            self._code_name = next((name for name in config.CODE_MODELS
-                                    if models.kind(config.MODEL_DIR, name) == "whisper"),
-                                   self.helper_name)
-            if self._code_name != self.helper_name:
-                log(f"source code is heard by {self._code_name}, loaded now")
-        self._code_used = time.monotonic()
-        return self._code_name
+        return self._extra(config.CODE_MODELS, self.helper_name, "source code")
 
-    def _let_go_of_code_model(self) -> None:
-        """The Whisper that was loaded for source code is let go when no code has been
-        dictated for a while: it is the biggest thing in memory."""
-        name = getattr(self, "_code_name", "")
-        if name and time.monotonic() - self._code_used > config.CODE_MODEL_IDLE:
-            self._code_name = ""
+    def _letters_name(self) -> str:
+        """The Whisper model that hears the spelling box: see config.SPELL_MODELS. The
+        first of them that is installed and is quick enough on this computer."""
+        usual = self.dictation_name if not self._is_transducer(self.dictation_name) \
+            else self.helper_name
+        here = [name for name in config.SPELL_MODELS
+                if models.kind(config.MODEL_DIR, name) == "whisper"]
+        quick = [name for name in here if not self._too_slow(name)] or here[-1:]
+        return self._extra(tuple(quick), usual, "the spelling box")
+
+    def _speeds(self) -> dict:
+        """How long each model was found to take over a letter on this computer."""
+        if getattr(self, "_letter_speeds", None) is None:
+            try:
+                with open(config.SPELL_SPEEDS, encoding="utf-8") as f:
+                    found = json.load(f)
+                self._letter_speeds = {str(k): float(v) for k, v in found.items()} \
+                    if isinstance(found, dict) else {}
+            except (OSError, ValueError, TypeError):
+                self._letter_speeds = {}
+        return self._letter_speeds
+
+    def _too_slow(self, name: str) -> bool:
+        return self._speeds().get(name, 0.0) > config.SPELL_SLOW
+
+    def _timed(self, name: str, seconds: float) -> None:
+        """One more letter heard by `name`, in so long. After three it is known how quick
+        the model is here: that is kept, and a model that is too slow is let go, so that
+        the next letter goes to the next one. It is the quickest of the three that is
+        gone by: a computer that was busy for one of them isn't a slow computer."""
+        times = getattr(self, "_letter_times", None)
+        if times is None:
+            times = self._letter_times = {}
+        mine = times.setdefault(name, [])
+        if len(mine) >= 3:
+            return                 # found out already, since the program was started
+        mine.append(seconds)
+        if len(mine) < 3:
+            return
+        usual = min(mine)
+        speeds = self._speeds()
+        speeds[name] = round(usual, 2)
+        try:
+            os.makedirs(os.path.dirname(config.SPELL_SPEEDS), exist_ok=True)
+            with open(config.SPELL_SPEEDS, "w", encoding="utf-8") as f:
+                json.dump(speeds, f)
+        except OSError:
+            pass
+        if usual > config.SPELL_SLOW:
+            log(f"the spelling box: {name} takes {usual:.1f} s over a letter on this computer "
+                f"at its quickest, which is too slow (over {config.SPELL_SLOW:g} s): "
+                "a quicker model hears the box from now on")
+            self._extras.pop(name, None)
             if name not in self._in_use():
                 self._loaded.pop(name, None)
-                log(f"no source code for a while: {name} let go")
+
+    def ready_for_letters(self) -> None:
+        """The spelling box has been opened: load the model that hears it now, so that
+        the first letter isn't kept waiting for that."""
+        with self.lock:
+            try:
+                self._model(self._letters_name())
+            except Exception as e:
+                log(f"the model for the spelling box could not be loaded: {type(e).__name__}")
+
+    def _extra(self, wanted: tuple, otherwise: str, what_for: str) -> str:
+        """The first of `wanted` that is installed, kept loaded for a while for the one
+        purpose: or `otherwise`, which is loaded anyway."""
+        name = next((each for each in wanted
+                     if models.kind(config.MODEL_DIR, each) == "whisper"), otherwise)
+        if name in (self.dictation_name, otherwise):
+            return name
+        if name not in self._extras and name not in self._loaded:
+            log(f"{what_for} is heard by {name}, loaded now")
+        self._extras[name] = time.monotonic()
+        return name
+
+    def _let_go_of_code_model(self) -> None:
+        """A Whisper that was loaded for source code or for spelling is let go when it
+        hasn't been used for a while: it is the biggest thing in memory."""
+        for name, used in list(getattr(self, "_extras", {}).items()):
+            if time.monotonic() - used > config.CODE_MODEL_IDLE:
+                del self._extras[name]
+                if name not in self._in_use():
+                    self._loaded.pop(name, None)
+                    log(f"not used for a while: {name} let go")
 
     def answer(self, header: dict, audio) -> dict:
         """One piece of listening done for another computer: see remote.py."""
@@ -324,7 +396,8 @@ class Transcriber:
                 else:
                     text = self.transcribe(audio, awake, str(header.get("prompt", "")), model,
                                            quick=bool(header.get("quick", False)), exact=exact,
-                                           speech_only=wanted, code=code)
+                                           speech_only=wanted, code=code,
+                                           letters=bool(header.get("letters", False)))
             reply = {"ok": True, "text": str(text), "model": model,
                      "not_speech": 0.0 if awake else self.not_speech,
                      "ignored": "" if awake else self.ignored,
@@ -416,19 +489,70 @@ class Transcriber:
             )
             return " ".join(s.text.strip() for s in segments).strip()
 
-    def _hear_short(self, model, audio) -> str:
+    def _hear_short(self, model, audio, hint: str = "", beam: int = 0) -> str:
+        """A short sound through a short window. `hint` is shown to the model as what
+        came before, as a prompt is: for the spelling box, that it is letters. `beam` is
+        how many ways of writing it are followed at once: the usual number if not given."""
         from faster_whisper.audio import pad_or_trim
         from faster_whisper.tokenizer import Tokenizer
         tokenizer = Tokenizer(model.hf_tokenizer, model.model.is_multilingual,
                               task="transcribe", language="en")
-        prompt = model.get_prompt(tokenizer, [], without_timestamps=True)
+        before = tokenizer.encode(" " + hint.strip()) if hint.strip() else []
+        prompt = model.get_prompt(tokenizer, before, without_timestamps=True)
         features = pad_or_trim(model.feature_extractor(audio), SHORT_WINDOW_FRAMES)
         result = model.model.generate(model.encode(features), [prompt],
-                                      beam_size=config.BEAM, max_length=32)[0]
+                                      beam_size=beam or config.BEAM,
+                                      max_length=len(prompt) + 32 if before else 32)[0]
         return tokenizer.decode(result.sequences_ids[0]).strip()
 
+    def letters(self, audio, hint: str) -> str:
+        """What was said into the spelling box: a letter or a few, by the model that tells
+        letters apart best, told that it is letters. Through the short window, which a
+        letter fits in many times over, and which takes a quarter of the time."""
+        with self.lock:
+            self._let_go_of_code_model()
+            name = self._letters_name()
+            first = None
+            if len(audio) <= SHORT_SECONDS * config.RATE and self._short_window:
+                was_loaded = name in self._loaded
+                model = self._model(name)
+                started = time.monotonic()
+                try:
+                    # One way of writing it followed, not five: a letter is one piece,
+                    # and it was no worse so (91 of 102 against 89) and a sixth quicker.
+                    first = self._hear_short(model, audio, hint, beam=1)
+                    if was_loaded:     # not the time it was loaded: that is no measure
+                        self._timed(name, time.monotonic() - started)
+                except Exception as e:  # an older library that insists on the half minute
+                    self._short_window = False
+                    log(f"the short listening window isn't available: {e}")
+            if first is None:
+                first = self._transcribe(audio, True, hint, name, False)
+            # And the model chosen for dictation hears it as well: it knows the voice, and
+            # is the better at whole words, "done" among them. See spelling.choose.
+            second = self._chosen_hears(audio, hint, name)
+            return first if second is None else spelling.choose(first, second)
+
+    def _chosen_hears(self, audio, hint: str, besides: str):
+        """What the model chosen for dictation makes of something said into the spelling
+        box: None if it is the model that has heard it already, or can't be asked."""
+        chosen = self.dictation_name
+        try:
+            if self._is_transducer(chosen):
+                return self._by_transducer(chosen, audio, speech_only=False)
+            if chosen != besides and not self._too_slow(chosen) and self._short_window \
+                    and len(audio) <= SHORT_SECONDS * config.RATE:
+                started = time.monotonic()
+                heard = self._hear_short(self._model(chosen), audio, hint)
+                self._timed(chosen, time.monotonic() - started)
+                return heard
+        except Exception as e:
+            log(f"the chosen model could not be asked about the spelling box: {type(e).__name__}")
+        return None
+
     def transcribe(self, audio, awake: bool, prompt: str = "", model: str = "",
-                   quick=None, exact: bool = False, speech_only=None, code: bool = False) -> str:
+                   quick=None, exact: bool = False, speech_only=None, code: bool = False,
+                   letters: bool = False) -> str:
         """The words in `audio`, as the chosen model hears them: awake or asleep. `model`,
         `quick` and `speech_only` are for a guest that says which model it wants, whether
         to try the quick way, and whether a noise written as a word is to be left out;
@@ -436,6 +560,8 @@ class Transcriber:
         depends on the prompt, such as spelled letters, which a Parakeet can't be given:
         with one chosen that goes to a Whisper model, and with `code`, to the one kept
         for source code."""
+        if awake and exact and letters:
+            return self.letters(audio, prompt)      # the spelling box: see letters()
         with self.lock:
             self._let_go_of_code_model()
             model = model or self.dictation_name
@@ -804,6 +930,7 @@ class Engine:
     # ---- microphone -----------------------------------------------------
     def _listen(self, recorder) -> None:
         segmenter = Segmenter(SegmenterConfig(min_level=config.MIN_LEVEL, ratio=config.RATIO))
+        watch = speech.VoiceWatch()   # sees the voice stop where the room is too loud for a pause
         loudest, count, best = 0.0, 0, 0
         clip_at = config.CLIP_LEVEL * 32767
         clipped, loud_for = False, 0  # `loud_for` holds the warning for a second
@@ -838,32 +965,71 @@ class Engine:
             if event == START:
                 best = 0
                 phrase = list(preroll)
+                watch.start(len(phrase))
                 self._hearing(True)
             if segmenter.in_phrase or event == END:
                 phrase.append(frame)
             else:
                 preroll.append(frame)
+            if segmenter.in_phrase and event is None:
+                seen = watch.feed(frame)
+                if seen == speech.BEGAN_LATE:
+                    # The room's noise began this phrase, and only now is there a voice in
+                    # it. What came before is dropped, so that the voice isn't kept waiting
+                    # behind it, or cut short by the limit on how long a phrase may be.
+                    dropped = len(phrase) - watch.frames_for(watch.BEFORE)
+                    if dropped > 0:
+                        phrase = phrase[dropped:]
+                        watch.began_at(len(phrase))
+                        segmenter.began_again(len(phrase))
+                        log(f"a voice began {dropped * config.FRAME / config.RATE:.1f} s into a "
+                            "sound: what came before it was left out")
+                elif seen == speech.GONE:
+                    # The voice has stopped and the sound goes on. The phrase is over: all
+                    # of it up to a moment after the voice was last heard.
+                    spare = watch.frames_since_voice() - watch.frames_for(watch.AFTER)
+                    if 0 < spare < len(phrase):
+                        phrase = phrase[:-spare]
+                    event = segmenter.cut() or None
+            if event == END and segmenter.ended_by == ROOM:
+                # No phrase: a fan, a hum, flat from its start. Nothing of it is taken
+                # down, and it is the room from now on.
+                seconds = len(phrase) * config.FRAME / config.RATE
+                phrase = []
+                preroll.clear()
+                log(f"a sound of {seconds:.1f} s was the room, as flat as a fan: left out "
+                    f"(room {segmenter.room_was:.0f}, now {segmenter.noise:.0f})")
+                if self.status.state is State.HEARING:
+                    self.status.state = State.AWAKE
+                    self.on_change()
+                continue
             if event == END:
                 audio = np.concatenate(phrase).astype(np.float32) / 32768.0
                 phrase = []
                 preroll.clear()
                 self.status.voice_db = best
+                if segmenter.ended_by == LIMIT and not watch.heard:
+                    segmenter.was_the_room()   # twenty seconds with no voice in them
                 seconds = len(audio) / config.RATE
-                if segmenter.ended_by in (FELL_AWAY, LIMIT) or seconds >= config.LONG_PHRASE:
+                if segmenter.ended_by in (FELL_AWAY, NO_VOICE, LIMIT) or seconds >= config.LONG_PHRASE:
                     # Not the usual pause, or a long time coming: said in the log, in
                     # loudness only. It is what to look at when somebody says a phrase
                     # took a long time to be acted on: whether the room was louder than
                     # it was taken to be, and whether what was left was a steady noise or
                     # something that rose and fell, as other people talking does.
+                    low, high = segmenter.tail_spread
                     how = {FELL_AWAY: "because the sound fell away from the voice, though the "
                                       "room stayed louder than it had been",
+                           NO_VOICE: "because the voice in it had stopped, though the sound "
+                                     "went on",
                            LIMIT: "at the longest a phrase may be: the sound never fell quiet"
                            }.get(segmenter.ended_by, "at a pause")
                     voice = segmenter.voice_was or 1.0
                     log(f"a phrase of {seconds:.1f} s ended {how} (voice {segmenter.voice_was:.0f}, "
                         f"its last second {segmenter.tail_was:.0f}, "
                         f"{100 * segmenter.tail_was / voice:.0f}% of the voice, "
-                        f"{'level' if segmenter.tail_steady else 'rising and falling'}; "
+                        f"{'level' if segmenter.tail_steady else 'rising and falling'}, "
+                        f"from {low:.2f} to {high:.2f} of its middle; "
                         f"room {segmenter.room_was:.0f}, now {segmenter.noise:.0f})")
                 self._phrases.put(("audio", audio))
         self.status.level = self.status.meter = 0
@@ -1288,7 +1454,7 @@ class Engine:
             self.status.state = State.THINKING
             self.on_change()
             prompt = spelling.PROMPT
-            exact = {"exact": True}
+            exact = {"exact": True, "letters": True}
         elif awake:
             self.status.state = State.THINKING
             self.on_change()
@@ -1440,6 +1606,7 @@ class Engine:
             self.status.last_heard = text
             self.status.spelling, self.status.spelled = True, ""
             log("spelling started")
+            self._letters_ahead()
             self._back_to_awake()
             return
         if isinstance(action, Command) and action.name in ("wake", "sleep"):
@@ -1469,6 +1636,13 @@ class Engine:
             log(f"shortcut, {len(typed)} characters: {outcome(reply)}")
             self._back_to_awake()
             return
+        if isinstance(action, Command) and action.name == "click":
+            # A button, a link, a tick box or a menu of the program in front, by its name.
+            # If nothing there has the name, those were only words, and are typed.
+            if self._click(text, action.arg):
+                self._back_to_awake()
+                return
+            action = Dictation(text)
         if isinstance(action, Command) and action.name == "app":
             # For this program's own windows. "Close that window" with none of them open
             # is only words, and is typed.
@@ -1577,6 +1751,7 @@ class Engine:
                     self.status.last_heard += ("  (the cursor will stay there: this program's "
                                                "Linux Speaking extension is an older one)")
                 log(f"command {action.name}: {outcome(reply)}"
+                    + (", and the words it was said over are back" if reply.get("restored") else "")
                     + (", as select: the program's extension is older" if older else ""))
         if isinstance(action, Dictation) and self.status.commands_only:
             # Commands only: what is no command is not typed, and is not kept. Said, but
@@ -1709,7 +1884,9 @@ class Engine:
                 elif step[0] == "wait":
                     doer.wait(step[1])
                 elif step[0] == "type":
-                    reply = self._dictate(step[1], exact=True, as_written=True)
+                    top, _, rest = step[1].partition("\n")
+                    reply = self._dictate(top, exact=True, as_written=True,
+                                          then="\u2028" + rest.replace("\n", "\u2028") if rest else "")
                     self._note(reply)
                     if not reply.get("ok"):
                         raise actions.ActionError("")     # said already: see _note
@@ -1729,6 +1906,40 @@ class Engine:
                 self.tell(said, logged=f"a command did: {step[0]}")
                 self._note_what_came_forward(step[0])
         log(f"own command ({actions.kinds(steps)}): done" + (f", keys to {where}" if where else ""))
+
+    def _letters_ahead(self) -> None:
+        """The spelling box is being opened: the model that hears letters is loaded now,
+        to one side, so that the first letter isn't kept waiting for it. (Not where
+        another computer does the listening: it is that one's model then.)"""
+        ready = getattr(getattr(self, "_transcriber", None), "ready_for_letters", None)
+        if ready is not None and getattr(self, "_offload", None) is None:
+            threading.Thread(target=ready, daemon=True).start()
+
+    def _click(self, text: str, name: str) -> bool:
+        """Press what is called `name` in the window in front. True if that was done, or
+        if it was there and couldn't be pressed (which is said): False if nothing there
+        has the name, and the phrase is to be typed as the words it then is."""
+        press = getattr(self, "_presser", None) or clicking.click
+        try:
+            reply = press(name)
+        except clicking.CantClick as e:
+            self.status.last_heard = text
+            self.tell(str(e), "problem", logged="a click couldn't be done")
+            log("command click: there, but it couldn't be pressed")
+            return True
+        except Exception as e:   # nothing here may stop the listening
+            log(f"command click: {type(e).__name__}: {e}")
+            return False
+        if not reply.get("ok"):
+            log(f"command click: {reply.get('why', 'not done')}, so it is typed"
+                + (f" ({reply['looked_at']} things looked at)" if "looked_at" in reply else ""))
+            return False
+        self.status.last_heard = text
+        self._last_typed = None           # a command in between: see _dictate
+        self._typed_sound = None
+        where = clicking.in_front()
+        log(f"command click: {reply.get('kind', 'pressed')}" + (f", in {where}" if where else ""))
+        return True
 
     def _note_what_came_forward(self, kind: str) -> None:
         """A moment after a command opened or ran something, put in the log which program

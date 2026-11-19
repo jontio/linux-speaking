@@ -428,6 +428,7 @@ name is added to `APPS` and it is started with accessibility on.
 | `PYTHONPATH=. scripts/test-vscode.sh` | The VS Code extension, in a separate VS Code window with its own settings, which shows briefly | VS Code, a desktop session |
 | `PYTHONPATH=. scripts/test-form.sh` | Any program's text boxes, using a small form window that shows briefly | PyQt6, a desktop session |
 | `PYTHONPATH=. scripts/test-editor.sh` | Kate's editor, using a scratch KWrite window that shows briefly | KWrite, a desktop session |
+| `PYTHONPATH=. scripts/test-click.sh` | "Click OK": a scratch window with a button and a tick box, pressed by their names; it shows briefly | PyQt6, a desktop session |
 | `venv\Scripts\python.exe app\scripts\word_test.py` (on Windows, in the install folder) | Word, using a blank document of its own that it closes unsaved | Word |
 | `venv\Scripts\python.exe app\scripts\outlook_test.py` (the same) | An Outlook message, using a new one of its own that it discards | Classic Outlook, open |
 

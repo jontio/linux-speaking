@@ -50,6 +50,7 @@ the rules to be tried against the noises that are really made there.
 """
 from __future__ import annotations
 
+import collections
 import os
 import re
 import stat
@@ -242,6 +243,77 @@ def voiced(audio) -> float:
     if run >= RUN:
         total += run
     return total / max(1, int(loud.sum()))
+
+
+BEGAN_LATE, GONE = "the voice began late", "the voice has gone"
+
+
+class VoiceWatch:
+    """Whether there is still a voice in what is being listened to: looked at a few times
+    a second, while a phrase is being taken down.
+
+    A phrase ends at the pause after it, and a pause is quiet. In a room that isn't
+    quiet (a fan that roars, a keyboard, wind on the microphone) no pause comes: the
+    phrase ran on to its limit, twenty seconds, before anything was done with what had
+    been said. But a voice has a pitch and such a room has none, so the voice can be
+    seen to have stopped though the sound goes on.
+
+    feed() is given each frame of the phrase. It answers GONE when a voice has been
+    heard in the phrase and none has been for `gone` seconds: the phrase is over. And it
+    answers BEGAN_LATE when a voice is first heard well into a phrase that the room's
+    noise had started: what came before it is only the room.
+
+    Nothing is ever cut for want of a voice that was never there: somebody who dictates
+    in a whisper is listened to as before."""
+
+    WINDOW = 1.0   # seconds of sound each look takes in
+    EVERY = 0.25   # seconds between one look and the next
+    HEARD = 0.15   # the share of a look's loud part that has to be voice: see voiced()
+    GONE_AFTER = 1.25  # seconds without a voice, once there has been one, that end the phrase
+    LATE = 2.0     # a voice first heard later than this began in a phrase the room had started
+    BEFORE = 1.5   # seconds kept from before the look that first heard a voice
+    AFTER = 0.25   # and seconds kept after the last look that did
+
+    def __init__(self, rate: int = config.RATE, frame: int = config.FRAME):
+        self.per_second = rate / frame
+        self.recent = collections.deque(maxlen=round(self.WINDOW * self.per_second))
+        self.every = max(1, round(self.EVERY * self.per_second))
+        self.start()
+
+    def start(self, frames: int = 0) -> None:
+        """A phrase begins: `frames` of it have been kept already."""
+        self.frames = frames        # how many frames of this phrase there have been
+        self.heard = False          # whether a voice has been heard in it
+        self.last = 0               # the frame at which a look last heard one
+        self.recent.clear()
+        self._since_look = 0
+
+    def began_at(self, frames: int) -> None:
+        """The phrase was cut down to its last `frames`, at which a voice was just heard."""
+        self.frames = self.last = frames
+
+    def frames_since_voice(self) -> int:
+        return self.frames - self.last if self.heard else 0
+
+    def frames_for(self, seconds: float) -> int:
+        return round(seconds * self.per_second)
+
+    def feed(self, frame):
+        """One more frame of the phrase (its samples, as whole numbers). BEGAN_LATE, GONE,
+        or None for nothing to do."""
+        self.recent.append(frame)
+        self.frames += 1
+        self._since_look += 1
+        if self._since_look < self.every or len(self.recent) < self.recent.maxlen:
+            return None
+        self._since_look = 0
+        sound = np.concatenate(self.recent).astype(np.float64) / 32768.0
+        if voiced(sound) >= self.HEARD:
+            first, self.heard, self.last = not self.heard, True, self.frames
+            return BEGAN_LATE if first and self.frames > self.frames_for(self.LATE) else None
+        if self.heard and self.frames - self.last >= self.frames_for(self.GONE_AFTER):
+            return GONE
+        return None
 
 
 def told(numbers) -> str:

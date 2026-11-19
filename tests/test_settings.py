@@ -15,11 +15,20 @@ class Defaults(unittest.TestCase):
         # off are in the list below this one.)
         self.assertEqual([key for key in off if not key.startswith("say:")],
                          ["aloud", "quick_listening", "second_opinions", "short_wake", "noise",
-                          "enter", "keep_final", "other_apps", "commands_only", "run_programs"])
+                          "enter", "keep_final", "other_apps", "click", "commands_only", "run_programs"])
         self.assertEqual([key for key in off if key.startswith("say:")],
                          ["say:period", "say:quote", "say:dash", "say:slash"])
         self.assertEqual(s.spoken_off(), ["dash", "end quote", "period", "quote", "slash", "unquote"])
-        self.assertEqual(s.disabled_commands(), frozenset({"enter", "short_wake", "noise"}))  # off until asked for
+        self.assertEqual(s.disabled_commands(), frozenset({"enter", "short_wake", "noise", "click"}))  # off until asked for
+
+    def test_a_command_that_takes_words_says_so_in_its_name(self):
+        labels = {i.key: i.label for i in ITEMS}
+        for key, word in (("select", "Select"), ("correct", "Correct"), ("click", "Click")):
+            self.assertTrue(labels[key].startswith(f'"{word}" and the words'), labels[key])
+        # And "click" says whose words, in the line itself: nothing of it is put away in
+        # its help, as what a long line says in brackets is.
+        self.assertEqual(labels["click"],
+                         '"Click" and the words on a button, link or menu in the window in front')
 
     def test_the_words_that_wake_it_and_send_it_to_sleep(self):
         s = Settings()
@@ -44,7 +53,7 @@ class SaveAndLoad(unittest.TestCase):
         s.set("say:full stop", False)
         again = Settings.load(path)
         self.assertFalse(again.enabled("scratch"))
-        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter", "short_wake", "noise"}))
+        self.assertEqual(again.disabled_commands(), frozenset({"scratch", "enter", "short_wake", "noise", "click"}))
         self.assertEqual(again.spoken_off(),   # with the signs that are off to begin with
                          ["dash", "end quote", "full stop", "quote", "slash", "unquote"])
 
@@ -154,6 +163,23 @@ class Effects(unittest.TestCase):
         self.assertEqual(move_steps("para_start", "x", "rest"), MOVES["para_start"])
         self.assertEqual(move_steps("para_start", "", "rest")[0][1], "gotoPreviousParagraph")
         self.assertEqual(move_steps("line_end", "", ""), MOVES["line_end"])
+
+    def test_redo_that_and_how_it_gets_written(self):
+        for heard in ("Redo that.", "Redo.", "Redo it.", "Re-do that.", "OK, redo that, please."):
+            self.assertEqual(interpret(heard, True), Command("redo"), heard)
+        # In a sentence it is only words, and so it is with its own option unticked.
+        for heard in ("I will redo that section.", "Redo the", "Redo that section."):
+            self.assertEqual(interpret(heard, True), Dictation(heard), heard)
+        self.assertEqual(interpret("Redo that.", True, frozenset({"redo"})), Dictation("Redo that."))
+        self.assertEqual(interpret("Undo that.", True, frozenset({"redo"})), Command("undo"))
+
+    def test_redo_that_has_a_line_of_its_own_under_editing_after_undo_that(self):
+        from dictation.settings import HELP
+        keys = [item.key for item in ITEMS if item.group == "Editing"]
+        self.assertEqual(keys.index("redo"), keys.index("undo") + 1)
+        item = next(item for item in ITEMS if item.key == "redo")
+        self.assertEqual((item.label, item.default), ('"Redo that"', True))
+        self.assertIn("Redo", HELP["redo"])
 
     def test_undo_that_and_how_it_gets_misheard(self):
         for heard in ("Undo that.", "Undo.", "Undue that.", "On do that."):

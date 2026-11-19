@@ -212,6 +212,9 @@ class WebBoxTarget(KeysTarget):
         # for "scratch that", is what really went in.
         return super()._insert(box, typable(text), delete_before, delete_after)
 
+    def _types_back(self, text: str) -> bool:
+        return super()._types_back(text) and typable(text) == text
+
     def _select(self, box, phrase: str, correcting: bool = False) -> dict:
         """Select the nearest match for `phrase`, by moving the cursor there with the
         arrow keys and holding Shift across it. `correcting` is for "correct ...": where
