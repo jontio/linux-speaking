@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-from dictation import config, engine as engine_module, tidy
+from dictation import config, engine as engine_module, joins, tidy
 from dictation.engine import Transcriber, mark_at_join, split_at_lead
 
 from tests.test_engine_telling import bare
@@ -60,10 +60,10 @@ class CutAtTheJoin(unittest.TestCase):
 
 
 class Result:
-    def __init__(self, tokens, timestamps=None):
+    def __init__(self, tokens, timestamps=None, probs=None):
         self.tokens = tokens
         self.timestamps = timestamps
-        self.ys_log_probs = None
+        self.ys_log_probs = probs
         self.text = "".join(tokens).strip()
 
 
@@ -85,8 +85,8 @@ class Recogniser:
     def decode_stream(self, stream):
         seconds = len(stream.audio) / config.RATE
         self.heard.append(seconds)
-        tokens, times = self.script(seconds)
-        stream.result = Result(tokens, times)
+        told = self.script(seconds)
+        stream.result = Result(told[0], told[1], told[2] if len(told) > 2 else None)
 
 
 def transcriber(recogniser):
@@ -136,6 +136,70 @@ class TheHearing(unittest.TestCase):
             first = ears.transcribe(audio, True, lead=2 * config.RATE)
             ears.transcribe(audio[:config.RATE], True)       # (another phrase heard meanwhile)
         self.assertEqual(first.at_join, (".", True))
+
+    def test_the_mark_at_the_join_comes_with_how_sure_it_was_written(self):
+        import math
+
+        def script(seconds):
+            if seconds > 2.5:
+                return ([" one", ".", " Two"], [0.3, 0.6, 2.2],
+                        [-0.1, -0.7, -0.2])            # (ys_log_probs, a token each)
+            return ([" two"], [0.1], [-0.1])
+        ears = transcriber(Recogniser(script))
+        audio = np.zeros(3 * config.RATE, dtype=np.float32)
+        with mock.patch.object(engine_module, "log"):
+            text = ears.transcribe(audio, True, lead=2 * config.RATE)
+        self.assertEqual(text.at_join, (".", True))
+        self.assertAlmostEqual(text.at_join_sure, math.exp(-0.7), places=4)
+
+    def test_a_quote_after_the_mark_comes_with_the_marks_own_sureness(self):
+        import math
+
+        def script(seconds):
+            if seconds > 2.5:
+                return ([" one", ".", "”", " Two"], [0.3, 0.6, 0.9, 2.2],
+                        [-0.1, -0.7, -0.05, -0.2])      # (the quote is surer than the stop)
+            return ([" two"], [0.1], [-0.1])
+        ears = transcriber(Recogniser(script))
+        audio = np.zeros(3 * config.RATE, dtype=np.float32)
+        with mock.patch.object(engine_module, "log"):
+            text = ears.transcribe(audio, True, lead=2 * config.RATE)
+        self.assertEqual(text.at_join, (".", True))
+        self.assertAlmostEqual(text.at_join_sure, math.exp(-0.7), places=4)
+
+    def test_a_guest_is_told_how_sure_the_join_was_heard(self):
+        import math
+
+        def script(seconds):
+            if seconds > 2.5:
+                return ([" one", ".", " Two"], [0.3, 0.6, 2.2], [-0.1, -0.7, -0.2])
+            return ([" two"], [0.1], [-0.1])
+        ears = transcriber(Recogniser(script))
+        ears._guests, ears.not_speech, ears.ignored = [], 0.0, ""
+        ears._guest_model = lambda header: "parakeet-x"
+        ears._let_go_of_code_model = lambda: None
+        lead = np.zeros(2 * config.RATE, dtype=np.float32)
+        phrase = np.zeros(1 * config.RATE, dtype=np.float32)
+        with mock.patch.object(engine_module, "log"):
+            reply = ears.answer({"kind": "phrase", "awake": True, "lead": 2 * config.RATE},
+                                np.concatenate([lead, phrase]))
+        self.assertEqual(reply["join"], [".", True])
+        self.assertAlmostEqual(reply["join_sure"], math.exp(-0.7), places=4)
+
+    def test_a_guest_is_not_told_a_sureness_it_has_not(self):
+        def script(seconds):
+            return ([" one", ".", " Two"], [0.3, 0.6, 2.2]) if seconds > 2.5 else ([" two"], [0.1])
+        ears = transcriber(Recogniser(script))          # (no ys_log_probs at all)
+        ears._guests, ears.not_speech, ears.ignored = [], 0.0, ""
+        ears._guest_model = lambda header: "parakeet-x"
+        ears._let_go_of_code_model = lambda: None
+        lead = np.zeros(2 * config.RATE, dtype=np.float32)
+        phrase = np.zeros(1 * config.RATE, dtype=np.float32)
+        with mock.patch.object(engine_module, "log"):
+            reply = ears.answer({"kind": "phrase", "awake": True, "lead": 2 * config.RATE},
+                                np.concatenate([lead, phrase]))
+        self.assertIn("join_sure", reply)
+        self.assertIsNone(reply["join_sure"])
 
     def test_without_the_models_times_the_phrase_is_heard_by_itself(self):
         recogniser = Recogniser(lambda seconds: ([" all", " of", " it"] if seconds > 1.5 else [" it"], None))
@@ -268,14 +332,73 @@ class WhatGoesInFront(unittest.TestCase):
         self.assertEqual(page.text, "I will send the report tomorrow. Thanks for your help")
         self.assertEqual(self.decider.asked, [])               # the words were not asked
 
-    def test_and_that_it_goes_on(self):
+    def test_an_empty_join_mark_is_no_telling_and_the_words_decide(self):
+        # (An empty mark heard at the join used to veto the words, which lost the full stop
+        # in "…a good job. It…". Nothing heard is no telling, not a "none".)
         page = Page()
         engine = self.engine(page)
         self.decider.answer = "."
         engine.handle_text("I will send the report.", True)
-        engine._heard_join = ("", False)
+        engine._heard_join = ("", False)          # (the joined hearing wrote no mark there)
+        engine._heard_join_sure = None
         engine.handle_text("tomorrow morning.", True)
-        self.assertEqual(page.text, "I will send the report tomorrow morning")
+        self.assertEqual(page.text, "I will send the report. Tomorrow morning")
+        self.assertTrue(self.decider.asked)       # (the words were asked, not the held stop kept)
+
+    def test_a_mark_heard_faintly_gives_way_to_the_words(self):
+        page = Page()
+        engine = self.engine(page)
+        self.decider.answer = "."
+        engine.handle_text("I will send the report.", True)
+        engine._heard_join = (",", False)
+        engine._heard_join_sure = 0.2            # (config.JOIN_SURE is 0.6)
+        engine.handle_text("tomorrow morning.", True)
+        self.assertEqual(page.text, "I will send the report. Tomorrow morning")
+        self.assertTrue(self.decider.asked)
+
+    def test_a_mark_heard_surely_is_taken(self):
+        page = Page()
+        engine = self.engine(page)
+        self.decider.answer = ""                 # the words would put nothing
+        engine.handle_text("I will send the report.", True)
+        engine._heard_join = (".", False)
+        engine._heard_join_sure = 0.95
+        engine.handle_text("tomorrow morning.", True)
+        self.assertEqual(page.text, "I will send the report. Tomorrow morning")
+        self.assertEqual(self.decider.asked, [])  # the words were not asked at all
+
+    def test_the_sureness_threshold_is_where_it_says(self):
+        for sure, wanted in ((0.6, "I will send the report. Tomorrow morning"),
+                             (0.5999, "I will send the report tomorrow morning")):
+            page = Page()
+            engine = self.engine(page)           # (the words would put nothing)
+            engine.handle_text("I will send the report.", True)
+            engine._heard_join = (".", False)
+            engine._heard_join_sure = sure
+            engine.handle_text("tomorrow morning.", True)
+            self.assertEqual(page.text, wanted, sure)
+
+    def test_how_sure_the_mark_was_heard_comes_through_a_phrase_heard(self):
+        # (The whole way in: the transcribe's text carries at_join_sure, handle_audio picks
+        # it up, and the deciding falls back to the words when it is faint.)
+        def heard_phrase(join, sure):
+            page = Page()
+            engine = self.engine(page)
+            self.decider.answer = "."
+            engine.handle_text("I will send the report.", True)
+            self.unit(engine, seconds=1.0)       # (the phrase before, to be heard with it)
+            engine._offload = mock.Mock()
+            engine._offload.transcribe.return_value = joins.heard("tomorrow morning.", join, sure)
+            engine._offload.measured = None
+            engine._only_breath = lambda audio: False
+            engine.handle_audio(np.ones(config.RATE, dtype=np.float32) * 0.1)
+            return page.text
+        self.assertEqual(heard_phrase((".", False), 0.95),
+                         "I will send the report. Tomorrow morning")
+        self.assertEqual(heard_phrase((",", False), 0.2),
+                         "I will send the report. Tomorrow morning")
+        self.assertEqual(heard_phrase(("", False), None),
+                         "I will send the report. Tomorrow morning")
 
     def test_only_for_the_phrase_it_was_heard_with(self):
         page = Page()

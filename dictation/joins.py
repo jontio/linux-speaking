@@ -66,16 +66,20 @@ class WithJoin(str):
     config.LEFT_CONTEXT), and what the recogniser wrote where the two meet, as `join`: (the
     mark or "", whether the next word has a capital), as `at_join`, or None where nothing is
     known. It goes back with the words, not on the recogniser that heard them, which another
-    computer's phrase may be heard on in between. (Not `join`: every str has a join already.)"""
+    computer's phrase may be heard on in between. (Not `join`: every str has a join already.)
+    `at_join_sure`: how surely the mark was written, from 0 to 1, or None where the
+    recogniser doesn't say (an older one, or one that gives no figures)."""
     at_join = None
+    at_join_sure = None
 
 
-def heard(text: str, join) -> str:
+def heard(text: str, join, sure=None) -> str:
     """`text` with the join it was heard with (see WithJoin), or `text` as it is."""
     if join is None:
         return text
     out = WithJoin(text)
     out.at_join = tuple(join)
+    out.at_join_sure = sure
     return out
 
 

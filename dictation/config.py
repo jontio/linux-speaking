@@ -146,6 +146,11 @@ HEAR_AGAIN_SECONDS = float(os.environ.get("LS_HEAR_AGAIN_SECONDS", "15"))
 LEFT_CONTEXT = float(os.environ.get("LS_LEFT_CONTEXT", "4"))
 LEFT_CONTEXT_GAP = float(os.environ.get("LS_LEFT_CONTEXT_GAP", "30"))
 LEAD_SLACK = 0.16    # (two of the model's 80 ms steps)
+# How surely the recogniser must have written the mark heard at the join for it to be taken
+# as the full stop there: below this, or with no mark at all, the words decide (see joins.py).
+# (No mark heard is no telling, not a "none". A recogniser that can't give the figure, such
+# as an older one at the other end of the link, is taken at its word as before.)
+JOIN_SURE = float(os.environ.get("LS_JOIN_SURE", "0.6"))
 HEAR_AGAIN_MOST = float(os.environ.get("LS_HEAR_AGAIN_MOST", "0.5"))
 # How long a command of the person's own that begins with "ask first" waits for "yes".
 ASK_SECONDS = float(os.environ.get("LS_ASK_SECONDS", "10"))

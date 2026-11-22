@@ -1143,6 +1143,7 @@ class Offload:
         too_long = not awake and len(audio) > config.WAKE_MAX_SECONDS * config.RATE
         local = self._local()
         self.join_heard = None
+        self.join_sure = None
         if lead and getattr(self, "_no_lead", False):
             audio, lead = audio[lead:], 0    # (the other computer is an earlier version)
         if (awake or self.wake or local is None) and not too_long:
@@ -1160,7 +1161,11 @@ class Offload:
                 if (isinstance(join, list) and len(join) == 2 and join[0] in ("", ".", "?", "!", ",")
                         and isinstance(join[1], bool)):
                     self.join_heard = (join[0], join[1])
-                return joins.heard(str(reply.get("text", "")), self.join_heard)
+                    sure = reply.get("join_sure")   # (an earlier version doesn't say)
+                    if (isinstance(sure, (int, float)) and not isinstance(sure, bool)
+                            and 0 <= sure <= 1):
+                        self.join_sure = float(sure)
+                return joins.heard(str(reply.get("text", "")), self.join_heard, self.join_sure)
         if local is None or there_only:
             self.not_speech, self.ignored = 0.0, ""
             return ""                     # nothing here to hear it with, or not to be
@@ -1171,6 +1176,7 @@ class Offload:
         self.not_speech = getattr(local, "not_speech", 0.0)
         self.ignored = getattr(local, "ignored", "")
         self.join_heard = getattr(text, "at_join", None) if lead else None
+        self.join_sure = getattr(text, "at_join_sure", None) if lead else None
         return text
 
     def hear_alone(self, audio) -> str:

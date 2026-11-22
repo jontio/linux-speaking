@@ -340,6 +340,28 @@ class Offloading(unittest.TestCase):
         self.offload.transcribe(self.audio, True)
         self.assertTrue(self.there.quick_asked)
 
+    def test_the_mark_heard_at_the_join_comes_back_with_how_sure(self):
+        self.there.hear = lambda *a, **k: {"ok": True, "text": "Thanks a lot.", "model": "x",
+                                           "lead": 1600, "join": [".", True], "join_sure": 0.9}
+        text = self.offload.transcribe(np.zeros(3200, dtype=np.float32), True, lead=1600)
+        self.assertEqual(text.at_join, (".", True))
+        self.assertAlmostEqual(text.at_join_sure, 0.9)
+
+    def test_an_earlier_computer_says_nothing_of_how_sure(self):
+        self.there.hear = lambda *a, **k: {"ok": True, "text": "Thanks a lot.", "model": "x",
+                                           "lead": 1600, "join": [".", True]}
+        text = self.offload.transcribe(np.zeros(3200, dtype=np.float32), True, lead=1600)
+        self.assertEqual(text.at_join, (".", True))
+        self.assertIsNone(text.at_join_sure)
+
+    def test_a_sureness_that_makes_no_sense_is_none(self):
+        for reply_sure in (True, 2.0, -0.1, "0.9"):
+            self.there.hear = (lambda *a, sure=reply_sure, **k:
+                               {"ok": True, "text": "Thanks.", "model": "x",
+                                "lead": 1600, "join": [".", True], "join_sure": sure})
+            text = self.offload.transcribe(np.zeros(3200, dtype=np.float32), True, lead=1600)
+            self.assertIsNone(text.at_join_sure, reply_sure)
+
     def test_listening_that_leans_on_the_prompt_says_so(self):
         self.offload.transcribe(self.audio, True, "letters", exact=True)
         self.assertTrue(self.there.exact_asked)

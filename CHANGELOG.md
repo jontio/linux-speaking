@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A full stop lost at a join where the recogniser wrote no mark.** In "where the words
+  decide", the phrases are heard together and what the recogniser wrote where they meet
+  was taken as the decision. Written nothing there, "nothing" was taken as a decision too —
+  no full stop — and the words were never asked, so "…a good job. It clearly doesn't
+  know…" went in as "…a good job it clearly…". Nothing heard at the join is now no
+  telling, and the words decide, as where nothing was heard at all; and a mark heard
+  there only faintly (below LS_JOIN_SURE, 0.6) gives way to the words too. How surely the
+  mark was written now goes with it, over the link to another computer as well (an earlier
+  computer says nothing of it, and is taken at its word as before).
 - **"Select" or "correct" a word that sounded like the one on the page found nothing.** Said
   as "select grown", written "select groan", it said there was no such word, though
   "grown" was in the text. The words are now looked for in the text before the cursor by

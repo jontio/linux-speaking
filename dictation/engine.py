@@ -345,6 +345,7 @@ class Transcriber:
         tokens = [str(piece) for piece in (getattr(result, "tokens", None) or ())]
         probs = getattr(result, "ys_log_probs", None)
         self.join_heard = None
+        self.join_sure = None
         if lead:
             times = list(getattr(result, "timestamps", None) or ())
             if len(times) != len(tokens):
@@ -361,6 +362,16 @@ class Transcriber:
                 return self._by_transducer(name, audio[lead:], sure, speech_only)
             if any(piece.startswith(" ") or piece.strip() not in _MARKS for piece in before):
                 self.join_heard = mark_at_join(before, tokens)   # (none if nothing before was heard)
+                if self.join_heard[0] and probs is not None and len(probs) == len(before) + len(tokens):
+                    # How surely the mark there was written: the words decide instead where
+                    # it was written faintly (see Engine._dictate and config.JOIN_SURE).
+                    for at in range(len(before) - 1, -1, -1):
+                        piece = before[at].strip()
+                        if piece in _MARKS:
+                            self.join_sure = math.exp(float(probs[at]))
+                            break
+                        if piece not in ("”", "’", '"', "'", ")", "]"):
+                            break                     # the phrase before's last word
             probs = list(probs)[len(before):] if probs is not None else None
             audio = audio[lead:]          # what is measured below is this phrase's own sound
             text = " ".join("".join(tokens).split())
@@ -382,7 +393,7 @@ class Transcriber:
                 return voicetest.heard_as("", []) if sure else ""
         if not sure:
             if lead:
-                text = joins.heard(text, self.join_heard)
+                text = joins.heard(text, self.join_heard, self.join_sure)
             return text
         return voicetest.heard_as(text, each)
 
@@ -509,7 +520,7 @@ class Transcriber:
         """One piece of listening done for another computer: see remote.py."""
         started = time.monotonic()
         with self.lock:
-            self.join_heard, used_lead = None, 0
+            self.join_heard, self.join_sure, used_lead = None, None, 0
             code = bool(header.get("code", False))
             if header.get("kind") == "alone":
                 text, model, awake = self.hear_alone(audio), self._whisper_name(), True
@@ -546,6 +557,9 @@ class Transcriber:
                      "lead": used_lead}
             if getattr(text, "at_join", None) is not None:
                 reply["join"] = list(text.at_join)
+                reply["join_sure"] = (round(float(text.at_join_sure), 4)
+                                      if isinstance(getattr(text, "at_join_sure", None), float)
+                                      else None)
             if getattr(text, "sure", None) is not None:
                 reply["sure"] = [[word, round(how, 4)] for word, how in text.sure]
                 reply["extra"] = round(text.extra, 3)  # seconds spent on that, not on listening
@@ -713,6 +727,7 @@ class Transcriber:
             # (Under the lock, with the reading of it in _by_transducer: another thread's
             # transcribe clearing it between the two would lose the mark heard at the join.)
             self.join_heard = None
+            self.join_sure = None
             self._let_go_of_code_model()
             model = model or self.dictation_name
             if self._is_transducer(model):
@@ -1831,10 +1846,12 @@ class Engine:
         # (see config.LEFT_CONTEXT): only the words after the join come back.
         lead = self._lead_for(prose and awake and not exact)
         self._heard_join = None
+        self._heard_join_sure = None
         if lead is not None:
             text = ears.transcribe(np.concatenate([lead, sound]), awake, hint + prompt,
                                    lead=len(lead), **exact)
             self._heard_join = getattr(text, "at_join", None)
+            self._heard_join_sure = getattr(text, "at_join_sure", None)
         else:
             text = ears.transcribe(sound, awake, hint + prompt, **exact)
         heard = time.monotonic()
@@ -2612,6 +2629,7 @@ class Engine:
         """
         spoken_off = [p for p, _ in SPOKEN] if exact else self.settings.spoken_off()
         heard_join, self._heard_join = getattr(self, "_heard_join", None), None   # (this phrase's only)
+        heard_sure, self._heard_join_sure = getattr(self, "_heard_join_sure", None), None
         context = self.targets.request({"op": "context"})
         if not context.get("ok"):
             return context
@@ -2738,7 +2756,8 @@ class Engine:
             # a dash: those go on from what is before them.)
             opening = first == '"' and text.lstrip(" ")[1:2].isalnum()   # (a straight one, opening)
             if first and (first.isalnum() or first in "“‘([{$€£¥#" or opening):
-                if heard_join is not None:
+                if heard_join is not None and heard_join[0] and (
+                        heard_sure is None or heard_sure >= config.JOIN_SURE):
                     # Heard together, the recogniser wrote this where they meet: it hears a
                     # sentence end far better than the words alone tell it.
                     mark = heard_join[0]
@@ -2746,7 +2765,16 @@ class Engine:
                         log(f"sentence end decided by hearing the join: {held[2] or 'none'} held, "
                             f"{mark or 'none'} put")
                 else:
+                    # Nothing heard at the join is no telling (not a "none"), and a mark
+                    # heard faintly is no telling either: the words decide, as where nothing
+                    # was heard at all. (Without this, a "no mark" from the joined hearing
+                    # vetoed the words, and the full stop went missing.)
                     mark = self._decide_join(head, text, held[4] if len(held) > 4 else held[2])
+                    if heard_join is not None:
+                        log(f"sentence end decided by the words: the join heard "
+                            f"{heard_join[0] or 'no mark'}"
+                            + (f" at {heard_sure:.2f}" if isinstance(heard_sure, float) else "")
+                            + f", {mark or 'none'} put")
                 join_decided = True
                 if mark:
                     text, took = joins.joined(head, text, mark, cap_first)
