@@ -266,6 +266,10 @@ if HAVE_QT and ALONE:
 
         def window(self):
             import tempfile
+            try:
+                os.remove(tray.learn_module.LEARNED)      # (what an earlier test learned)
+            except OSError:
+                pass
             engine = Engine()
             self.engine = engine
             self.folder = tempfile.mkdtemp()
@@ -376,6 +380,91 @@ if HAVE_QT and ALONE:
                 window.show_folder()
             self.assertTrue(os.path.isdir(self.folder))
             self.assertEqual(opened.call_args[0][0].toLocalFile(), self.folder)
+
+        def test_words_got_wrong_are_learned_and_put_to_use(self):
+            import numpy as np
+            window = self.window()
+            window.catcher.add(np.zeros(800, dtype=np.float32), "Cheers, Junty.", 1.0, 0.1)
+            window.typed = "Cheers, Junty."          # (what the program typed into the box)
+            window.box.setPlainText("Cheers, Jonti.")
+            window.keep()
+            self.assertEqual(self.engine.learned, {"junty": "Jonti"})
+            self.assertIn("Learned 1 word", window.learn_label.text())
+            self.assertIn("→ Jonti", window.learn_label.toolTip())
+
+        def test_deleting_a_sample_forgets_what_it_taught(self):
+            import numpy as np
+
+            def ask(window, text, careful=False):
+                return True
+            self.addCleanup(setattr, tray, "ask", tray.ask)
+            tray.ask = ask
+            window = self.window()
+            window.catcher.add(np.zeros(800, dtype=np.float32), "Cheers, Junty.", 1.0, 0.1)
+            window.typed = "Cheers, Junty."
+            window.box.setPlainText("Cheers, Jonti.")
+            window.keep()
+            self.assertEqual(self.engine.learned, {"junty": "Jonti"})
+            window.delete_all()
+            self.assertEqual(self.engine.learned, {})
+            self.assertIn("No misheard words", window.learn_label.text())
+
+        def test_check_scores_the_samples_and_offers_the_best_way(self):
+            import time
+            import numpy as np
+            from unittest import mock
+            window = self.window()
+            self.engine.settings.sentence_ends = "said"
+            window.catcher.add(np.zeros(800, dtype=np.float32), "Hello.", 1.0, 0.1)
+            window.box.setPlainText("Hello.")
+            window.keep()
+            stub = {"samples": 1, "phrases": 1, "words": 5, "misheard": 0,
+                    "ways": {way: {"per_100": 100.0 * n, "errors": n}
+                             for n, way in enumerate(tray.bench_module.SHORT)},
+                    "best": "words"}
+            with mock.patch.object(tray.bench_module, "check", return_value=stub):
+                window.check_samples()
+                for _ in range(100):
+                    QApplication.processEvents()
+                    if not window._checking:
+                        break
+                    time.sleep(0.02)
+            self.assertIn("wrong marks per 100 words", window.check_label.text())
+            self.assertFalse(window.use_button.isHidden())
+            window.use_best()
+            self.assertEqual(self.engine.settings.sentence_ends, "words")
+            self.assertTrue(window.use_button.isHidden())
+
+        def test_a_later_check_with_no_best_withdraws_the_offer(self):
+            import time
+            import numpy as np
+            from unittest import mock
+            window = self.window()
+            self.engine.settings.sentence_ends = "said"
+            window.catcher.add(np.zeros(800, dtype=np.float32), "Hello.", 1.0, 0.1)
+            window.box.setPlainText("Hello.")
+            window.keep()
+            ways = {way: {"per_100": 10.0, "errors": 1} for way in tray.bench_module.SHORT}
+            offers = [{"samples": 1, "phrases": 1, "words": 5, "misheard": 0,
+                       "ways": ways, "best": "words", "model": True},
+                      {"samples": 1, "phrases": 1, "words": 5, "misheard": 0,
+                       "ways": ways, "best": "", "model": True}]
+            for answer in offers:
+                with mock.patch.object(tray.bench_module, "check", return_value=answer):
+                    window.check_samples()
+                    for _ in range(100):
+                        QApplication.processEvents()
+                        if not window._checking:
+                            break
+                        time.sleep(0.02)
+            self.assertTrue(window.use_button.isHidden())     # a tie: no old offer stands
+            self.assertEqual(window._best, "")
+
+        def test_checking_with_no_samples_starts_nothing(self):
+            window = self.window()
+            self.assertFalse(window.check_button.isEnabled())
+            window.check_samples()
+            self.assertFalse(window._checking)
 
         def test_start_again_keeps_nothing(self):
             import numpy as np

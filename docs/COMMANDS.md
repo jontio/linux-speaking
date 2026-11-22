@@ -367,16 +367,28 @@ way is chosen.
 pause, and what your recogniser writes. Settings has **Record dictation samples…**: you
 dictate an email or a message into its box as you naturally would, put the text right
 to what you meant, and keep it. The sound of each phrase is kept with what was written
-for it and what you meant, on your computer only. Then
+for it and what you meant, on your computer only.
+
+Kept, it is put to use. **The words you put right are learned:** where you change the
+box, one word for another ("Junty" to "Jonti"), the form that was typed is put right from
+then on wherever it is typed again, and the word you meant is given to the recogniser as
+a hint, so that it hears it better next time. What the program itself puts right (a sum
+of money in figures, a sound-alike word) is not learned: only what you changed counts,
+and a sample kept before this version, which did not keep the program's own typing,
+teaches nothing. The pairs are worked out again from the samples kept, so a sample
+deleted forgets what it taught. The window says what was learned, lists what is kept
+(with the text you meant on resting the mouse on one), opens the folder they are in, and
+deletes one or all of them.
+
+**Check these samples** in the window types each sample again each of the three ways and
+says how many marks each got wrong on your own dictation, naming the best; **Use this
+way** sets "Full stops at the ends of phrases" to it. The script does the same, at more
+length:
 
     python scripts/check_punctuation.py
 
-(with the install's own Python, from its folder) types each sample again each of the
-three ways and says how many full stops, commas and capitals each got right and wrong.
-`--show` shows each sample as it would be typed. Make up what you dictate there: it is
-kept, sound and all, on your computer only. The window lists what is kept, with the text
-you meant on resting the mouse on one, opens the folder they are in, and deletes one or
-all of them.
+(with the install's own Python, from its folder). `--show` shows each sample as it would
+be typed.
 
 If you pause before saying "question mark", the recogniser sometimes writes the sign and
 not the words, which would then be dropped too. So when a phrase ends with a pause and a

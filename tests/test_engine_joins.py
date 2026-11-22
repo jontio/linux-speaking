@@ -417,6 +417,32 @@ class AsReviewed(HeldBackAndDecided):
         self.assertEqual(page.text, "I sent the parcel to the vet")   # nothing was typed
         self.assertEqual(engine._held_mark, held)                     # and nothing was lost
 
+    def test_a_word_learned_from_the_samples_is_put_right(self):
+        page = Page()
+        engine = self.engine(page)
+        engine.learned = {"junty": "Jonti"}
+        self.assertEqual(self.said(engine, "I spoke to Junty about it."),
+                         "I spoke to Jonti about it")
+
+    def test_learned_words_are_left_alone_in_a_shortcut_and_a_spelling(self):
+        page = Page()
+        engine = self.engine(page)
+        engine.learned = {"junty": "Jonti"}
+        engine._dictate("Junty", then=" done")
+        self.assertEqual(page.text, "Junty done")
+        page = Page()
+        engine = self.engine(page)
+        engine.learned = {"junty": "Jonti"}
+        engine._dictate("Junty", exact=True)
+        self.assertEqual(page.text, "Junty")
+
+    def test_the_hint_carries_the_words_learned(self):
+        page = Page()
+        engine = self.engine(page)
+        engine.settings.words = ("Sam",)
+        engine.learned = {"junty": "Jonti"}
+        self.assertEqual(engine._hint_words(), ("Sam", "Jonti"))
+
     def test_no_quiet_spell_stop_while_spelling(self):
         from dictation import config
         import time

@@ -29,9 +29,10 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTextBrowser, QVBoxLayout, QWidget, QToolTip,
 )
 
-from . import (APP_NAME, HOMEPAGE, __version__, actions, audio, autostart, config, control, hotkey,
-               joins, looks, models, reading, remote, samples as samples_module,
-               settings as settings_module, speech, training, voicetest)
+from . import (APP_NAME, HOMEPAGE, __version__, actions, audio, autostart, bench as bench_module,
+               config, control, hotkey, joins, learn as learn_module, looks, models, reading,
+               remote, samples as samples_module, settings as settings_module, speech, training,
+               voicetest)
 from .engine import Engine, brief, meter_value, saved_on
 from .formatting import LINE, PARAGRAPH
 from .reading_text import SENTENCES
@@ -1955,6 +1956,13 @@ class SettingsWindow(Window):
         if hasattr(self, "key_chooser"):
             self.key_chooser.refresh()
         self.start_tick.refresh()
+        if hasattr(self, "sentence_ends"):
+            # (The samples window can change where full stops go: read it again.)
+            chosen = joins.sentence_ends(self.engine.settings)
+            for n in range(self.sentence_ends.count()):
+                if self.sentence_ends.itemData(n) == chosen:
+                    self.sentence_ends.setCurrentIndex(n)
+                    break
         if self.engine.settings.remote["on"]:
             self.check_remote()
         super().showEvent(event)
@@ -4899,6 +4907,7 @@ class SamplesWindow(Window):
     """Recording dictation as it is really done, with what was meant: see samples.py."""
 
     taken = pyqtSignal()   # a phrase was taken, on the engine's thread: say so on this one
+    checked = pyqtSignal(object)   # the samples were scored (see check_samples): the scores
 
     def __init__(self, engine: Engine, folder: str = samples_module.FOLDER):
         super().__init__()
@@ -4913,7 +4922,9 @@ class SamplesWindow(Window):
             "meant, with every full stop, comma and capital where you want them, and press "
             "\u201cKeep this sample\u201d. Make up what you say: it is kept, with its sound, "
             "on this computer, so that where full stops go can be worked out from how you "
-            "really dictate.")
+            "really dictate. Words the recogniser got wrong are learned from it, and put "
+            "right from then on; \u201cCheck these samples\u201d scores each way of putting "
+            "full stops on them.")
         intro.setWordWrap(True)
         column.addWidget(intro)
         self.box = TryBox()
@@ -4923,6 +4934,19 @@ class SamplesWindow(Window):
         self.box.setMinimumHeight(self.box.fontMetrics().lineSpacing() * 8 + 16)
         self.own = OwnTarget(self.box)
         self.own.name = "the samples box"
+        # What the program itself types into the box, kept as a shadow of it: the samples
+        # learn only what the person changed, from this text to the text they left (see
+        # learn.py). Each insertion the engine makes is followed here.
+        self.typed = ""
+        real_request = self.own.request
+
+        def request(message):
+            reply = real_request(message)
+            if reply.get("ok") and message.get("op") == "insert":
+                cut = len(self.typed) - max(0, int(message.get("delete_before", 0) or 0))
+                self.typed = self.typed[:max(0, cut)] + str(message.get("text", ""))
+            return reply
+        self.own.request = request
         self.box.focused.connect(self.on_box_focus)
         column.addWidget(self.box, 1)
         self.said = QLabel()
@@ -4966,11 +4990,36 @@ class SamplesWindow(Window):
         kept_row.addWidget(self.delete_all_button)
         kept_row.addStretch()
         column.addLayout(kept_row)
+        check_row = QHBoxLayout()
+        self.check_button = QPushButton("Check these samples")
+        explain(self.check_button, "Types each sample again each of the three ways full stops "
+                                   "can be put, says how many marks each got wrong on your own "
+                                   "dictation, and which way did best.")
+        self.check_button.clicked.connect(self.check_samples)
+        self.use_button = QPushButton("Use this way")
+        explain(self.use_button, "Puts full stops the way that did best on your samples: the "
+                                 "setting \"Full stops at the ends of phrases\".")
+        self.use_button.clicked.connect(self.use_best)
+        self.use_button.hide()
+        check_row.addWidget(self.check_button)
+        check_row.addWidget(self.use_button)
+        check_row.addStretch()
+        column.addLayout(check_row)
+        self.check_label = QLabel()
+        self.check_label.setWordWrap(True)
+        column.addWidget(self.check_label)
+        self.learn_label = QLabel()
+        self.learn_label.setWordWrap(True)
+        column.addWidget(self.learn_label)
+        self._best = ""
+        self._checking = False
+        self.checked.connect(self.show_check)
         self.catcher = SampleCatcher(self.own, self.recording)
         self.catcher.taken = self.taken.emit    # (on the engine's thread: queued to this one)
         self.taken.connect(self.refresh)
         self.refresh()
-        dress(self, roomy(self, 560, 540))
+        self.learn_from_samples()
+        dress(self, roomy(self, 560, 600))
 
     def refresh(self) -> None:
         phrases = len(self.recording.phrases)
@@ -4978,6 +5027,8 @@ class SamplesWindow(Window):
                           if phrases else "")
         self.keep_button.setEnabled(bool(phrases))
         self._show_kept()
+        self.check_button.setEnabled(bool(samples_module.kept(self.folder))
+                                     and not getattr(self, "_checking", False))
 
     def chosen(self) -> str:
         """The folder of the sample chosen in the list, or ""."""
@@ -5034,6 +5085,7 @@ class SamplesWindow(Window):
             return
         samples_module.forget(self.folder, only=here)
         self.refresh()
+        self.learn_from_samples()
 
     def delete_all(self) -> None:
         count = len(samples_module.kept(self.folder))
@@ -5045,10 +5097,101 @@ class SamplesWindow(Window):
             return
         samples_module.forget(self.folder)
         self.refresh()
+        self.learn_from_samples()
+
+    def learn_from_samples(self) -> None:
+        """Work out the words the recogniser got wrong, from what is kept, and put them to
+        use: in what is said from then on, and as a hint for the recogniser (see learn.py)."""
+        try:
+            self.learned = learn_module.from_samples(self.folder)
+        except OSError as e:
+            self.learn_label.setText(f"The words in the samples could not be learned: "
+                                     f"{e.strerror or e}.")
+            return
+        self.engine.learned = self.learned
+        # (The samples have changed: an offer made from an older set of them is withdrawn.)
+        self.use_button.hide()
+        self._best = ""
+        if samples_module.kept(self.folder):
+            self.check_label.setText("Samples changed: “Check these samples” scores "
+                                     "them again.")
+        else:
+            self.check_label.setText("")
+        pairs = sorted(self.learned.items())
+        if pairs:
+            shown = ", ".join(f"“{heard}” → “{wanted}”"
+                              for heard, wanted in pairs[:4])
+            more = f" and {len(pairs) - 4} more" if len(pairs) > 4 else ""
+            self.learn_label.setText(f"Learned {len(pairs)} word"
+                                     f"{'s' if len(pairs) != 1 else ''} from your samples, put "
+                                     f"right from now on: {shown}{more}.")
+            self.learn_label.setToolTip("\n".join(f"{heard} → {wanted}"
+                                                 for heard, wanted in pairs))
+        else:
+            self.learn_label.setText("No misheard words to learn yet.")
+            self.learn_label.setToolTip("")
+
+    def check_samples(self) -> None:
+        """Score the samples each way in the background; show_check says how it went."""
+        if self._checking or not samples_module.kept(self.folder):
+            return
+        self._checking = True
+        self.check_button.setEnabled(False)
+        self.check_label.setText("Checking the samples…")
+        folder = self.folder
+
+        def work():
+            try:
+                found = bench_module.check(folder)
+            except Exception as e:
+                found = {"problem": f"{type(e).__name__}: {e}"}
+            try:
+                self.checked.emit(found)
+            except RuntimeError:
+                pass               # (the window has gone while the check ran)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_check(self, found: dict) -> None:
+        self._checking = False
+        self.use_button.hide()
+        self._best = ""
+        self.check_button.setEnabled(bool(samples_module.kept(self.folder)))
+        if found.get("problem"):
+            self.check_label.setText(f"The samples could not be checked: {found['problem']}")
+            return
+        if not found.get("samples"):
+            self.check_label.setText("No samples to check yet.")
+            return
+        scores = ", ".join(f"{bench_module.SHORT[way]} {found['ways'][way]['per_100']:.1f}"
+                           for way in bench_module.SHORT)
+        text = (f"On your {found['samples']} sample{'s' if found['samples'] != 1 else ''} "
+                f"({found['words']} words, {found['misheard']} misheard): wrong marks per 100 "
+                f"words — {scores}.")
+        if not found.get("model", True):
+            text += (" The punctuation model isn't installed, so \"where the words decide\" "
+                     "was scored as it falls back, on the recogniser's own full stops.")
+        best = found.get("best", "")
+        if best:
+            text += f" Best: {bench_module.SHORT[best]}."
+            if best != joins.sentence_ends(self.engine.settings):
+                self._best = best
+                self.use_button.setText(f"Use “{bench_module.SHORT[best]}”")
+                self.use_button.show()
+        self.check_label.setText(text)
+
+    def use_best(self) -> None:
+        if not self._best:
+            return
+        self.engine.set_sentence_ends(self._best)
+        self.use_button.hide()
+        self.check_label.setText(self.check_label.text().rstrip(".")
+                                 + ", now used for what is said from here on.")
+        self._best = ""
 
     def busy(self) -> bool:
-        """Whether a sample is being dictated into the box: its phrases are not yet kept."""
-        return bool(self.recording.phrases)
+        """Whether a sample is being dictated into the box, or the samples are being
+        checked: its phrases are not yet kept, or the check holds the window."""
+        return bool(self.recording.phrases) or bool(getattr(self, "_checking", False))
 
     def keep(self) -> None:
         meant = self.box.toPlainText().strip()
@@ -5057,6 +5200,9 @@ class SamplesWindow(Window):
         offload = getattr(self.engine, "_offload", None)
         there = offload is not None and getattr(offload, "there", False)
         details = {"sentence_ends": joins.sentence_ends(self.engine.settings),
+                   # The text as the program itself typed it, for learning what the person
+                   # changed in the box (see learn.py); older keepers of it didn't keep it.
+                   "typed": getattr(self, "typed", ""),
                    # The model that wrote the words: the other computer's, where it listened.
                    "model": (getattr(offload, "model_there", "") if there
                              else getattr(self.engine.settings, "model", "")),
@@ -5070,10 +5216,12 @@ class SamplesWindow(Window):
             return
         self.box.clear()
         self.refresh()
+        self.learn_from_samples()
 
     def start_again(self) -> None:
         self.recording.clear()
         self.box.clear()
+        self.typed = ""
         self.refresh()
 
     def on_box_focus(self, has: bool) -> None:

@@ -10,6 +10,17 @@
   matters. Dictating into the box again also updates the window now: it was told of each
   phrase from the worker's thread, which Qt will not act on, so what you had dictated was
   never shown and a sample could not be kept from the window at all.
+- **The words you put right are learned from the samples.** Where you change the box, one
+  word for another ("Junty" to "Jonti"), the form that was typed is put right from then on
+  wherever it is typed again, and the word you meant is given to the recogniser as a hint,
+  so that it hears it better next time. Only what you changed counts: what the program
+  itself puts right is not learned, and a sample kept before this version teaches nothing.
+  The pairs are worked out again from the samples kept, so a sample deleted forgets what
+  it taught, and only the pairs are kept, in a file only the person's own account can read.
+- The samples window can **check the samples itself**: "Check these samples" types each
+  again each of the three ways full stops can be put, says how many marks each got wrong
+  on the person's own dictation and which did best, and "Use this way" sets the full stops
+  to it. The script does the same, for anyone who wants it.
 - In "words" mode, a word spelled (or a shortcut said) on from where a quiet spell had
   typed the sentence's stop for the time being kept the stop away for good; the sentence
   now waits for the full stop at its new end. A line break that could not be typed holds

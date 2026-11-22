@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 
-from . import __version__, client, config
+from . import __version__, client, config, learn
 from .commands import (
     MOVES, SHORT_COMMANDS, Command, Dictation, choice, interpret, is_cancel, is_move,
     last_words_length, move_steps,
@@ -798,6 +798,10 @@ class Engine:
         self.on_level = lambda: None  # the level meter changed
         self.boost = config.DEFAULT_BOOST
         self.settings = Settings.load()
+        # Words learned from the samples of real dictation (see learn.py): put right from
+        # now on, and given to the recogniser as a hint. Worked out again by the samples
+        # window whenever a sample is kept or deleted.
+        self.learned = learn.load()
         self.status.commands_only = self.settings.enabled("commands_only")  # see _apply_mode
         if getattr(self.settings, "first_time", False) and os.path.exists(config.STATE_FILE):
             # No settings were ever saved, but dictation has been switched on or off here
@@ -1782,7 +1786,7 @@ class Engine:
                     prompt = before[-config.CONTEXT_CHARS:]
                     if repetitive(prompt):
                         prompt = ""  # Whisper would carry on repeating it
-                hint = vocabulary.hint(self.settings.words)
+                hint = vocabulary.hint(self._hint_words())
                 prose = True
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         sound = normalise(audio)
@@ -1808,7 +1812,7 @@ class Engine:
         measured = getattr(ears, "measured", None)
         # The person's codes, such as part numbers, are put in as they spelled them wherever
         # their letters and figures were written: there is no doubt about those to settle.
-        names = vocabulary.names(self.settings.words)
+        names = vocabulary.names(self.settings.words + learn.words(getattr(self, "learned", None) or {}))
         if hint and text:
             text = vocabulary.spell_codes(text, self.settings.words)
         if hint and vocabulary.mentions(text, names):
@@ -2568,6 +2572,10 @@ class Engine:
         before, after = context.get("before", ""), context.get("after", "")
         place, comment = coding.where(before) if self._coding(context) and not exact else ("", "")
         plain = not place and not exact and not then   # ordinary dictated prose
+        if plain:
+            # A word learned from the person's samples (see learn.py) is put in place of
+            # the form the recogniser writes for it.
+            raw = learn.apply(raw, getattr(self, "learned", None) or {})
         # A mark held back and then typed after a quiet spell, or as dictation slept, is only
         # there for the time being (see _finish_sentence): with more of what is said it is
         # decided again. The text before is taken as it was without it, and it is taken out
@@ -3168,10 +3176,15 @@ class Engine:
         if amended:
             log(f"put right as the phrase went in: {tidy.kinds(amended)}")
 
+    def _hint_words(self) -> tuple:
+        """The person's own words, and those learned from the samples, for the hint."""
+        return tuple(self.settings.words) + learn.words(getattr(self, "learned", None) or {})
+
     def _fitted(self, raw: str, before: str, after: str):
         """Ordinary prose fitted to the text around it, as _dictate fits it (and made sense
         of, as there: what was put right in a phrase must not come back when it is heard
         again with the next)."""
+        raw = learn.apply(raw, getattr(self, "learned", None) or {})
         if self.settings.enabled("money"):
             raw = money.in_figures(raw, before)
         spoken_off = self.settings.spoken_off()
