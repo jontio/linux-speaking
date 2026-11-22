@@ -381,15 +381,16 @@ if HAVE_QT and ALONE:
             self.assertTrue(os.path.isdir(self.folder))
             self.assertEqual(opened.call_args[0][0].toLocalFile(), self.folder)
 
-        def test_words_got_wrong_are_learned_and_put_to_use(self):
+        def test_corrections_made_in_a_sample_are_noted(self):
             import numpy as np
             window = self.window()
             window.catcher.add(np.zeros(800, dtype=np.float32), "Cheers, Junty.", 1.0, 0.1)
             window.typed = "Cheers, Junty."          # (what the program typed into the box)
             window.box.setPlainText("Cheers, Jonti.")
             window.keep()
-            self.assertEqual(self.engine.learned, {"junty": "Jonti"})
-            self.assertIn("Learned 1 word", window.learn_label.text())
+            self.assertEqual(window.learned, {"junty": "Jonti"})
+            self.assertIn("Noted 1 correction", window.learn_label.text())
+            self.assertIn("not put in as blanket changes", window.learn_label.text())
             self.assertIn("→ Jonti", window.learn_label.toolTip())
 
         def test_deleting_a_sample_forgets_what_it_taught(self):
@@ -404,10 +405,10 @@ if HAVE_QT and ALONE:
             window.typed = "Cheers, Junty."
             window.box.setPlainText("Cheers, Jonti.")
             window.keep()
-            self.assertEqual(self.engine.learned, {"junty": "Jonti"})
+            self.assertEqual(window.learned, {"junty": "Jonti"})
             window.delete_all()
-            self.assertEqual(self.engine.learned, {})
-            self.assertIn("No misheard words", window.learn_label.text())
+            self.assertEqual(window.learned, {})
+            self.assertIn("No corrections to note", window.learn_label.text())
 
         def test_check_scores_the_samples_and_offers_the_best_way(self):
             import time

@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 
-from . import __version__, client, config, learn
+from . import __version__, client, config
 from .commands import (
     MOVES, SHORT_COMMANDS, Command, Dictation, choice, interpret, is_cancel, is_move,
     last_words_length, move_steps,
@@ -27,7 +27,7 @@ from .vscode_target import VSCodeTarget
 from .words import Lexicon, repetitive
 from .settings import Settings, available_models, model_label
 from .segmenter import END, FELL_AWAY, LIMIT, NO_VOICE, ROOM, START, Segmenter, SegmenterConfig
-from .selecting import variants
+from .selecting import alike, variants
 from . import (accessibility, actions, audio, clicking, coding, endings, joins, letters, models,
                money, opinions, punctuation, quick, remote, sense, speech, spelling, tidy, training,
                vocabulary, voicetest)
@@ -184,6 +184,17 @@ def _after_the_word(text: str) -> str:
     return re.sub(r"(?i)^\W*(?:correct|select)\b[\s,.;:!?…-]*", "", text).strip()
 
 
+def _sounds_same(one: str, other: str) -> bool:
+    """Whether two words are one word as heard: by their sound ("grown" and "groan"), or by
+    a known homophone where the sound of the letters doesn't tell ("write" and "right")."""
+    if one == other:
+        return True
+    if len(one) < 2 or len(other) < 2:
+        return False
+    return (vocabulary.sound_key(one) == vocabulary.sound_key(other)
+            or other.lower() in alike(one.lower()))
+
+
 def alike_in_text(words: str, before: str, near: int = 80) -> list:
     """`words` with each word that is not in `before` put as the word there that sounds the
     same, where one does: "grown" for "groan", however the recogniser wrote it the first
@@ -196,17 +207,15 @@ def alike_in_text(words: str, before: str, near: int = 80) -> list:
     if not there:
         return []
     heard = {word.lower() for word in there}
-    keys = {}
-    for word in reversed(there):          # (nearest to the cursor first, and kept)
-        keys.setdefault(vocabulary.sound_key(word.lower()), word)
     out, changed = [], False
     for word in asked:
         if word.lower() in heard:
             out.append(word)
             continue
-        alike = keys.get(vocabulary.sound_key(word.lower()), word)
-        if alike.lower() != word.lower() and len(word) > 1 and len(alike) > 1:
-            out.append(alike)
+        alike_word = next((there_word for there_word in reversed(there)
+                           if _sounds_same(word.lower(), there_word.lower())), "")
+        if alike_word and len(word) > 1 and len(alike_word) > 1:
+            out.append(alike_word)
             changed = True
         else:
             out.append(word)
@@ -842,10 +851,6 @@ class Engine:
         self.on_level = lambda: None  # the level meter changed
         self.boost = config.DEFAULT_BOOST
         self.settings = Settings.load()
-        # Words learned from the samples of real dictation (see learn.py): put right from
-        # now on, and given to the recogniser as a hint. Worked out again by the samples
-        # window whenever a sample is kept or deleted.
-        self.learned = learn.load()
         self.status.commands_only = self.settings.enabled("commands_only")  # see _apply_mode
         if getattr(self.settings, "first_time", False) and os.path.exists(config.STATE_FILE):
             # No settings were ever saved, but dictation has been switched on or off here
@@ -1858,7 +1863,7 @@ class Engine:
         measured = getattr(ears, "measured", None)
         # The person's codes, such as part numbers, are put in as they spelled them wherever
         # their letters and figures were written: there is no doubt about those to settle.
-        names = vocabulary.names(self.settings.words + learn.words(getattr(self, "learned", None) or {}))
+        names = vocabulary.names(self.settings.words)
         if hint and text:
             text = vocabulary.spell_codes(text, self.settings.words)
         if hint and vocabulary.mentions(text, names):
@@ -2200,11 +2205,14 @@ class Engine:
                 # Where Enter isn't known as a command, it is a new paragraph.
                 reply = self.targets.request({"op": "command", "name": "new_paragraph"})
             if (action.name in ("select", "correct") and reply.get("why") == "can't find that"
-                    and not action.maybe and len(action.arg.split()) <= SHORT_CORRECTION
-                    and plain_words(action.arg).split()[:1] not in ([w] for w in SENTENCE_STARTS)):
+                    and (action.maybe or (
+                        len(action.arg.split()) <= SHORT_CORRECTION
+                        and plain_words(action.arg).split()[:1] not in ([w] for w in SENTENCE_STARTS)))):
                 # A word or two to correct, not there to be found: what was meant was the
                 # command, and typed as words it only adds to what is to be put right
-                # ("Correct, John E." after "John E."). Said so, and nothing typed.
+                # ("Correct, John E." after "John E."). Said so, and nothing typed. (A
+                # "Correct, ..." said with the words it has just typed, and not found after
+                # all, is said so too: it was meant as the command.)
                 log(f"command {action.name}: can't find that")
                 self.tell(f"\u201c{action.arg}\u201d isn't there to be {'corrected' if action.name == 'correct' else 'selected'}. "
                           "Say it as it was typed, or select it and say it again.", "info")
@@ -2636,10 +2644,6 @@ class Engine:
         before, after = context.get("before", ""), context.get("after", "")
         place, comment = coding.where(before) if self._coding(context) and not exact else ("", "")
         plain = not place and not exact and not then   # ordinary dictated prose
-        if plain:
-            # A word learned from the person's samples (see learn.py) is put in place of
-            # the form the recogniser writes for it.
-            raw = learn.apply(raw, getattr(self, "learned", None) or {})
         # A mark held back and then typed after a quiet spell, or as dictation slept, is only
         # there for the time being (see _finish_sentence): with more of what is said it is
         # decided again. The text before is taken as it was without it, and it is taken out
@@ -2885,7 +2889,9 @@ class Engine:
     def _just_typed_words(self, words: str) -> bool:
         """Whether `words` (as said, or as the person's own word they sound like) are among
         what this program typed a moment ago, in the program in front: for "Correct, John
-        T." said with a pause after the word, which is the command only if so."""
+        T." said with a pause after the word, which is the command only if so. Said with a
+        word that sounds the same as one typed, it is the command too ("Correct, write" for
+        "the right way is this")."""
         program, run = getattr(self, "_run", None) or ("", "")
         if program != self.targets.name or not run or not words.strip():
             return False
@@ -2894,7 +2900,14 @@ class Engine:
             return True
         own = vocabulary.by_sound(words, "", vocabulary.names(self.settings.words),
                                   getattr(self, "lexicon", None))
-        return own != words and " " + plain_words(own) + " " in typed
+        if own != words and " " + plain_words(own) + " " in typed:
+            return True
+        asked, there = plain_words(words).split(), plain_words(run).split()
+        for start in range(len(there) - len(asked) + 1 if asked else 0):
+            if all(_sounds_same(one, other)
+                   for one, other in zip(asked, there[start:start + len(asked)])):
+                return True
+        return False
 
     def _keep_for_context(self, sound, text: str, ended: float, prose: bool) -> None:
         """After a phrase heard awake: what the next can be heard with (see _lead_for). A
@@ -3251,14 +3264,13 @@ class Engine:
             log(f"put right as the phrase went in: {tidy.kinds(amended)}")
 
     def _hint_words(self) -> tuple:
-        """The person's own words, and those learned from the samples, for the hint."""
-        return tuple(self.settings.words) + learn.words(getattr(self, "learned", None) or {})
+        """The person's own words, given to the recogniser as a hint."""
+        return tuple(self.settings.words)
 
     def _fitted(self, raw: str, before: str, after: str):
         """Ordinary prose fitted to the text around it, as _dictate fits it (and made sense
         of, as there: what was put right in a phrase must not come back when it is heard
         again with the next)."""
-        raw = learn.apply(raw, getattr(self, "learned", None) or {})
         if self.settings.enabled("money"):
             raw = money.in_figures(raw, before)
         spoken_off = self.settings.spoken_off()

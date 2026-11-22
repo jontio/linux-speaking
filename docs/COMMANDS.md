@@ -221,9 +221,16 @@ the nearest taken everywhere.
 nothing is selected, when:
 
 - the words after it aren't found near the cursor, as in "Correct me if I'm wrong";
-- the recogniser wrote a comma or other punctuation straight after the word, as in
-  "Correct, yes.";
-- more than eight words follow it.
+- more than eight words follow it (and it isn't the pause form below).
+
+**"Correct" said with a pause, and the words just said again.** The recogniser writes a
+comma after "correct" where you paused ("Correct, I guess I'll carry on the other side"),
+and that could be the word "correct" — "you are correct" — or the command. It is the
+command when the words after it are among what the program has just typed, however many
+of them there are: say the sentence over again and it is selected, to be said in its
+place. When they aren't ("Correct, that is what I meant"), it is the sentence you said,
+and it is typed. A word that sounds the same counts, so "Correct, write" finds "right"
+in "the right way is this".
 
 If the words are there, it is the command: "Select Save." selects a "save" that is near
 the cursor. The notice tells you so, and "unselect that" puts it right.
@@ -369,16 +376,17 @@ dictate an email or a message into its box as you naturally would, put the text 
 to what you meant, and keep it. The sound of each phrase is kept with what was written
 for it and what you meant, on your computer only.
 
-Kept, it is put to use. **The words you put right are learned:** where you change the
-box, one word for another ("Junty" to "Jonti"), the form that was typed is put right from
-then on wherever it is typed again, and the word you meant is given to the recogniser as
-a hint, so that it hears it better next time. What the program itself puts right (a sum
-of money in figures, a sound-alike word) is not learned: only what you changed counts,
-and a sample kept before this version, which did not keep the program's own typing,
-teaches nothing. The pairs are worked out again from the samples kept, so a sample
-deleted forgets what it taught. The window says what was learned, lists what is kept
-(with the text you meant on resting the mouse on one), opens the folder they are in, and
-deletes one or all of them.
+Kept, it is put to use. **What you put right is noted:** where you change the box, one
+word for another ("Junty" to "Jonti"), the correction is noted and shown in the window —
+but it is not put in place of what is said. The same sound may be either ("junty" may be a
+misspelling of "jaunty", and "chairs" of "cheers"), and only the words around it can say
+which was meant, so the notes wait for a review of the context. What the program itself
+puts right (a sum of money in figures, a sound-alike word) is not noted: only what you
+changed counts, and a sample kept before this version, which did not keep the program's
+own typing, teaches nothing. The notes are worked out again from the samples kept, so a
+sample deleted forgets what it taught. The window lists what is kept (with the text you
+meant on resting the mouse on one), opens the folder they are in, and deletes one or all
+of them.
 
 **Check these samples** in the window types each sample again each of the three ways and
 says how many marks each got wrong on your own dictation, naming the best; **Use this
@@ -559,6 +567,13 @@ as the first word of a phrase said in the middle of a sentence: with "Rose" on t
 list, "I spoke to" and then "Rose" gives "I spoke to Rose", not "rose". A word you
 wrote with a small first letter and a capital later ("iPhone", "vLR5340") keeps its
 small letter at the start of a sentence.
+
+**Written as two.** One of your words written as one may be written as two by the
+recogniser, or in small letters: "DeepSeek" heard as "Deep Seek", or "deepseek". Where
+the two words joined make no word at all ("deepseek" is no word of English), it is put in
+as you spelled it. Two ordinary words that join to a word of their own are left: with
+"SunSet" on the list, "the sun set" stays the words, as "sunset" is a word. And the two
+must be next to each other: "John. Tea" is no "Jonti", as a comma or a stop is a break.
 
 **Part numbers.** A word with letters and figures in it, three characters or more, such
 as "vLR5340", "MP3" or "CO2", is not a name. It is put in as you spelled it wherever

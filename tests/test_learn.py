@@ -47,27 +47,13 @@ class Pairs(unittest.TestCase):
         self.assertEqual(learn.pairs([record]), {})
 
 
-class Apply(unittest.TestCase):
-    def test_where_the_learned_form_is_written_again(self):
-        table = {"junty": "Jonti"}
-        self.assertEqual(learn.apply("Ask Junty about it.", table), "Ask Jonti about it.")
-        self.assertEqual(learn.apply("ask junty", table), "ask Jonti")
-        self.assertEqual(learn.apply("Junty's parcel", table), "Jonti's parcel")
-        self.assertEqual(learn.apply("Junty, junty", table), "Jonti, Jonti")
-
-    def test_no_part_of_a_longer_word(self):
-        self.assertEqual(learn.apply("Juntyville and juntyish", {"junty": "Jonti"}),
-                         "Juntyville and juntyish")
-
-    def test_no_part_of_a_contraction(self):
-        self.assertEqual(learn.apply("I don't know.", {"don": "Dawn"}), "I don't know.")
-        self.assertEqual(learn.apply("we won't stop", {"won": "Wan"}), "we won't stop")
-
-    def test_a_word_that_started_a_sentence_keeps_its_capital(self):
-        self.assertEqual(learn.apply("Junty said so.", {"junty": "jonti"}), "Jonti said so.")
-
-
 class Saved(unittest.TestCase):
+    def test_nothing_is_put_in_place_of_what_was_said(self):
+        # (The pairs are evidence only: the engine knows nothing of them, and there is no
+        # function here that rewrites text.)
+        from dictation import engine
+        self.assertFalse(hasattr(learn, "apply"))
+        self.assertNotIn("learn", dir(engine))
     def test_round_trip_and_only_its_owner_can_read_it(self):
         folder = tempfile.mkdtemp()
         path = os.path.join(folder, "learned-words.json")
@@ -95,8 +81,3 @@ class Saved(unittest.TestCase):
         self.assertEqual(learn.from_samples(folder, path), {"junty": "Jonti"})
         samples.forget(folder)
         self.assertEqual(learn.from_samples(folder, path), {})
-
-
-class ForTheHint(unittest.TestCase):
-    def test_each_form_once(self):
-        self.assertEqual(learn.words({"a": "Jon", "b": "Jon", "c": "Sara"}), ("Jon", "Sara"))

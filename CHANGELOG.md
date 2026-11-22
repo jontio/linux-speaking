@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **"Correct" said with a pause, and a whole sentence said again, puts that sentence
+  right.** The recogniser writes a comma after "correct" wherever you paused ("Correct, I
+  guess I'll carry on the other side"), and it used to be typed as a sentence unless only
+  a word or two followed. It is now the command when the words after it are among what the
+  program has just typed, however many: say the sentence over again and it is selected, as
+  with "Correct, John T." A word that sounds the same counts, so "Correct, write" finds
+  "right" in "the right way is this" (the words are looked for by their sound in the text
+  near the cursor, as for "select grown" heard as "groan"). Words that weren't just typed
+  stay a sentence: "Correct, that is what I meant" is typed.
 - **A full stop lost at a join where the recogniser wrote no mark.** In "where the words
   decide", the phrases are heard together and what the recogniser wrote where they meet
   was taken as the decision. Written nothing there, "nothing" was taken as a decision too —
@@ -23,13 +32,21 @@
   matters. Dictating into the box again also updates the window now: it was told of each
   phrase from the worker's thread, which Qt will not act on, so what you had dictated was
   never shown and a sample could not be kept from the window at all.
-- **The words you put right are learned from the samples.** Where you change the box, one
-  word for another ("Junty" to "Jonti"), the form that was typed is put right from then on
-  wherever it is typed again, and the word you meant is given to the recogniser as a hint,
-  so that it hears it better next time. Only what you changed counts: what the program
-  itself puts right is not learned, and a sample kept before this version teaches nothing.
-  The pairs are worked out again from the samples kept, so a sample deleted forgets what
-  it taught, and only the pairs are kept, in a file only the person's own account can read.
+- **Corrections made in a sample are noted, never put in as blanket changes.** Where you
+  change the box, one word for another ("Junty" to "Jonti"), the correction is noted and
+  shown in the window — but it is not put in place of what is said wherever that form
+  appears. The same sound may be either: "junty" may be a misspelling of "jaunty", and
+  "chairs" of "cheers", and only the words around it can say which was meant, so the notes
+  wait for a review of the context. Only what you changed counts (what the program itself
+  puts right is not noted), the notes are worked out again from the samples kept — a
+  sample deleted forgets what it taught — and they are kept in a file only the person's
+  own account can read.
+- **A word of your own written as two words, or in small letters, now goes in.** "DeepSeek"
+  in My words was left as "Deep Seek" in small letters, and at the start of a sentence
+  never went in at all: a two-word match had to look like a name. Two words joined that
+  make no word at all ("deepseek" is no word of English) now match a word of yours, and one
+  of your words written in another case is put in as you spelled it. The two must be next
+  to each other: a comma or a stop between them is a break, and "John. Tea" is no "Jonti".
 - The samples window can **check the samples itself**: "Check these samples" types each
   again each of the three ways full stops can be put, says how many marks each got wrong
   on the person's own dictation and which did best, and "Use this way" sets the full stops

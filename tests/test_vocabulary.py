@@ -389,11 +389,62 @@ class WithADictionaryThatKnowsNames(unittest.TestCase):
                              ("We paid by Pay Pal.", "We paid by PayPal."),
                              ("Publish it with Word Press.", "Publish it with WordPress.")):
             self.assertEqual(self.fix(heard, listed), typed, heard)
-        # Written small they are words, and so is the first word of a sentence.
-        for heard in ("Publish it with word press.", "Push it to git hub."):
-            self.assertEqual(self.fix(heard, listed), heard)
+        # Written small, two ordinary words that make a word are left as words; where they
+        # joined make no word at all, they are the person's word written in another case.
+        self.assertEqual(self.fix("Push it to git hub.", listed), "Push it to GitHub.")
+        self.assertEqual(self.fix("Publish it with word press.", listed),
+                         "Publish it with WordPress.")
         self.assertEqual(self.fix("I saw Amy at the shop.", ("Sam",)), "I saw Amy at the shop.")
         self.assertEqual(self.fix("Saw Amy at the shop.", ("Sam",)), "Saw Amy at the shop.")
+
+    def test_a_word_of_theirs_written_as_two_or_in_small_letters(self):
+        # ("Deep Seek is useful." at the start of a sentence, or in small letters, looked
+        # like two ordinary words: joined, they make no word at all, which says they are
+        # one of the person's. See vocabulary._joined_made_up.)
+        listed = ("DeepSeek", "Linux Speaking")
+        for heard, typed in (
+                ("I use Deep Seek every day.", "I use DeepSeek every day."),
+                ("I use deep seek every day.", "I use DeepSeek every day."),
+                ("Deep Seek is useful.", "DeepSeek is useful."),
+                ("I asked deepseek about it.", "I asked DeepSeek about it."),
+                ("I use Linux speaking daily.", "I use Linux Speaking daily."),
+                ("I use linux speaking daily.", "I use Linux Speaking daily.")):
+            self.assertEqual(self.fix(heard, listed), typed, heard)
+
+    def test_two_words_that_are_words_and_join_to_one_that_is_not(self):
+        # (The guard does the work here even with "deep" and "seek" known: joined, they
+        # are no word of English.)
+        known = Lexicon(lower={"use", "i", "for", "that", "deep", "seek", "every", "day",
+                               "is", "useful"},
+                        capitalised={"John"})
+        for heard, typed in (("I use deep seek for that.", "I use DeepSeek for that."),
+                             ("deep seek is useful.", "DeepSeek is useful.")):
+            self.assertEqual(vocabulary.by_sound(heard, "", ("DeepSeek",), known), typed, heard)
+
+    def test_two_words_with_a_pause_between_them_are_not_one_of_theirs(self):
+        # (A comma or a stop is a break, and "John. Tea" is no "Jonti": the words must be
+        # next to each other.)
+        listed = ("Jonti", "PayPal", "WordPress", "DeepSeek")
+        for heard in ("I spoke to John. Tea was served.",
+                      "I will pay, pal of mine.",
+                      "Say the word. Press enter.",
+                      "I use deep, seek for that."):
+            self.assertEqual(self.fix(heard, listed), heard, heard)
+        self.assertFalse(vocabulary.mentions("Say the word. Press enter.", ("WordPress",)))
+
+    def test_the_hint_does_not_join_words_across_a_pause(self):
+        # (With a dictionary that knows "pay", "pal", "deep" and "seek" as the words they
+        # are, as any real one does.)
+        known = Lexicon(lower=set(PEOPLE.lower) | {"pay", "pal", "deep", "seek"},
+                        capitalised=set(PEOPLE.capitalised))
+        self.assertEqual(vocabulary.settle("I will PayPal.", "I will pay, pal.", "",
+                                           ("PayPal",), known), "I will pay, pal.")
+        self.assertEqual(vocabulary.settle("I use DeepSeek.", "I use deep, seek.", "",
+                                           ("DeepSeek",), known), "I use deep, seek.")
+
+    def test_the_own_spelling_does_not_take_an_everyday_word(self):
+        self.assertEqual(vocabulary.settle("I Will go.", "I will go.", "", ("Will",), PEOPLE),
+                         "I will go.")
 
     def test_two_hearings_after_dear_or_hello(self):
         def settle(hinted, plain, words):

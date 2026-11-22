@@ -417,32 +417,6 @@ class AsReviewed(HeldBackAndDecided):
         self.assertEqual(page.text, "I sent the parcel to the vet")   # nothing was typed
         self.assertEqual(engine._held_mark, held)                     # and nothing was lost
 
-    def test_a_word_learned_from_the_samples_is_put_right(self):
-        page = Page()
-        engine = self.engine(page)
-        engine.learned = {"junty": "Jonti"}
-        self.assertEqual(self.said(engine, "I spoke to Junty about it."),
-                         "I spoke to Jonti about it")
-
-    def test_learned_words_are_left_alone_in_a_shortcut_and_a_spelling(self):
-        page = Page()
-        engine = self.engine(page)
-        engine.learned = {"junty": "Jonti"}
-        engine._dictate("Junty", then=" done")
-        self.assertEqual(page.text, "Junty done")
-        page = Page()
-        engine = self.engine(page)
-        engine.learned = {"junty": "Jonti"}
-        engine._dictate("Junty", exact=True)
-        self.assertEqual(page.text, "Junty")
-
-    def test_the_hint_carries_the_words_learned(self):
-        page = Page()
-        engine = self.engine(page)
-        engine.settings.words = ("Sam",)
-        engine.learned = {"junty": "Jonti"}
-        self.assertEqual(engine._hint_words(), ("Sam", "Jonti"))
-
     def test_a_word_asked_for_that_sounds_like_the_one_on_the_page(self):
         from tests.programs import Word
         page = Word()
@@ -455,6 +429,7 @@ class AsReviewed(HeldBackAndDecided):
     def test_alike_in_text(self):
         from dictation.engine import alike_in_text
         self.assertEqual(alike_in_text("groan", "I have grown a lot"), ["grown"])
+        self.assertEqual(alike_in_text("write", "the right way is this"), ["right"])
         self.assertEqual(alike_in_text("the cat", "the cat sat"), [])
         self.assertEqual(alike_in_text("select the groan", "I have grown a lot"),
                          ["select the grown"])
@@ -922,6 +897,36 @@ class EachProgramsRecord(HeldBackAndDecided):
         self.said(engine, "Is the meeting at three?")
         self.said(engine, "Correct, yes.")                        # "yes" wasn't typed: a sentence
         self.assertIn("Correct, yes", page.text)
+
+    def test_correct_said_with_a_pause_and_a_whole_sentence_puts_the_sentence_right(self):
+        from tests.programs import Word
+        page = Word()
+        engine = self.engine(page, ends="said")
+        self.said(engine, "I guess I'll carry on the other side.")
+        self.said(engine, "Correct, I guess I'll carry on the other side.")
+        self.assertIsNotNone(page.selection)
+        self.assertEqual(page.text[page.selection[0]:page.selection[1]],
+                         "I guess I'll carry on the other side")
+        self.assertNotIn("Correct", page.text)
+
+    def test_a_correction_sounds_like_the_words_it_puts_right(self):
+        # ("Correct, write" for "the right way is this": the words just typed, by sound.)
+        from tests.programs import Word
+        page = Word()
+        engine = self.engine(page, ends="said")
+        self.said(engine, "The right way is this.")
+        self.said(engine, "Correct, write.")
+        self.assertIsNotNone(page.selection)
+        self.assertEqual(page.text[page.selection[0]:page.selection[1]], "right")
+        self.assertNotIn("Correct", page.text)
+
+    def test_correct_said_with_a_pause_alone_is_still_a_sentence(self):
+        from tests.programs import Word
+        page = Word()
+        engine = self.engine(page, ends="said")
+        self.said(engine, "I guess I'll carry on the other side.")
+        self.said(engine, "Correct, that is what I meant.")   # not what was just typed
+        self.assertIn("Correct, that is what I meant", page.text)
 
     def test_a_short_correction_not_found_is_not_typed(self):
         from tests.programs import Word

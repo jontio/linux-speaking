@@ -1,23 +1,19 @@
-"""Words learned from the samples of real dictation: what the recogniser wrote, and what
-the person meant instead.
+"""What the person put right in their samples, noted for the review that decides the words.
 
 Each sample keeps, phrase by phrase, what the recogniser wrote for it, and the text as
-the person put it right (see samples.py). What is learned is only what the person changed
-in the box: the sample keeps the text as the program typed it (tray.SamplesWindow), and
-that is compared with the text as the person left it. What the program itself puts right
-(sums of money in figures, the sound-alike tidy-up) is no word the recogniser got wrong,
-and is never learned. A word put right for another is: "Junty" changed to "Jonti". Pairs
-are counted over every sample kept, and one is used only where the form was changed in at
-least half the places it was written; one form with two meanings is no telling, and is
-left. A sample kept by an earlier version, which did not keep the program's own typing,
-teaches nothing.
+the person put it right (see samples.py). What the person changed in the box, one word
+for another ("Junty" changed to "Jonti"), is noted here: a witness of what the recogniser
+gets wrong for this voice.
 
-What is learned is used twice: a phrase said later with the heard form in it has the
-learned form put in its place, and the learned forms go to the recogniser as a hint, so
-that it hears them better next time. The pairs are worked out again from the samples kept
-whenever one is kept or deleted, so a sample deleted forgets what it taught. Nothing but
-the pairs is kept, on this computer, in a file only its owner can read, beside the
-samples.
+It is NOT put in place of what is said. The same sound may be either — "junty" may be a
+misspelling of "jaunty", and "chairs" of "cheers" — and only the words around it can say
+which was meant, so a noted correction waits for the review that reads the context (and
+is shown in the samples window until then). A blanket change would take a word away from
+the person for good.
+
+The notes are worked out again from the samples kept whenever one is kept or deleted, so
+a sample deleted forgets what it taught. Only the pairs are kept, on this computer, in a
+file only its owner can read, beside the samples.
 """
 from __future__ import annotations
 
@@ -38,9 +34,9 @@ def pairs(kept: list) -> dict:
     from the samples kept (see samples.kept).
 
     The text the program itself typed ("typed") is compared with the text the person left
-    ("meant"): only what the person changed is learned. A sample with no "typed" (kept by
-    an earlier version) teaches nothing. Only one word for one word: a pair of two words
-    for one, or one for two, is too uncertain to put in place of what will be said later."""
+    ("meant"): only what the person changed is noted. A sample with no "typed" (kept by an
+    earlier version) teaches nothing. Only one word for one word: a pair of two words for
+    one, or one for two, is too uncertain to act on later."""
     counts, seen = {}, {}
     for _, record in kept:
         typed = " ".join(str(record.get("typed", "")).split())
@@ -72,7 +68,7 @@ def pairs(kept: list) -> dict:
 
 
 def load(path: str = LEARNED) -> dict:
-    """The pairs learned last time, or {} if there are none that can be read."""
+    """The pairs noted last time, or {} if there are none that can be read."""
     try:
         with open(path, encoding="utf-8") as f:
             saved = json.load(f)
@@ -117,36 +113,3 @@ def from_samples(folder: str = "", path: str = LEARNED) -> dict:
     if load(path) != table:
         save(table, path)
     return table
-
-
-def words(table: dict) -> tuple:
-    """The forms the person meant, each once, for the recogniser's hint."""
-    seen, out = set(), []
-    for wanted in table.values():
-        if wanted.lower() not in seen:
-            seen.add(wanted.lower())
-            out.append(wanted)
-    return tuple(out)
-
-
-def apply(text: str, table: dict) -> str:
-    """`text` with each learned form put in place of the form that was on screen, in the
-    case it was written: a word that began a sentence keeps its capital, and a possessive
-    ('s) stays with it. A form inside a contraction ("don't") is no such word, and stays."""
-    if not table or not text:
-        return text
-    keys = sorted((key for key in table if key), key=len, reverse=True)
-    if not keys:
-        return text
-    pattern = re.compile(r"(?<![^\W_])((?:"
-                         + "|".join(re.escape(key) for key in keys)
-                         + r"))(['’][sS])?(?![^\W_])(?!['’])", re.IGNORECASE)
-
-    def put(match: re.Match) -> str:
-        word, possessive = match.group(1), match.group(2) or ""
-        meant = table.get(word.lower())
-        if meant is None:
-            return match.group()
-        word = meant[:1].upper() + meant[1:] if word[:1].isupper() else meant
-        return word + possessive
-    return pattern.sub(put, text)

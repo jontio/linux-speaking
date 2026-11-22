@@ -204,15 +204,18 @@ class SentencesThatBeginWithACommandWord(unittest.TestCase):
     """ "Select" and "correct" start sentences too. Where it can be told, it is typed."""
 
     def test_punctuation_straight_after_the_word_makes_it_only_perhaps_a_command(self):
-        # A word or two after it: perhaps the command, said with a pause; the engine decides
-        # by whether they were typed a moment ago (see Engine.handle_text). More: a sentence.
+        # With a pause after it: perhaps the command; the engine decides by whether the
+        # words after it were typed a moment ago (see Engine.handle_text), however long
+        # they are: a whole sentence said over again to put it right.
         for heard, words in (("Correct, yes.", "yes"), ("Select: the first one.", "the first one"),
                              ("Correct. The cat sat.", "the cat sat"), ("Select - the cat", "the cat"),
-                             ("Correct... the cat", "the cat"), ("Correct, John T.", "john t")):
+                             ("Correct... the cat", "the cat"), ("Correct, John T.", "john t"),
+                             ("Correct, I guess I'll carry on the other side.",
+                              "i guess i'll carry on the other side")):
             self.assertEqual(interpret(heard, True), Command(heard.split()[0].strip(",.:").lower(), words,
                                                              maybe=True), heard)
-        heard = "Correct, the meeting is at three today."
-        self.assertEqual(interpret(heard, True), Dictation(heard))
+        heard = "Correct, " + " ".join(f"word{n}" for n in range(31))
+        self.assertEqual(interpret(heard, True), Dictation(heard))   # (longer than is ever one)
 
     def test_punctuation_further_on_does_not(self):
         self.assertEqual(interpret("Select the cat, the dog.", True), Command("select", "the cat the dog"))

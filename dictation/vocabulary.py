@@ -235,6 +235,11 @@ def mentions(text: str, words) -> bool:
     return any(_marks([_key(token) for token in text.split()], words))
 
 
+def _squashed(word: str) -> str:
+    """A word's letters only, in small letters: "Deep Seek" and "DeepSeek" are one."""
+    return "".join(c for c in _plain(str(word)) if c.isalnum())
+
+
 # How each letter sounds when it is said by its name: the "E" of "John E".
 _LETTER_SOUNDS = dict(pair.split("=") for pair in (
     "a=A b=bE c=sE d=dE e=E f=ef g=jE h=Ak i=I j=jA k=kA l=el m=em n=en o=o p=pE q=kU "
@@ -365,6 +370,30 @@ def _near(key: str) -> str:
     return re.sub("^([^" + _VOWEL_SOUNDS + "]*)u", r"\1o", key, count=1)
 
 
+def _joined_made_up(cores: list, lexicon: Lexicon) -> bool:
+    """Whether tokens joined make a word in no dictionary, as "Deep Seek" does for
+    "DeepSeek": no ordinary run of English words can be one of the person's as well, and one
+    of theirs written as two is otherwise held back for want of a capital ("Deep Seek is
+    useful" at the start of a sentence, or written in small letters). A letter said by
+    itself ("I") is no such word."""
+    joined = _squashed("".join(cores))
+    return len(joined) > 1 and joined not in I_WORDS and _made_up(joined, lexicon)
+
+
+def _joined_like_hinted(p: list, h: list, h1: int, h2: int, p1: int, p2: int,
+                        lexicon: Lexicon) -> bool:
+    """Whether the plain hearing's two words, with nothing between them, are the hinted
+    word written as two: the same sound, and the two joined no word at all ("Deep Seek"
+    for "DeepSeek"). A comma or a stop between them is a break, and no word: "pay, pal"
+    is not "PayPal". (Their sound is of the words as they were written: the capital in the
+    middle of "GitHub" is what makes it two, and the plain hearing's "git hub".)"""
+    if p2 - p1 != 2 or not p[p1][-1:].isalnum() or not p[p1 + 1][:1].isalnum():
+        return False
+    if not _joined_made_up(p[p1:p2], lexicon):
+        return False
+    return sound_key(" ".join(h[h1:h2])) == sound_key(" ".join(p[p1:p2]))
+
+
 def _made_up(core: str, lexicon: Lexicon) -> bool:
     """Whether the recogniser made `core` up: it is in no dictionary, as an everyday word or
     as a name. Without a dictionary nothing can be told, so nothing is."""
@@ -422,13 +451,16 @@ def by_sound(text: str, before: str, words, lexicon: Lexicon | None = None) -> s
             cores = [re.sub("['’]s$", "", _EDGES.sub("", token)) for token in piece]
             if len(piece) < count:
                 continue
-            if count == 2 and not (piece[0][-1:].isalnum() and all(
-                    _part_of_a_name(tokens, at + n, lexicon) for n in range(count))):
+            if count == 2 and not (piece[0][-1:].isalnum() and (
+                    all(_part_of_a_name(tokens, at + n, lexicon) for n in range(count))
+                    or (piece[-1][:1].isalnum() and _joined_made_up(cores, lexicon)))):
+                # (Two words with nothing between them: a comma or a stop there ends a
+                # clause or a sentence, and "John. Tea" is no "Jonti".)
                 continue
             word = keys.get(sound_key(" ".join(_key(token) for token in piece)))
             if word is None and count == 1 and _made_up(cores[0], lexicon):
                 word = near.get(_near(sound_key(cores[0])))
-            if word and _key(" ".join(piece)) != _key(word):
+            if word and (" ".join(cores) != word or _key(" ".join(piece)) != _key(word)):
                 lead = re.match(r"\W*", piece[0]).group()       # the bracket before it stays,
                 tail = re.search(r"(?:['’]s)?[^\w']*$", piece[-1]).group()  # the comma after
                 following = tokens[at + count][:1] if at + count < len(tokens) else ""
@@ -466,7 +498,8 @@ def settle(hinted: str, plain: str, before: str, words, lexicon: Lexicon | None 
             continue
         alone = h1 == 0 and h2 == len(h) and all(mine)  # the word, said by itself
         lead = [_key(token) for token in before.split()[-3:]] + h_keys[:h1]
-        named = _looks_like_a_name(p, p1, p2, lexicon)
+        named = (_looks_like_a_name(p, p1, p2, lexicon)
+                 or _joined_like_hinted(p, h, h1, h2, p1, p2, lexicon))
         everyday = all(lexicon.ordinary(key) for key in p_keys[p1:p2] if key)
         # Whether what was said there ends with it: the phrase, or a part with a mark after.
         ends = h2 == len(h) or h[h2 - 1][-1:] in ",.!?;:"
@@ -491,7 +524,18 @@ def settle(hinted: str, plain: str, before: str, words, lexicon: Lexicon | None 
             out += p[p1:p2]
             kept += [False] * (p2 - p1)
     if not any(kept):
-        # The hint changed nothing that stood, so the plain hearing is the truer one.
+        # The hint changed nothing that stood; but the same words may be in the person's
+        # own spelling in one hearing and not the other ("DeepSeek" and "deepseek"): that
+        # spelling is the truer one — unless the words are everyday ones, which the own
+        # word must not take the place of ("I will go" is not "I Will go").
+        if any(mine) and hinted.lower() == plain.lower():
+            everyday = all(lexicon.ordinary(key) for key in p_keys if key)
+            exact = [str(word) for word in words if str(word).strip()]
+            in_hinted = any(word in hinted for word in exact)
+            in_plain = any(word in plain for word in exact)
+            if not everyday and in_hinted and not in_plain:
+                return hinted
+            return plain
         return plain if any(mine) else hinted
     return " ".join(_spelled(out, kept, words))
 

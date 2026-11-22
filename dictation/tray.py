@@ -4922,9 +4922,9 @@ class SamplesWindow(Window):
             "meant, with every full stop, comma and capital where you want them, and press "
             "\u201cKeep this sample\u201d. Make up what you say: it is kept, with its sound, "
             "on this computer, so that where full stops go can be worked out from how you "
-            "really dictate. Words the recogniser got wrong are learned from it, and put "
-            "right from then on; \u201cCheck these samples\u201d scores each way of putting "
-            "full stops on them.")
+            "really dictate. Corrections you make in it are noted, and weighed up later "
+            "with the words around them; \u201cCheck these samples\u201d scores each way "
+            "of putting full stops on them.")
         intro.setWordWrap(True)
         column.addWidget(intro)
         self.box = TryBox()
@@ -5100,15 +5100,16 @@ class SamplesWindow(Window):
         self.learn_from_samples()
 
     def learn_from_samples(self) -> None:
-        """Work out the words the recogniser got wrong, from what is kept, and put them to
-        use: in what is said from then on, and as a hint for the recogniser (see learn.py)."""
+        """Work out the corrections the person made in the samples, from what is kept, and
+        say so. They are not put in place of what is said (see learn.py): the same sound may
+        be either — "junty" may be a misspelling of "jaunty", "chairs" of "cheers" — and only
+        the words around it can say which was meant."""
         try:
             self.learned = learn_module.from_samples(self.folder)
         except OSError as e:
-            self.learn_label.setText(f"The words in the samples could not be learned: "
-                                     f"{e.strerror or e}.")
+            self.learn_label.setText(f"The corrections in the samples could not be written "
+                                     f"down: {e.strerror or e}.")
             return
-        self.engine.learned = self.learned
         # (The samples have changed: an offer made from an older set of them is withdrawn.)
         self.use_button.hide()
         self._best = ""
@@ -5122,13 +5123,14 @@ class SamplesWindow(Window):
             shown = ", ".join(f"“{heard}” → “{wanted}”"
                               for heard, wanted in pairs[:4])
             more = f" and {len(pairs) - 4} more" if len(pairs) > 4 else ""
-            self.learn_label.setText(f"Learned {len(pairs)} word"
-                                     f"{'s' if len(pairs) != 1 else ''} from your samples, put "
-                                     f"right from now on: {shown}{more}.")
+            self.learn_label.setText(f"Noted {len(pairs)} correction"
+                                     f"{'s' if len(pairs) != 1 else ''} from your samples, "
+                                     f"to be weighed up with the words around them (not put "
+                                     f"in as blanket changes): {shown}{more}.")
             self.learn_label.setToolTip("\n".join(f"{heard} → {wanted}"
                                                  for heard, wanted in pairs))
         else:
-            self.learn_label.setText("No misheard words to learn yet.")
+            self.learn_label.setText("No corrections to note yet.")
             self.learn_label.setToolTip("")
 
     def check_samples(self) -> None:

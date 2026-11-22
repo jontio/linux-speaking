@@ -198,9 +198,11 @@ MAX_SELECT_WORDS = 8
 # "Correct, yes." and "Select: the first one." The recogniser hears a pause after the
 # word and writes it down. After a command word there is mostly none; but some people
 # pause after "correct" before the words to put right, and then it is only perhaps a
-# sentence: a word or two after it, that were typed a moment ago, are the command.
+# sentence: the engine keeps it one only if the words after it were typed a moment ago
+# (see Engine._just_typed_words), which can be a whole sentence said over again:
+# "Correct, I guess I'll carry on the other side" right after that sentence.
 _THEN_PUNCTUATION = re.compile(r"\s*(?:[,.;:!?…]|[-–—]\s)")
-MAYBE_SELECT_WORDS = 3
+MAYBE_SELECT_WORDS = 30
 
 
 _DELETE_WORDS = re.compile(r"delete (?:the )?(?:last|previous) (?:" + _N + r" )?words?")
@@ -425,12 +427,15 @@ def _selecting(phrase: str, raw: str, disabled) -> Command | None:
             continue
         words = phrase[len(said) + 1:]
         first = re.search(r"\b" + said + r"\b", raw, re.IGNORECASE)
+        if first and _THEN_PUNCTUATION.match(raw, first.end()):
+            # ("Correct, I guess I'll carry on the other side": perhaps the command, said
+            # after a pause with the sentence just said; the engine tells by whether those
+            # words are what it has just typed.)
+            if len(words.split()) <= MAYBE_SELECT_WORDS:
+                return Command(said, words, maybe=True)
+            return None
         if len(words.split()) > MAX_SELECT_WORDS:
             return None
-        if first and _THEN_PUNCTUATION.match(raw, first.end()):
-            if len(words.split()) > MAYBE_SELECT_WORDS:
-                return None
-            return Command(said, words, maybe=True)
         return Command(said, words)
     return _clicking(phrase, raw, disabled)
 
