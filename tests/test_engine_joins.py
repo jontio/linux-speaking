@@ -443,6 +443,22 @@ class AsReviewed(HeldBackAndDecided):
         engine.learned = {"junty": "Jonti"}
         self.assertEqual(engine._hint_words(), ("Sam", "Jonti"))
 
+    def test_a_word_asked_for_that_sounds_like_the_one_on_the_page(self):
+        from tests.programs import Word
+        page = Word()
+        engine = self.engine(page)
+        self.said(engine, "I have grown a lot.")
+        self.said(engine, "select groan")        # ("grown" heard as "groan")
+        self.assertIsNotNone(page.selection)
+        self.assertEqual(page.text[page.selection[0]:page.selection[1]], "grown")
+
+    def test_alike_in_text(self):
+        from dictation.engine import alike_in_text
+        self.assertEqual(alike_in_text("groan", "I have grown a lot"), ["grown"])
+        self.assertEqual(alike_in_text("the cat", "the cat sat"), [])
+        self.assertEqual(alike_in_text("select the groan", "I have grown a lot"),
+                         ["select the grown"])
+
     def test_no_quiet_spell_stop_while_spelling(self):
         from dictation import config
         import time

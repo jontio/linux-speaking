@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **"Select" or "correct" a word that sounded like the one on the page found nothing.** Said
+  as "select grown", written "select groan", it said there was no such word, though
+  "grown" was in the text. The words are now looked for in the text before the cursor by
+  their sound, one word for one, and asked for again as they are there.
 - **Samples of your dictation can be seen and thrown away.** The samples window (Settings →
   Record dictation samples…) lists the samples kept: when each was kept, how many phrases,
   and the text you meant when the mouse rests on one. It opens the folder they are in, and

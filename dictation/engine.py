@@ -184,6 +184,35 @@ def _after_the_word(text: str) -> str:
     return re.sub(r"(?i)^\W*(?:correct|select)\b[\s,.;:!?…-]*", "", text).strip()
 
 
+def alike_in_text(words: str, before: str, near: int = 80) -> list:
+    """`words` with each word that is not in `before` put as the word there that sounds the
+    same, where one does: "grown" for "groan", however the recogniser wrote it the first
+    time. One word for one; a word already there as it was asked for is left, and the
+    nearest to the cursor wins where several sound the same. [] if nothing was changed."""
+    asked = plain_words(words).split()
+    if not asked or not before:
+        return []
+    there = re.findall(r"[^\W_]+(?:['’][^\W_]+)*", before)[-near:]
+    if not there:
+        return []
+    heard = {word.lower() for word in there}
+    keys = {}
+    for word in reversed(there):          # (nearest to the cursor first, and kept)
+        keys.setdefault(vocabulary.sound_key(word.lower()), word)
+    out, changed = [], False
+    for word in asked:
+        if word.lower() in heard:
+            out.append(word)
+            continue
+        alike = keys.get(vocabulary.sound_key(word.lower()), word)
+        if alike.lower() != word.lower() and len(word) > 1 and len(alike) > 1:
+            out.append(alike)
+            changed = True
+        else:
+            out.append(word)
+    return [" ".join(out)] if changed else []
+
+
 def untyped(held: tuple) -> tuple:
     """A held mark (see Engine._dictate) no longer on the page: the recogniser's own mark again,
     not the one typed for the time being in its place (a full stop where it wrote none)."""
@@ -2123,6 +2152,23 @@ class Engine:
                     if again.get("ok"):
                         reply = again
                         break
+            if name in ("select", "correct") and reply.get("why") == "can't find that":
+                # The word may be in the text as it was typed there, sounding the same:
+                # "grown" asked for as "groan". The text before the cursor is looked through
+                # for a word that sounds like each one asked for, and asked for again as it
+                # is there. (The programs try the words they know sound alike themselves:
+                # this is for the ones they don't.)
+                context = self.targets.request({"op": "context"})
+                before = context.get("before", "") if context.get("ok") else ""
+                if isinstance(before, str):
+                    for other in alike_in_text(action.arg, before):
+                        again = self.targets.request({
+                            "op": "command", "name": name, "arg": other,
+                            "nearest": not self.settings.enabled("choose_numbers"),
+                        })
+                        if again.get("ok"):
+                            reply = again
+                            break
             tab = {"op": "command", "name": "tab"}
             if name == "tab" and reply.get("why") == "unknown command":
                 # Where there is no Tab command, a tab character does the same job.

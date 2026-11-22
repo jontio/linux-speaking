@@ -98,7 +98,10 @@ class Correct(unittest.TestCase):
             engine.lexicon, engine.keep_final = None, False
             engine.handle_text("Correct me if I'm wrong.", True)
         self.assertEqual(engine.status.last_heard, "Correct me if I'm wrong.")
-        self.assertEqual([name for name, _ in program.asked], ["correct", "context", "insert"])
+        # (The second "context" is for looking in the text for a word that sounds like
+        # the one asked for: see engine.alike_in_text.)
+        self.assertEqual([name for name, _ in program.asked],
+                         ["correct", "context", "context", "insert"])
 
     def test_select_does_the_same(self):
         program = Program()
@@ -107,7 +110,8 @@ class Correct(unittest.TestCase):
             engine.lexicon, engine.keep_final = None, False
             engine.handle_text("Select the best option.", True)
         self.assertEqual(engine.status.last_heard, "Select the best option.")
-        self.assertEqual([name for name, _ in program.asked], ["select", "context", "insert"])
+        self.assertEqual([name for name, _ in program.asked],
+                         ["select", "context", "context", "insert"])
 
     def test_words_that_are_there_are_selected_and_nothing_is_typed(self):
         program = Program()
