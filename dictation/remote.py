@@ -73,7 +73,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, config
+from . import __version__, config, joins
 
 MAX_BODY = 4 * 1024 * 1024  # a 20 second phrase is 640 kB
 MAX_REPLY = 256 * 1024      # more than any answer comes to: the words, or the list of models
@@ -879,7 +879,7 @@ class Client:
     def hear(self, kind: str, audio, awake: bool, prompt: str = "", model: str = "",
              otherwise=(), quick: bool = False, exact: bool = False, sure: bool = False,
              speech_only: bool = True, wake_same: bool = True, code: bool = False,
-             letters: bool = False, sound: str = "pcm") -> dict:
+             letters: bool = False, sound: str = "pcm", lead: int = 0) -> dict:
         """One piece of listening. `kind` is "phrase", or "alone" for a second or so of
         sound with nothing to go on. `model` is the one wanted there; if it hasn't got
         it, the first of `otherwise` that it has, else its own choice. `quick` asks for
@@ -891,11 +891,16 @@ class Client:
         `code` says that it is source code, which the other computer may keep a bigger
         Whisper for. `sound` is how the sound is to be packed for the journey (see
         config.SOUNDS): it goes that way if the other computer said it can unpack it,
-        and otherwise as near to it as both can."""
+        and otherwise as near to it as both can. `lead`: how many samples at the start of
+        `audio` are the end of the phrase before, there to be heard with it and not as part of
+        it (see config.LEFT_CONTEXT): the other computer says it took them so ("lead" in its
+        answer), or it is an earlier version, which heard them as part of the phrase."""
         header = {"kind": kind, "awake": bool(awake), "prompt": prompt, "model": model,
                   "otherwise": list(otherwise), "quick": bool(quick), "exact": bool(exact),
                   "sure": bool(sure), "speech_only": bool(speech_only),
                   "wake_same": bool(wake_same), "code": bool(code), "letters": bool(letters)}
+        if lead:
+            header["lead"] = int(lead)
         made = {}
 
         def body(there) -> bytes:
@@ -1131,23 +1136,41 @@ class Offload:
         self.ignored = ""
 
     def transcribe(self, audio, awake: bool, prompt: str = "", exact: bool = False,
-                   code: bool = False, letters: bool = False) -> str:
+                   code: bool = False, letters: bool = False, there_only: bool = False,
+                   lead: int = 0) -> str:
+        """`there_only`: if the other computer doesn't answer, nothing ("") rather than this
+        computer's hearing: for hearing a phrase again, which mustn't keep the next waiting."""
         too_long = not awake and len(audio) > config.WAKE_MAX_SECONDS * config.RATE
         local = self._local()
+        self.join_heard = None
+        if lead and getattr(self, "_no_lead", False):
+            audio, lead = audio[lead:], 0    # (the other computer is an earlier version)
         if (awake or self.wake or local is None) and not too_long:
-            reply = self._ask("phrase", audio, awake, prompt, exact, code, letters)
+            reply = self._ask("phrase", audio, awake, prompt, exact, code, letters, lead)
+            if reply is not None and lead and reply.get("lead") != lead:
+                # An earlier version: it heard the phrase before as part of this one. Asked
+                # again without it, and not sent it again.
+                self._no_lead = True
+                audio, lead = audio[lead:], 0
+                reply = self._ask("phrase", audio, awake, prompt, exact, code, letters)
             if reply is not None:
                 self.not_speech = _likelihood(reply.get("not_speech"))
                 self.ignored = str(reply.get("ignored", ""))
-                return str(reply.get("text", ""))
-        if local is None:
+                join = reply.get("join")
+                if (isinstance(join, list) and len(join) == 2 and join[0] in ("", ".", "?", "!", ",")
+                        and isinstance(join[1], bool)):
+                    self.join_heard = (join[0], join[1])
+                return joins.heard(str(reply.get("text", "")), self.join_heard)
+        if local is None or there_only:
             self.not_speech, self.ignored = 0.0, ""
-            return ""                     # nothing here to hear it with
+            return ""                     # nothing here to hear it with, or not to be
         text = local.transcribe(audio, awake, prompt, **({"exact": True} if exact else {}),
                                 **({"code": True} if code else {}),
-                                **({"letters": True} if letters else {}))
+                                **({"letters": True} if letters else {}),
+                                **({"lead": lead} if lead else {}))
         self.not_speech = getattr(local, "not_speech", 0.0)
         self.ignored = getattr(local, "ignored", "")
+        self.join_heard = getattr(text, "at_join", None) if lead else None
         return text
 
     def hear_alone(self, audio) -> str:
@@ -1158,7 +1181,7 @@ class Offload:
         return local.hear_alone(audio) if local is not None else ""
 
     def _ask(self, kind: str, audio, awake: bool, prompt: str, exact: bool = False,
-             code: bool = False, letters: bool = False):
+             code: bool = False, letters: bool = False, lead: int = 0):
         if self._clock() < self._down_until:
             return None
         # With a recogniser here, one failure is enough: the phrase is heard here, and
@@ -1170,7 +1193,8 @@ class Offload:
             try:
                 reply = self.client.hear(kind, audio, awake, prompt, self.model, self.otherwise,
                                          self.quick, exact, speech_only=self.speech_only,
-                                         code=code, letters=letters, sound=self.sound)
+                                         code=code, letters=letters, sound=self.sound,
+                                         **({"lead": lead} if lead else {}))
                 if not isinstance(reply, dict):
                     raise RemoteError("The other computer's answer was not understood.")
                 break

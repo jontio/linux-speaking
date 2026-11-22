@@ -724,6 +724,13 @@ class KeysTarget:
             reply["back" if went else "too_far"] = True
             if went:
                 phrase.back = left_between(phrase.correction[6], delete_before, delete_after)
+        newest = self.history[-1] if self.history else None
+        if (delete_before and newest is not None and not box.selected
+                and PARAGRAPH not in newest and LINE not in newest and "\n" not in newest
+                and len(newest) <= delete_before and box.before.endswith(newest)):
+            # What this took out was the whole of the last phrase (a full stop typed for the
+            # time being, a word put right): it is no longer there to be scratched.
+            self.history.pop()
         if text:
             self.history.append(phrase)
             del self.history[:-HISTORY]
@@ -761,12 +768,22 @@ class KeysTarget:
         self._correction = phrase.correction
         return {"ok": True, "restored": True}
 
-    def _last(self, before: str):
-        """The last phrase typed, if it is still what is just before the cursor."""
+    def _last(self, before: str, box=None):
+        """The last phrase typed, if it is still what is just before the cursor. One with a
+        line break in it is only if the cursor's line is all that came after the break, and
+        what the box holds before the cursor ends with the whole of it: after the break, the
+        line alone can't tell (empty, it "ends" every text), and "scratch that" would press
+        Backspace wherever the cursor had gone."""
         if not self.history:
             return None
-        tail = self.history[-1].replace(PARAGRAPH, "\n").replace(LINE, "\n").rsplit("\n", 1)[-1]
-        return self.history[-1] if before.endswith(tail) else None
+        last = self.history[-1]
+        written = last.replace(PARAGRAPH, "\n").replace(LINE, "\n")
+        if "\n" not in written:
+            return last if before.endswith(written) else None
+        if before != written.rsplit("\n", 1)[-1] or box is None:
+            return None
+        whole = plain_breaks(box.before).translate(UNSEEN)
+        return last if whole.endswith(plain_breaks(as_one_piece(last)).translate(UNSEEN)) else None
 
     def _command(self, box, before: str, after: str, name: str, arg: str) -> dict:
         count = max(1, min(99, int(arg))) if str(arg).isdigit() else 1
@@ -796,7 +813,7 @@ class KeysTarget:
                     self.history.clear()
                     return {"ok": False, "why": "nothing to scratch"}
                 return self._put_back(self.history.pop(), away)
-            last = self._last(before)
+            last = self._last(before, box)
             if last is None or box.selected:
                 self.history.clear()
                 return {"ok": False, "why": "nothing to scratch"}
@@ -806,7 +823,7 @@ class KeysTarget:
             self._press([("press", "backspace", typed_length(last))])
             return {"ok": True}
         if name == "select_last":
-            last = self._last(before)
+            last = self._last(before, box)
             if last is None:
                 return {"ok": False, "why": "nothing to select"}
             self._press([("press", "shift+left", typed_length(last))])
@@ -833,7 +850,7 @@ class KeysTarget:
             self._correction = None
             return self._select(box, arg, name == "correct")
         if name in ("cap", "all_caps", "no_caps"):
-            old = box.selected or self._last(before)
+            old = box.selected or self._last(before, box)
             if not old or PARAGRAPH in old or LINE in old:
                 return {"ok": False, "why": "nothing to format"}
             new = {"cap": title(old), "all_caps": old.upper(), "no_caps": old.lower()}[name]

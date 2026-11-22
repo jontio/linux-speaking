@@ -30,8 +30,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import (APP_NAME, HOMEPAGE, __version__, actions, audio, autostart, config, control, hotkey,
-               looks, models, reading, remote, settings as settings_module, speech, training,
-               voicetest)
+               joins, looks, models, reading, remote, samples as samples_module,
+               settings as settings_module, speech, training, voicetest)
 from .engine import Engine, brief, meter_value, saved_on
 from .formatting import LINE, PARAGRAPH
 from .reading_text import SENTENCES
@@ -1208,6 +1208,10 @@ class SettingsWindow(Window):
                 box.setLayout(QVBoxLayout())
                 layout.addWidget(box)
                 groups[item.group] = box
+            if item.key == "keep_final":
+                # Not a tick box any more: a choice of three (see joins.py).
+                groups[item.group].layout().addLayout(self.sentence_ends_row())
+                continue
             label = item.label
             if item.key == "other_apps" and config.WINDOWS:
                 label = ("Dictate into other programs' text boxes, such as a chat box  "
@@ -1280,6 +1284,13 @@ class SettingsWindow(Window):
          "on by itself. Each is kept as a sound file with its words, on this computer. "
          "About half an hour's reading comes with it, and you can add a text of your own. "
          "Dictation is off while it is open."),
+        ("Record dictation samples\u2026", "on_show_samples",
+         "Dictate as you naturally would, then put the text right: the program learns from it "
+         "where full stops and commas go when you pause.",
+         "Opens the samples window. Dictate an email or a message into its box as you "
+         "normally would, pausing where you would. Then correct the text in the box to what "
+         "you meant, and press Keep. The sound of each phrase is kept with what was written "
+         "for it and what you meant, on this computer only. Make up what you say there."),
         ("Train on my voice\u2026", "on_show_training",
          "Retrain a model on those recordings, so that it knows your voice. Experimental: "
          f"about an hour, and {training.MEMORY_GB} GB of memory.",
@@ -1588,6 +1599,11 @@ class SettingsWindow(Window):
             self.read_window = ReadWindow(self.engine)
         bring(self.read_window)
 
+    def on_show_samples(self) -> None:
+        if getattr(self, "samples_window", None) is None:
+            self.samples_window = SamplesWindow(self.engine)
+        bring(self.samples_window)
+
     def on_show_models(self) -> None:
         self.fresh("models_window",
                    lambda: ModelsWindow(self.engine, self.refill_models, self.hub))
@@ -1729,6 +1745,40 @@ class SettingsWindow(Window):
         layout.addLayout(row)
         self.refresh_sharing()
         return box
+
+    SENTENCE_ENDS = (("said", "Only where I say \u201cfull stop\u201d"),
+                     ("words", "Where the words show a sentence has ended"),
+                     ("pause", "At every pause, as the recogniser writes them"))
+
+    def sentence_ends_row(self):
+        """The choice of where full stops go at the ends of phrases (see joins.py)."""
+        row = QHBoxLayout()
+        label = QLabel(self.alt("Full stops at the ends of phrases"))
+        chooser = Chooser()
+        for key, text in self.SENTENCE_ENDS:
+            chooser.addItem(text, key)
+        chosen = getattr(self.engine.settings, "sentence_ends", "said")
+        chooser.setCurrentIndex(max(0, chooser.findData(chosen)))
+        label.setBuddy(chooser)
+        chooser.setAccessibleName("Full stops at the ends of phrases")
+        explain(chooser,
+                "A recogniser ends nearly every phrase with a full stop, and a phrase ends "
+                "wherever you pause: in the middle of a sentence too.",
+                "Only where I say \u201cfull stop\u201d: the recogniser's stop is left off, and "
+                "sentences end where you say so.",
+                "Where the words show a sentence has ended: the stop is held back until you "
+                "say the next words, which show whether the sentence went on. Then it goes in, "
+                "or a comma, or nothing, and the next word gets a capital only after a full "
+                "stop. The last sentence gets its stop when you say \u201cnew line\u201d or "
+                "\u201cnew paragraph\u201d, or put dictation to sleep. Say \u201cfull stop\u201d to "
+                "end one yourself at any time.",
+                "At every pause: the recogniser's stop is kept; expect a stray full stop where "
+                "you paused part way through a sentence.")
+        chooser.activated.connect(lambda _: self.engine.set_sentence_ends(chooser.currentData()))
+        self.sentence_ends = chooser
+        row.addWidget(label)
+        row.addWidget(chooser, 1)
+        return row
 
     SOUNDS = (("flac", "FLAC: half the size, nothing lost"),
               ("opus", "Opus: a tenth of the size, a little lost"),
@@ -4810,6 +4860,243 @@ class OwnLine(OwnTarget):
         return {"ok": True, "restored": True}
 
 
+class SampleCatcher:
+    """Hands the engine's phrases to a samples.Recording while they go into its box."""
+
+    def __init__(self, own, recording):
+        self.own, self.recording = own, recording
+        self.taken = None                 # called after each phrase taken, to say so
+
+    def wants(self, targets) -> bool:
+        return getattr(targets, "own", None) is self.own and targets.name == self.own.name
+
+    def add(self, sound, written, ended, seconds) -> None:
+        self.recording.add(sound, written, ended, seconds)
+        if self.taken is not None:
+            self.taken()
+
+
+def _size_of(folder: str) -> int:
+    """How many bytes of samples are kept in `folder`."""
+    total = 0
+    for root, _, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def _in_words(size: int) -> str:
+    """A size in bytes, in the units a person reads."""
+    if size >= 1048576:
+        return f"{size / 1048576:.1f} MB"
+    return f"{max(0, round(size / 1024))} kB"
+
+
+class SamplesWindow(Window):
+    """Recording dictation as it is really done, with what was meant: see samples.py."""
+
+    taken = pyqtSignal()   # a phrase was taken, on the engine's thread: say so on this one
+
+    def __init__(self, engine: Engine, folder: str = samples_module.FOLDER):
+        super().__init__()
+        self.engine = engine
+        self.setWindowTitle("Dictation samples")
+        self.recording = samples_module.Recording(folder)
+        self.folder = folder
+        column = QVBoxLayout(self)
+        intro = QLabel(
+            "Dictate into the box as you naturally would: an email or a message, pausing "
+            "where you would pause to think. Then put the text in the box right, to what you "
+            "meant, with every full stop, comma and capital where you want them, and press "
+            "\u201cKeep this sample\u201d. Make up what you say: it is kept, with its sound, "
+            "on this computer, so that where full stops go can be worked out from how you "
+            "really dictate.")
+        intro.setWordWrap(True)
+        column.addWidget(intro)
+        self.box = TryBox()
+        self.box.setPlaceholderText("Click here, say \u201cwake up\u201d, and dictate.")
+        self.box.setTabChangesFocus(True)
+        self.box.setAccessibleName("The box to dictate a sample into")
+        self.box.setMinimumHeight(self.box.fontMetrics().lineSpacing() * 8 + 16)
+        self.own = OwnTarget(self.box)
+        self.own.name = "the samples box"
+        self.box.focused.connect(self.on_box_focus)
+        column.addWidget(self.box, 1)
+        self.said = QLabel()
+        self.said.setWordWrap(True)
+        column.addWidget(self.said)
+        row = QHBoxLayout()
+        self.keep_button = QPushButton("Keep this sample")
+        explain(self.keep_button, "Keeps the sound of each phrase you dictated into the box, "
+                                  "what was written for it, and the text as you have put it "
+                                  "right. Then the box is emptied for the next.")
+        self.keep_button.clicked.connect(self.keep)
+        again = QPushButton("Start again")
+        explain(again, "Empties the box and forgets what was dictated into it, keeping nothing.")
+        again.clicked.connect(self.start_again)
+        row.addWidget(self.keep_button)
+        row.addWidget(again)
+        row.addStretch()
+        column.addLayout(row)
+        self.kept_label = QLabel()
+        self.kept_label.setWordWrap(True)
+        column.addWidget(self.kept_label)
+        self.kept_list = QListWidget()
+        self.kept_list.setAccessibleName("The samples kept so far")
+        self.kept_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        column.addWidget(self.kept_list, 1)
+        kept_row = QHBoxLayout()
+        show = QPushButton("Show the folder")
+        explain(show, "Opens the folder the samples are kept in: each one's sound, and the "
+                      "text as you put it right.")
+        show.clicked.connect(self.show_folder)
+        self.delete_button = QPushButton("Delete this one")
+        explain(self.delete_button, "Erases the sample chosen above, its sound and the words "
+                                    "you meant. It cannot be undone.")
+        self.delete_button.clicked.connect(self.delete_one)
+        self.delete_all_button = QPushButton("Delete all…")
+        explain(self.delete_all_button, "Erases every sample kept, their sound and the words "
+                                        "you meant. It cannot be undone.")
+        self.delete_all_button.clicked.connect(self.delete_all)
+        kept_row.addWidget(show)
+        kept_row.addWidget(self.delete_button)
+        kept_row.addWidget(self.delete_all_button)
+        kept_row.addStretch()
+        column.addLayout(kept_row)
+        self.catcher = SampleCatcher(self.own, self.recording)
+        self.catcher.taken = self.taken.emit    # (on the engine's thread: queued to this one)
+        self.taken.connect(self.refresh)
+        self.refresh()
+        dress(self, roomy(self, 560, 540))
+
+    def refresh(self) -> None:
+        phrases = len(self.recording.phrases)
+        self.said.setText(f"{phrases} phrase{'s' if phrases != 1 else ''} dictated into the box so far."
+                          if phrases else "")
+        self.keep_button.setEnabled(bool(phrases))
+        self._show_kept()
+
+    def chosen(self) -> str:
+        """The folder of the sample chosen in the list, or ""."""
+        item = self.kept_list.currentItem()
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _show_kept(self) -> None:
+        """The samples kept so far, newest first: when, how many phrases, and the text that
+        was meant when the mouse rests on one. The row chosen stays chosen (so that what
+        "Delete this one" deletes is what was chosen), unless its sample has gone."""
+        kept = samples_module.kept(self.folder)
+        chosen = self.chosen()
+        self.kept_list.clear()
+        for here, record in reversed(kept):
+            phrases = record.get("phrases", [])
+            when = record.get("kept", "")
+            row = QListWidgetItem(f"{when} — {len(phrases)} phrase"
+                                  f"{'s' if len(phrases) != 1 else ''}")
+            row.setData(Qt.ItemDataRole.UserRole, here)
+            row.setData(Qt.ItemDataRole.UserRole + 1, (when, len(phrases)))
+            meant = " ".join(str(record.get("meant", "")).split())
+            row.setToolTip(meant[:200] + ("…" if len(meant) > 200 else ""))
+            self.kept_list.addItem(row)
+        size = sum(_size_of(here) for here, _ in kept)
+        if kept:
+            self.kept_label.setText(f"{len(kept)} sample{'s' if len(kept) != 1 else ''} kept, "
+                                    f"{_in_words(size)}, in {self.folder}.")
+            rows = [str(self.kept_list.item(n).data(Qt.ItemDataRole.UserRole))
+                    for n in range(self.kept_list.count())]
+            self.kept_list.setCurrentRow(rows.index(chosen) if chosen in rows else 0)
+        else:
+            self.kept_label.setText(f"None kept yet. They are kept in {self.folder}.")
+        self.delete_button.setEnabled(bool(kept))
+        self.delete_all_button.setEnabled(bool(kept))
+
+    def show_folder(self) -> None:
+        """Open the samples folder in the file manager, for looking at what is there."""
+        try:
+            os.makedirs(self.folder, mode=0o700, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.folder))
+
+    def delete_one(self) -> None:
+        here = self.chosen()
+        if not here:
+            return
+        item = self.kept_list.currentItem()
+        when, phrases = item.data(Qt.ItemDataRole.UserRole + 1) or ("", 0)
+        if not ask(self, f"Delete the sample kept {when}? Its {phrases} "
+                         f"phrase{'s' if phrases != 1 else ''}, with your voice, and the "
+                         "words you meant, are erased from this computer. It cannot be "
+                         "undone.", careful=True):
+            return
+        samples_module.forget(self.folder, only=here)
+        self.refresh()
+
+    def delete_all(self) -> None:
+        count = len(samples_module.kept(self.folder))
+        if not count:
+            return
+        if not ask(self, f"Delete all {count} sample{'s' if count != 1 else ''}? Their sound, "
+                         "and the words you meant, are erased from this computer. It cannot "
+                         "be undone.", careful=True):
+            return
+        samples_module.forget(self.folder)
+        self.refresh()
+
+    def busy(self) -> bool:
+        """Whether a sample is being dictated into the box: its phrases are not yet kept."""
+        return bool(self.recording.phrases)
+
+    def keep(self) -> None:
+        meant = self.box.toPlainText().strip()
+        if not self.recording.phrases or not meant:
+            return
+        offload = getattr(self.engine, "_offload", None)
+        there = offload is not None and getattr(offload, "there", False)
+        details = {"sentence_ends": joins.sentence_ends(self.engine.settings),
+                   # The model that wrote the words: the other computer's, where it listened.
+                   "model": (getattr(offload, "model_there", "") if there
+                             else getattr(self.engine.settings, "model", "")),
+                   "heard_on": "the other computer" if there else "this computer"}
+        try:
+            self.recording.keep(meant, details)
+        except OSError as e:
+            # Nothing of it is left behind (see samples.py); the box keeps the text.
+            tell(self, f"The sample could not be kept: {e.strerror or e}. The text is still in "
+                       "the box, and its sound with it: keep it again once that is put right.")
+            return
+        self.box.clear()
+        self.refresh()
+
+    def start_again(self) -> None:
+        self.recording.clear()
+        self.box.clear()
+        self.refresh()
+
+    def on_box_focus(self, has: bool) -> None:
+        targets = getattr(self.engine, "targets", None)
+        if targets is None:
+            return
+        if has and self.isVisible():
+            targets.own = self.own
+        elif getattr(targets, "own", None) is self.own:
+            targets.own = None
+
+    def showEvent(self, event) -> None:
+        self.engine.sampler = self.catcher
+        self.refresh()
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:
+        if getattr(self.engine, "sampler", None) is self.catcher:
+            self.engine.sampler = None
+        self.on_box_focus(False)
+        super().hideEvent(event)
+
+
 class WelcomeWindow(Window):
     """What a newcomer sees the first time, in place of Settings: what the program does,
     whether the microphone hears them, what to do, and a box to do it in, so that first
@@ -5755,9 +6042,12 @@ class Tray:
         where it stood if it was open, and dress the menu to match."""
         old = self.settings_window
         kept = {}
-        for name in ("models_window", "voice_window", "read_window", "train_window"):
-            child = getattr(old, name)
+        for name in ("models_window", "voice_window", "read_window", "train_window", "samples_window"):
+            child = getattr(old, name, None)
             if child is not None:
+                if name == "samples_window" and child.busy():
+                    kept[name] = child    # a sample being dictated stays, open, as it is
+                    continue
                 child.close()  # a reading under way is ended properly
                 if getattr(child, "busy", lambda: False)():
                     kept[name] = child
@@ -5779,7 +6069,7 @@ class Tray:
             child.old_look = True
             if name == "voice_window":
                 child.changed = self.settings_window.model_changed
-            else:
+            elif name != "samples_window":
                 child.refill = self.settings_window.refill_models
             child.hub = self.hub
         self.settings_window.extension_problem = old.extension_problem

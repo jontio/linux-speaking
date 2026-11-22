@@ -125,6 +125,78 @@ class GreetingComma(unittest.TestCase):
         self.assertEqual(fit("Hello, Bob.", "", "", LEX).text, "Hello, Bob")
 
 
+class ASignSaidAfterOneThatIsThere(unittest.TestCase):
+    """A sign said at the start of a phrase where the text already ends with one: the
+    recogniser's full stop kept at the end of the phrase before, or a sign said there."""
+
+    def typed(self, before, raw, keep_final=True):
+        ins = fit(raw, before, "", keep_final=keep_final)
+        return before[:len(before) - ins.delete_before] + ins.text, ins.said_end
+
+    def test_the_same_sign_twice_is_typed_once(self):
+        for keep in (True, False):
+            self.assertEqual(self.typed("I have something.", "Full stop.", keep), ("I have something.", True))
+            self.assertEqual(self.typed("I have something.", "full stop", keep), ("I have something.", True))
+            self.assertEqual(self.typed("Is it?", "Question mark.", keep), ("Is it?", True))
+            self.assertEqual(self.typed("Hello,", "comma", keep), ("Hello,", False))
+            self.assertEqual(self.typed("I have something. ", "Full stop.", keep), ("I have something. ", True))
+
+    def test_another_sign_takes_the_place_of_the_one_there(self):
+        self.assertEqual(self.typed("I have something.", "Question mark."), ("I have something?", True))
+        self.assertEqual(self.typed("I have something?", "Full stop."), ("I have something.", True))
+        self.assertEqual(self.typed("I have something.", "Exclamation mark!"), ("I have something!", True))
+        self.assertEqual(self.typed("I have something.", "Comma how are you."),
+                         ("I have something, how are you.", False))
+        self.assertEqual(self.typed("I have something.", "Comma how are you.", keep_final=False),
+                         ("I have something, how are you", False))
+
+    def test_a_shortenings_own_stop_stays(self):
+        self.assertEqual(self.typed("We met at 5 p.m.", "Full stop."), ("We met at 5 p.m.", True))
+        self.assertEqual(self.typed("We met at 5 p.m.", "Question mark."), ("We met at 5 p.m.?", True))
+        self.assertEqual(self.typed("We met at 5 p.m.", "Comma and then left.", keep_final=False),
+                         ("We met at 5 p.m., and then left", False))
+
+    def test_the_stop_of_an_initial_or_a_sometimes_shortening_stays(self):
+        self.assertEqual(self.typed("Signed, John F.", "Comma the manager.", keep_final=False),
+                         ("Signed, John F., the manager", False))
+        self.assertEqual(self.typed("The meeting is on 3 Jan.", "Comma at noon.", keep_final=False),
+                         ("The meeting is on 3 Jan., at noon", False))
+
+    def test_dots_that_trail_off_stay(self):
+        self.assertEqual(self.typed("Well...", "Full stop."), ("Well...", True))
+        self.assertEqual(self.typed("Well…", "Full stop."), ("Well…", True))
+        self.assertEqual(self.typed("Well...", "Question mark."), ("Well...?", True))
+
+    def test_with_no_sign_there_the_said_one_is_typed(self):
+        self.assertEqual(self.typed("I have something", "Full stop."), ("I have something.", True))
+        self.assertEqual(self.typed("I have something.", "Full stop. And then more.", keep_final=False),
+                         ("I have something. And then more", False))
+
+
+class WhereTheSaidSignsAre(unittest.TestCase):
+    """The signs that were said are the person's own: an insertion says where they are."""
+
+    def marks(self, raw, before=""):
+        ins = fit(raw, before, "")
+        return [(ins.text[a:b], ins.text[:a]) for a, b in ins.said_marks]
+
+    def test_said_signs_are_found_and_the_recognisers_are_not(self):
+        self.assertEqual(self.marks("Hello Rick comma how are you question mark"),
+                         [(",", "Hello Rick"), ("?", "Hello Rick, how are you")])
+        self.assertEqual(self.marks("Hello Rick, how are you?"), [])
+
+    def test_with_a_space_put_before_the_phrase(self):
+        self.assertEqual(self.marks("yes comma I will", "Well"), [(",", " yes")])
+
+    def test_a_stop_said_after_a_shortening_is_the_shortenings_own(self):
+        ins = fit("at 5 p.m. full stop then left.", "We met", "")
+        self.assertEqual([ins.text[a - 3:b] for a, b in ins.said_marks], ["p.m."])
+
+    def test_line_breaks_and_quotes(self):
+        self.assertEqual([m for m, _ in self.marks("open quote yes close quote", "He said")], ["“", "”"])
+        self.assertEqual(len(self.marks("new paragraph thanks", "Dear Sam")), 1)
+
+
 class Capitals(unittest.TestCase):
     def test_start_of_paragraph(self):
         self.assertEqual(run("", "hello there"), "Hello there")
@@ -796,6 +868,12 @@ class NamesThatEndInTwoPlusSigns(unittest.TestCase):
         self.assertEqual(self.typed("C??."), "C++")
         self.assertEqual(self.typed("I write C ?? code."), "I write C++ code")   # and no capital on "code"
         self.assertEqual(self.typed("It is written in C ??."), "It is written in C++")
+
+    def test_a_phrase_that_starts_with_one_keeps_its_capital_mid_sentence(self):
+        for raw in ("C++.", "C ??.", "C plus plus", "C++ is fast.", "C# too.", "Notepad++."):
+            typed = fit(raw, "I like", "").text
+            self.assertTrue(typed.startswith((" C++", " C#", " Notepad++")), (raw, typed))
+        self.assertEqual(fit("G++.", "I compile with", "").text, " g++")
         self.assertEqual(self.typed("Open it in Notepad ??."), "Open it in Notepad++")
 
     def test_and_parakeet_v2_writes_the_words(self):

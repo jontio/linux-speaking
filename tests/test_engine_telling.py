@@ -41,6 +41,7 @@ def bare(program=None, **states) -> Engine:
     engine._lock = threading.Lock()
     engine._phrases = queue.Queue()
     engine._load_tried, engine._transcriber, engine._offload = 0.0, None, None
+    engine._deciding = True           # no punctuation model is fetched in a test
     return engine
 
 
@@ -582,6 +583,33 @@ class LoadingAModel(Quiet):
         made.assert_not_called()                     # there is nothing to load, and it isn't tried
         self.assertEqual(heard, [("hello there", True), ("hello there", False)])
 
+    def test_a_phrase_dictated_into_the_samples_box_is_kept_with_its_sound(self):
+        engine = bare()
+        engine._offload = mock.Mock()
+        engine._offload.transcribe.return_value = "hello there"
+        engine._offload.measured = None
+        engine._only_breath = lambda audio: False
+        engine.handle_text = lambda text, awake: None
+        taken = []
+
+        class Catcher:
+            wanted = True
+
+            def wants(self, targets):
+                return self.wanted
+
+            def add(self, sound, written, ended, seconds):
+                taken.append((len(sound), written, seconds))
+        engine.sampler = Catcher()
+        with mock.patch("dictation.engine.available_models", return_value=[]):
+            engine.handle_audio(np.ones(16000, dtype=np.float32) * 0.1)
+            engine.sampler.wanted = False                # dictating into something else
+            engine.handle_audio(np.ones(16000, dtype=np.float32) * 0.1)
+            engine.sampler.wanted = True
+            engine.status.state = State.ASLEEP           # asleep: nothing was dictated
+            engine.handle_audio(np.ones(16000, dtype=np.float32) * 0.1)
+        self.assertEqual(taken, [(16000, "hello there", 1.0)])
+
     def test_with_none_installed_it_says_when_the_other_computer_cant_be_reached(self):
         engine = bare()
         engine._offload = mock.Mock()
@@ -596,11 +624,61 @@ class LoadingAModel(Quiet):
         self.assertIn("problems", engine.events)
         engine._listening_moved(True, "")
         self.assertEqual((engine.status.listening_on, engine.status.problems), ("office-pc", []))
-        # With a model here it carries on by itself, and that is no problem to report.
+
+    def test_with_a_model_here_falling_back_to_it_is_said_and_shown_while_it_lasts(self):
+        # It carries on by itself, and nothing is lost: but this computer may be far
+        # slower, and that was once taken for a fault of some other kind.
+        engine = bare()
         engine._transcriber = mock.Mock()
+        engine._offload = mock.Mock()
+        engine._offload.client.host = "office-pc"
         engine._listening_moved(False, "The other computer can't be reached.")
         self.assertEqual(engine.status.listening_on, "this computer: the other can't be reached")
-        self.assertEqual(engine.status.problems, [])
+        self.assertEqual(engine.status.problems, [
+            "The other computer isn't doing the listening: The other computer can't be reached. "
+            "This computer is doing it meanwhile, which may be slower, and asks the other again "
+            "every twenty seconds."])
+        self.assertEqual(engine.notices, [(
+            "problem", "The other computer can't be used just now, so this one is doing the "
+                       "listening, which may be slower. The other computer can't be reached.")])
+        # When the other computer is back, so is the listening, and there is no more to show.
+        engine._listening_moved(True, "")
+        self.assertEqual((engine.status.listening_on, engine.status.problems), ("office-pc", []))
+        # A link that comes and goes is shown each time, but spoken of once in ten minutes.
+        engine._listening_moved(False, "The other computer can't be reached.")
+        self.assertEqual(len(engine.status.problems), 1)
+        self.assertEqual(len(engine.notices), 1)
+
+    def test_a_slow_phrase_has_where_its_time_went_put_in_the_log(self):
+        import dictation.engine as module
+        engine = bare()
+        engine._offload = None
+        module.log.reset_mock()
+        # (ended, its turn came, sent to be heard, words back, settled, acted on)
+        engine._say_if_slow(1.3, 100.0, 100.1, 100.2, 100.5, 100.6, 100.9)   # 0.9 s: quick enough
+        module.log.assert_not_called()
+        engine._say_if_slow(1.3, 100.0, 100.4, 100.6, 103.0, 103.5, 103.7)
+        self.assertEqual(module.log.call_args[0][0],
+                         "slow: 3.7 s from the end of the phrase to the words of a 1.3 s phrase: 0.4 s "
+                         "waiting its turn, 0.2 s finding where they are to go, 2.4 s being heard on "
+                         "this computer, 0.5 s being checked or heard again, 0.2 s being acted on")
+        # Where it is known how long after the voice the phrase was taken to be over,
+        # that is counted in: in a noisy room it can be the longest wait of all.
+        module.log.reset_mock()
+        engine._say_if_slow(1.3, 100.0, 100.1, 100.2, 100.5, 100.6, 100.9, tail=0.3)   # 1.2 s in all
+        module.log.assert_not_called()
+        engine._say_if_slow(1.3, 100.0, 100.1, 100.2, 100.5, 100.6, 100.9, tail=2.2)
+        self.assertEqual(module.log.call_args[0][0],
+                         "slow: 3.1 s from the end of the voice to the words of a 1.3 s phrase: 2.2 s "
+                         "to see that it was over, 0.1 s waiting its turn, 0.1 s finding where they are "
+                         "to go, 0.3 s being heard on this computer, 0.1 s being checked or heard again, "
+                         "0.3 s being acted on")
+        engine._offload = mock.Mock(there=True)
+        engine._say_if_slow(1.3, 100.0, 100.0, 100.0, 102.0, 102.0, 102.0)
+        self.assertIn("2.0 s being heard on the other computer", module.log.call_args[0][0])
+        engine._offload = mock.Mock(there=False)                 # it was asked, and this one did it
+        engine._say_if_slow(1.3, 100.0, 100.0, 100.0, 102.0, 102.0, 102.0)
+        self.assertIn("being heard on this computer", module.log.call_args[0][0])
 
     def test_with_none_installed_choosing_or_dropping_the_other_computer_decides_it(self):
         engine = bare()

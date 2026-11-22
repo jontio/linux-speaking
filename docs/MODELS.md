@@ -431,3 +431,84 @@ there isn't that much.
 On Windows the tools install and every step of a run has been tried, in a reduced form,
 on a four-core laptop without the free memory for a real one; a full run there has not
 been timed, and is reckoned at three hours or so.
+
+## The punctuation model
+
+Where Settings has **Full stops at the ends of phrases** set to "where the words show a
+sentence has ended" (see [the commands](COMMANDS.md#at-the-end-of-a-phrase)), a second,
+much smaller model decides whether a sentence ended where you paused. It is sherpa-onnx's
+English online punctuation and casing model, `sherpa-onnx-online-punct-en-2024-08-06`: a
+CNN-BiLSTM by frankyoujian ([Edge-Punct-Casing](https://github.com/frankyoujian/Edge-Punct-Casing),
+Apache-2.0; [arXiv 2407.13142](https://arxiv.org/abs/2407.13142)), trained on Wikipedia and
+on interview, podcast and TED talk transcripts. Only its punctuation is used, and only at
+the pauses.
+
+It is fetched the first time that way is chosen, from
+[sherpa-onnx's releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/punctuation-models):
+a 31 MB archive, checked against its published SHA-256, of which the two files needed
+(7.6 MB, each checked again) are kept in the models folder, in `punctuation-en`. It runs
+with onnxruntime, which the speech models already need. Until it is there, the
+recogniser's own full stops are kept.
+
+Others were measured on the same dictation and not chosen, though some did better: a
+larger tagger (Horizon-Labs' multilingual punctuation and truecasing model) made two thirds
+of the mistakes, but is a 303 MB download and takes twenty times as long; a small language
+model used to score each choice did about as well as the tagger for 139 MB; a model of our
+own, counted from openly licensed writing, did a little worse than the one chosen.
+
+## The model that checks what makes sense
+
+With **Put right what was just typed** ticked (as it is to begin with), a small language
+model checks the few places where a recogniser most often writes something nobody would:
+a spoken command heard as a word ("comma" after "Hi Joe" sounds like "common", and
+"coma" and "karma" are heard too), and a sign-off said by itself on its line ("Cheers"
+heard as "Chairs"). Each reading is typed as it would be, after the text before it, and
+the model says how likely each is as written English. Only readings that sound like what
+was heard are ever tried, and the other one is taken only where it is far more likely: by
+a margin that, on readings made up to test it, put every spoken comma right and left
+every real "common" and "coma" alone. Nothing is asked where none of those words was
+heard, so it costs nothing the rest of the time, and about a tenth of a second where it
+is asked.
+
+The model is SmolLM2-135M by Hugging Face ([model card](https://huggingface.co/HuggingFaceTB/SmolLM2-135M),
+Apache-2.0), the base model, in the int8 ONNX build published by
+[onnx-community](https://huggingface.co/onnx-community/SmolLM2-135M-ONNX). It is fetched
+when dictation is first switched on with the box ticked, from a fixed version of that
+page: two files, 138 MB, each checked against its published SHA-256, kept in the models
+folder in `sense-en`. It runs with onnxruntime, which the speech models already need.
+Until it is there, phrases are typed as heard. The instruct version of the same model, and
+a model nearly four times larger (Qwen2.5-0.5B), were tried on the same readings and did
+no better.
+
+## Hearing each phrase with the end of the one before
+
+A Parakeet model hears each phrase by itself, cut where you paused. With **Hear each phrase
+with the end of the one before** ticked (under Speed, as it is to begin with), the last four
+seconds of the phrase before are heard with it, as you said them, and only the words the
+model puts after the join are typed: by the model's own times for its words, with a word
+begun before the join and a mark written at the join left to the phrase before. What the
+model wrote at the join, heard with both sides, is kept: where the words decide the full
+stops (see [the commands](COMMANDS.md#at-the-end-of-a-phrase)), it decides the full stop
+there, and the punctuation model is asked only where there is no hearing of the join (the
+first phrase, or after a command). The phrase before is the last one typed as dictation, or
+a line break said ("new paragraph" in front of "Cheers" helps it be heard as that); a cough
+in between changes nothing; "scratch that" and the rest that take a phrase back go back to
+the one before it; any other command, the spelling box, source code, sleep, switching off or
+another program in front start afresh, and so does a phrase ended more than thirty seconds
+ago.
+
+What was measured, on four samples of natural dictation (232 words) and on read sentences:
+misheard words fell from 12 to 7 (from 6 to 4 outside the sample the method was first tried
+on); at the pauses where the recogniser wrote a full stop, the mark it wrote at the join,
+heard with left context, was right at 9 of 10 where the words alone were right at 6; on 1,325
+pauses in read sentences, heard with the whole of both phrases as this does, a full stop wrongly
+kept fell from 11% to 3% and real sentence ends lost from 7% to 4%. Four samples are few: the gains are clearest in the words and at the
+pauses, and less sure in the typed result as a whole. Each phrase takes about a third of a
+second longer on a laptop. Cutting the pause after the phrase before short was tried, and the
+words came out a little worse; "hot words" (words the recogniser is told to expect) were
+tried with it, and did no better overall.
+
+With the other computer doing the listening, the end of the phrase before goes there with
+the phrase, and it says it took it so; one with an earlier version is asked again without
+it, and not sent it again.
+

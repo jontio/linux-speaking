@@ -328,6 +328,11 @@ class Offloading(unittest.TestCase):
         self.assertEqual(self.moves, [(True, "")])
         self.assertEqual(self.offload.model_there, "medium.en")
 
+    def test_hearing_again_is_asked_there_only(self):
+        self.there.down = True
+        self.assertEqual(self.offload.transcribe(self.audio, True, there_only=True), "")
+        self.assertEqual(self.local.calls, [])            # this computer's model is not asked
+
     def test_the_quick_way_is_asked_for_when_it_is_switched_on(self):
         self.offload.transcribe(self.audio, True)
         self.assertFalse(self.there.quick_asked)

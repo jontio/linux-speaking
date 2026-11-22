@@ -171,6 +171,26 @@ class BySound(unittest.TestCase):
     def test_very_short_words_are_not_matched_by_sound(self):
         self.assertEqual(vocabulary.by_sound("Go to the bay", "", ("Bo",), DICTIONARY), "Go to the bay")
 
+    def test_enter_said_between_the_sign_off_and_the_name(self):
+        # "cheers comma enter jonti": as "new line" does, "enter" leaves the name straight
+        # after the sign-off, however the recogniser wrote the pauses.
+        for heard in ("Cheers, comma, enter, jaunty.", "Cheers, comma, enter. Jaunty.",
+                      "Cheers. Comma. Enter. Jaunty.", "Cheers, press enter, jaunty.",
+                      "Thanks, enter, jaunty"):
+            self.assertEqual(self.fix(heard), heard.replace("jaunty", "Jonti").replace("Jaunty", "Jonti"))
+        self.assertEqual(self.fix("Please press enter, jaunty."), "Please press enter, jaunty.")
+
+    def test_a_made_up_word_may_be_a_little_further_off(self):
+        # A short "u" for the short "o" of the name, in a word in no dictionary.
+        self.assertEqual(self.fix("Cheers, comma, enter, Junty."), "Cheers, comma, enter, Jonti.")
+        self.assertEqual(self.fix("I spoke to Junty about it."), "I spoke to Jonti about it.")
+        self.assertEqual(self.fix("Junty", before="Cheers,\n"), "Jonti")
+        # Not without a dictionary to say that it is made up, nor for a real word or name.
+        self.assertEqual(self.fix("I spoke to Junty about it.", lexicon=BARE), "I spoke to Junty about it.")
+        known = Lexicon(lower={"is", "here", "we", "hunt", "today"}, capitalised={"Russ"})
+        self.assertEqual(vocabulary.by_sound("Russ is here.", "", ("Ross",), known), "Russ is here.")
+        self.assertEqual(vocabulary.by_sound("We hunt today.", "", ("Hont",), known), "We hunt today.")
+
 
 class Saved(unittest.TestCase):
     def test_round_trip(self):

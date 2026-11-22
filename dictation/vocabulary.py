@@ -1,11 +1,11 @@
 """Your own words: names and unusual terms the recogniser should know about.
 
-Whisper is given the words as a hint. A hint is strong: with "Jonti" in it, "a jaunty
-tune" comes out as "a Jonti tune". So when a hinted phrase contains one of the words, the
-phrase is heard again without the hint and the two hearings are compared. Where the plain
-hearing has an ordinary word written the ordinary way ("jaunty" in the middle of a
-sentence), that stands. Where it has what looks like a name it didn't know ("John T."),
-or the words before call for a name ("Cheers,"), your word stands.
+Whisper is given the words as a hint. A hint is strong: with "Joe" in it, "Jo" comes out
+as "Joe". So when a hinted phrase contains one of the words, the phrase is heard again
+without the hint and the two hearings are compared. Where the plain hearing has an
+ordinary word written the ordinary way ("rose" in the middle of a sentence), that stands.
+Where it has what looks like a name it didn't know ("John E." for "Johnny"), or the words
+before call for a name ("Cheers,"), your word stands.
 
 A recogniser that can't be given a hint, such as Parakeet, is helped the other way about:
 what it wrote is searched for something that sounds like one of the words (by_sound). That
@@ -53,8 +53,11 @@ SALUTATIONS = tuple(cue for cue in CUES if " ".join(cue) in (
 # Words that are never taken for one of the person's names, whatever came before and
 # however alike they sound: those that stand for the people spoken to, and the commonest.
 _NEVER_A_NAME = COMMON | frozenset(ADDRESSED)
-# Punctuation and line breaks said aloud: "cheers comma new line" still ends in a cue.
-SAID = tuple(phrase.split() for phrase, _ in SPOKEN) + (["newline"],)
+# Punctuation and line breaks said aloud: "cheers comma new line" still ends in a cue. So
+# does "cheers comma enter": "enter" is said for the line break between a sign-off and the
+# name under it (see letters.signoff). ("press enter" before "enter", which is part of it.)
+SAID = tuple(phrase.split() for phrase, _ in SPOKEN) + (
+    ["newline"], ["next", "line"], ["press", "enter"], ["enter"])
 _EDGES = re.compile(r"^\W+|\W+$")
 _SENTENCE_END = re.compile(r"[.!?][\"')\]”’]*$")
 
@@ -232,13 +235,13 @@ def mentions(text: str, words) -> bool:
     return any(_marks([_key(token) for token in text.split()], words))
 
 
-# How each letter sounds when it is said by its name: the "T" of "John T".
+# How each letter sounds when it is said by its name: the "E" of "John E".
 _LETTER_SOUNDS = dict(pair.split("=") for pair in (
     "a=A b=bE c=sE d=dE e=E f=ef g=jE h=Ak i=I j=jA k=kA l=el m=em n=en o=o p=pE q=kU "
     "r=ar s=es t=tE u=U v=vE w=dublU x=eks y=wI z=sed").split())
 # How a run of vowels sounds, where its letters one by one would not say. A capital is
 # the long sound: the "a" of "Kate" beside that of "Kat", the "o" of "Joan" beside that
-# of "John". (The "au" of "jaunty" goes with the short one: it is how "Jonti" is heard.)
+# of "John". (The "au" of "jaunty" goes with the short one.)
 _VOWEL_RUNS = dict(pair.split("=") for pair in (
     "ai=A ay=A ae=A ei=A ea=E ee=E ie=E au=o aw=o oa=O ow=O oe=O oo=U ue=U ew=U ui=U eu=U "
     "ou=W oi=Y oy=Y y=i").split())
@@ -246,7 +249,7 @@ _LONG = {"a": "A", "e": "E", "i": "I", "o": "O", "u": "U"}
 _VOWEL = "aeiouyw"
 _VOWEL_SOUNDS = "aeiouAEIOUWY"
 # The vowel a name ends with, by kind: the "a" of "Maria", the "o" of "Mario", and one
-# kind for "Katie", "Katy", "Lindsay" and the T of "John T".
+# kind for "Katie", "Katy", "Lindsay" and the E of "John E".
 _ENDS_WITH = {"a": "a", "o": "o", "O": "o", "u": "u", "U": "u", "W": "u", "Y": "o"}
 # Names whose spelling doesn't say how they sound, as one that does.
 _SAID_AS = {"sean": "shaun", "stephen": "steven", "geoff": "jeff", "geoffrey": "jeffrey"}
@@ -277,11 +280,11 @@ def _word_sounds(word: str) -> list:
     ("March" is not Mark, nor "Charlie" Carly), unless r or l follows ("Chris", "Chloe").
     """
     s = "".join(c for c in _plain(word) if "a" <= c <= "z")
-    if len(s) == 1:      # a letter said by its name: the "T" of "John T"
+    if len(s) == 1:      # a letter said by its name: the "E" of "John E"
         return [[c in _VOWEL_SOUNDS, c, 1 if c in _VOWEL_SOUNDS else 0, False]
                 for c in _LETTER_SOUNDS[s]]
     s = _SAID_AS.get(s, s)
-    said_e = s.endswith("nte")   # "Jonte", "Dante": there the last e is said
+    said_e = s.endswith("nte")   # "Dante": there the last e is said
     s = s.replace("ph", "f").replace("ck", "k").replace("gh", "")
     s = re.sub(r"ch(?=[rl])", "k", s).replace("ch", "C")
     s = re.sub(r"c(?=[eiy])", "s", s)
@@ -324,7 +327,7 @@ def sound_key(text: str) -> str:
 
     Two things sound the same when their consonants are the same, their first vowels are
     of the same kind, and they have as many syllables (a silent "e" at the end is none).
-    So "Jonti", "jaunty", "Johnty", "Jonte" and "John T" come out alike, and so do "Sara"
+    So "Joe" and "Jo" come out alike, and "Johnny", "Jonny", "Johnie" and "John E", and so do "Sara"
     and "Sarah", "Jon" and "John", "Zeffer" and "Zephyr": the vowels after the first are
     where spellings of one name differ. And "Dan", "Don", "Dean", "Diane", "Donna" and
     "Danny" do not, nor "Mary", "Maria" and "Murray".
@@ -332,6 +335,8 @@ def sound_key(text: str) -> str:
     Two of the later vowels are kept apart from the rest all the same, because they make
     another name: the one that a silent "e" stresses ("Michelle" is not Michael, nor
     "Simone" Simon), and the one a name ends with ("Maria" is not Mario).
+
+    For a word the dictionary doesn't know there is a looser match as well: see _near.
     """
     sounds = []
     # (A capital inside a word starts a word of its own: "LibreOffice" is said as two.)
@@ -352,9 +357,24 @@ def sound_key(text: str) -> str:
     return re.sub(r"([^" + _VOWEL_SOUNDS + r".:])\1+", r"\1", "".join(key))
 
 
+def _near(key: str) -> str:
+    """A sound key with a short "u" for its first vowel taken as the short "o": "Junny" is
+    near "Johnny". The two sounds are close, and a recogniser that has to make up a spelling
+    for a name it doesn't know writes either. Only for a word made up like that (see
+    _made_up): a real word or a known name has to sound the same, "Russ" is not Ross."""
+    return re.sub("^([^" + _VOWEL_SOUNDS + "]*)u", r"\1o", key, count=1)
+
+
+def _made_up(core: str, lexicon: Lexicon) -> bool:
+    """Whether the recogniser made `core` up: it is in no dictionary, as an everyday word or
+    as a name. Without a dictionary nothing can be told, so nothing is."""
+    return (lexicon.has_dictionary and core.isalpha() and core not in lexicon.capitalised
+            and not lexicon.ordinary(core.lower()))
+
+
 def _part_of_a_name(tokens: list, at: int, lexicon: Lexicon) -> bool:
     """Whether the word at tokens[at] could be half of a name the recogniser wrote as two
-    words: a capital letter by itself, as in "John T"; a capitalised word that the
+    words: a capital letter by itself, as in "John E"; a capitalised word that the
     dictionary lists as a name, or that is no everyday one; or any capitalised word
     that doesn't start a sentence, where the capital is the recogniser's way of writing
     a name ("Libre Office", "Git Hub"). Never "I", and never a word written small,
@@ -372,30 +392,32 @@ def by_sound(text: str, before: str, words, lexicon: Lexicon | None = None) -> s
     and a name fits there. For a recogniser that can't be given the words as a hint.
 
     The places are found by sound. Sound alone is thin evidence, so the word goes in
-    only where the recogniser wrote a name or a word it didn't know ("I spoke to Johnty"
-    for Jonti), or where it stands by itself right after a greeting or a sign-off
-    ("Cheers," and then "Jaunty"). Elsewhere an everyday word stays: "I'm done" is not
+    only where the recogniser wrote a name or a word it didn't know ("I spoke to Johnie"
+    for Johnny), or where it stands by itself right after a greeting or a sign-off
+    ("Cheers," and then "Johnie"). Elsewhere an everyday word stays: "I'm done" is not
     "I'm Dan", nor "from time to time" anything to do with Tom.
 
     What sounds the same is the same, whether or not the dictionary knows it as a name:
     the list is there to put right a name the recogniser spelled the usual way. With
     "Jon" listed, "John" is Jon, and with "Sarah", "Sara" is Sarah. A name that sounds
-    different is somebody else's and stays (see sound_key): "Don" is not Dan. Two words
-    are taken for one name only where both look like parts of one, as "John T" and "Libre
-    Office" do and "saw Amy" doesn't.
+    different is somebody else's and stays (see sound_key): "Don" is not Dan. A word in
+    no dictionary at all, which the recogniser made up, may be a little further off
+    ("Junny" for Johnny: see _near). Two words are taken for one name only where both look
+    like parts of one, as "John E" and "Libre Office" do and "saw Amy" doesn't.
     """
     lexicon = lexicon or Lexicon()
-    keys = {}
+    keys, near = {}, {}
     for word in names(words):  # a code has figures, which a sound hasn't: see spell_codes
         key = sound_key(word)
         if len(key) >= 3:
             keys.setdefault(key, word)
+            near.setdefault(_near(key), word)
     tokens = text.split()
     if not keys or not tokens:
         return text
     out, at, found = [], 0, False
     while at < len(tokens):
-        for count in (1, 2):  # one word if it will do, else two: "John T"
+        for count in (1, 2):  # one word if it will do, else two: "John E"
             piece = tokens[at:at + count]
             cores = [re.sub("['’]s$", "", _EDGES.sub("", token)) for token in piece]
             if len(piece) < count:
@@ -404,12 +426,14 @@ def by_sound(text: str, before: str, words, lexicon: Lexicon | None = None) -> s
                     _part_of_a_name(tokens, at + n, lexicon) for n in range(count))):
                 continue
             word = keys.get(sound_key(" ".join(_key(token) for token in piece)))
+            if word is None and count == 1 and _made_up(cores[0], lexicon):
+                word = near.get(_near(sound_key(cores[0])))
             if word and _key(" ".join(piece)) != _key(word):
                 lead = re.match(r"\W*", piece[0]).group()       # the bracket before it stays,
                 tail = re.search(r"(?:['’]s)?[^\w']*$", piece[-1]).group()  # the comma after
                 following = tokens[at + count][:1] if at + count < len(tokens) else ""
                 if count == 2 and len(cores[-1]) == 1 and tail[:1] == "." and following.islower():
-                    tail = tail[1:]  # "John T. yesterday": the stop was the initial's
+                    tail = tail[1:]  # "John E. yesterday": the stop was the initial's
                 out.append(lead + word + tail)
                 at += count
                 found = True
@@ -454,7 +478,7 @@ def settle(hinted: str, plain: str, before: str, words, lexicon: Lexicon | None 
         if all(key in never for key in p_keys[p1:p2]):
             fits = False
         elif names_only:
-            # (By itself: "Jaunty." on a line of its own, signing a letter, is Jonti.)
+            # (By itself: "Johnie." on a line of its own, signing a letter, is Johnny.)
             fits = alone or named or (ends and _cued(lead, GREETINGS))
         else:
             # After a greeting little but a name comes. After "I'm" or "from" all sorts

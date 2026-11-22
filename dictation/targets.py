@@ -89,6 +89,12 @@ class Targets:
                                if self.mail.connected() else "not connected")
         return ", ".join(f"{name}: {answer}" for name, answer in answers.items())
 
+    def typed(self) -> bool:
+        """Whether the program in front is one that is typed into key by key, as a text
+        box of any other program is: what is there can then only be changed by going
+        back over it with the keys."""
+        return self.other is not None and self._send == self.other.request
+
     def request(self, message: dict) -> dict:
         if time.monotonic() - self._picked > REPICK_SECONDS:
             self.pick()

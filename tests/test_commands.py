@@ -203,10 +203,16 @@ class NearWordsDoNotWake(unittest.TestCase):
 class SentencesThatBeginWithACommandWord(unittest.TestCase):
     """ "Select" and "correct" start sentences too. Where it can be told, it is typed."""
 
-    def test_punctuation_straight_after_the_word_makes_it_a_sentence(self):
-        for heard in ("Correct, yes.", "Select: the first one.", "Correct. The cat sat.",
-                      "Select - the cat", "Correct... the cat"):
-            self.assertEqual(interpret(heard, True), Dictation(heard), heard)
+    def test_punctuation_straight_after_the_word_makes_it_only_perhaps_a_command(self):
+        # A word or two after it: perhaps the command, said with a pause; the engine decides
+        # by whether they were typed a moment ago (see Engine.handle_text). More: a sentence.
+        for heard, words in (("Correct, yes.", "yes"), ("Select: the first one.", "the first one"),
+                             ("Correct. The cat sat.", "the cat sat"), ("Select - the cat", "the cat"),
+                             ("Correct... the cat", "the cat"), ("Correct, John T.", "john t")):
+            self.assertEqual(interpret(heard, True), Command(heard.split()[0].strip(",.:").lower(), words,
+                                                             maybe=True), heard)
+        heard = "Correct, the meeting is at three today."
+        self.assertEqual(interpret(heard, True), Dictation(heard))
 
     def test_punctuation_further_on_does_not(self):
         self.assertEqual(interpret("Select the cat, the dog.", True), Command("select", "the cat the dog"))

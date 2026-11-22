@@ -31,6 +31,10 @@ ITEMS = (
          "written or acted on)", "Hearing", default=False),
     Item("quick_listening", "Quicker recognition with Whisper models  (now and then a phrase "
          "is done twice)", "Speed", default=False),
+    Item("hear_again", "Hear a sentence again in one piece when it was said in two  (a word "
+         "or two may then be put right)", "Speed"),
+    Item("left_context", "Hear each phrase with the end of the one before  (better words and "
+         "full stops, a little slower)", "Speed"),
     Item("second_opinions", "Second opinions: each phrase is heard by two or three models  "
          "(experimental: a little more accurate, slower)", "Speed", default=False),
     Item("short_wake", "\"Wake\", \"sleep\"  (said by themselves; \"wake up\" and \"go to "
@@ -84,6 +88,8 @@ ITEMS = (
     Item("underline", "\"Underline that\"", "Formatting"),
     Item("keep_final", "Keep the full stop or question mark the recogniser writes at the end "
          "of a phrase", "Formatting", default=False),
+    Item("tidy", "Put right what was just typed when the next words show what it was  "
+         "(\"the cat too\", then \"the vet\": \"to\")", "Formatting"),
     Item("money", "Write sums of money as figures  (\"a hundred and fifty dollars\" is "
          "typed as $150)", "Formatting"),
     Item("other_apps", "Dictate into other programs' text boxes  (uses the desktop's "
@@ -289,6 +295,29 @@ HELP = {
            "closes whichever of this program's windows is open; with none open, those words "
            "are typed like any others.",
     "no_greeting_comma": "Ticked: \"Hello Bob\". Unticked: \"Hello, Bob\".",
+    "left_context": "Each phrase is cut where you paused, and a recogniser that hears it by itself "
+                    "has nothing to go on: \"Cheers\" said alone on its line comes out \"Chairs\", and "
+                    "every pause to think gets a full stop. Ticked, the last few seconds of the phrase "
+                    "before are heard with it, as you said them, and only the new words are typed; "
+                    "where the words decide where sentences end, what the recogniser wrote where the "
+                    "two meet decides the full stop. For Parakeet models, here or on the other "
+                    "computer. Each phrase takes a little longer to hear.",
+    "hear_again": "A sentence said in two phrases is heard as two, and each hearing lacks what "
+                  "the other half would have told the recogniser. Ticked, when the second half "
+                  "has been typed the two sounds are put together and heard once more, and if a "
+                  "word or two comes out differently the two phrases are typed again. It is only "
+                  "done when nothing else is waiting to be heard and the recogniser is quick "
+                  "enough for it to take under half a second, and not yet in a box that is typed "
+                  "into key by key. \"Scratch that\" still takes away the last phrase.",
+    "tidy": "A phrase is heard by itself, and what comes next can show that a word in it was "
+            "another that sounds the same, or that its full stop came too soon. Ticked, the end "
+            "of what was just typed is put right as the next words go in. Only this program's "
+            "own words are touched, and only while they are as it typed them: change one back "
+            "and it is left alone. \"Scratch that\" takes the change back with the phrase, and "
+            "after \"undo that\" it is not made again there. A spoken command heard as a word "
+            "(\"Hi Joe common\") or a sign-off heard as another (\"Chairs\") is put right too, "
+            "where a small language model, downloaded once (138 MB), says that makes far more "
+            "sense.",
 }
 
 
@@ -302,7 +331,7 @@ def help_for(key: str) -> str:
     return ""
 # Settings that aren't commands: they are asked about by name, not left out of what is heard.
 OPTIONS = frozenset({"choose_numbers", "vscode_cpp", "other_apps", "keep_final", "money",
-                     "quick_listening", "second_opinions", "no_greeting_comma",
+                     "quick_listening", "second_opinions", "no_greeting_comma", "tidy", "hear_again", "left_context",
                      "speech_only", "aloud", "run_programs", "commands_only"})
 WINDOWS_ONLY = frozenset()  # tick boxes shown on Windows only: none now
 
@@ -373,13 +402,16 @@ def _share(saved) -> dict:
             "where": where.strip() if isinstance(where, str) and len(where) <= 100 else ""}
 
 
+# Where full stops go at the ends of phrases (see joins.py, which has the same three).
+SENTENCE_ENDS = ("said", "words", "pause")
+
 _saving = threading.Lock()  # one save at a time: the engine's worker saves, and so do the windows
 
 
 class Settings:
     def __init__(self, states: dict | None = None, path: str | None = None, model: str = "",
                  microphone: str = "", words=(), remote=None, share=None, look: str = "",
-                 hotkey: str = "", shortcuts=None):
+                 hotkey: str = "", shortcuts=None, sentence_ends: str = ""):
         self.states = dict(states or {})
         self.path = path
         self.model = model  # the chosen speech model's folder name, or "" for the default
@@ -392,6 +424,12 @@ class Settings:
         self.share = _share(share)
         self.hotkey = hotkey  # the key that switches dictation on and off, by its name: "" for none
         self.shortcuts = dict(shortcuts or {})  # what is said, in small letters -> the text it types
+        # Where full stops go at the ends of phrases: "said", "words" or "pause" (see
+        # joins.py). Settings from before there was a choice had a tick box for keeping the
+        # recogniser's stop, which is "pause".
+        if sentence_ends not in SENTENCE_ENDS:
+            sentence_ends = "pause" if self.states.get("keep_final") else SENTENCE_ENDS[0]
+        self.sentence_ends = sentence_ends
         self.first_time = False  # whether load() found no settings file at all
 
     @classmethod
@@ -422,15 +460,17 @@ class Settings:
                 # + of the number pad, which was on unless the file says otherwise. (Read
                 # here, from the states as they were saved: that tick box is no more.)
                 hotkey = "Number pad +" if states.get("numpad_plus", True) else ""
+            sentence_ends = saved.get("sentence_ends")
+            sentence_ends = sentence_ends if isinstance(sentence_ends, str) else ""
             shortcuts = saved.get("shortcuts")
             shortcuts = {said: typed for said, typed in shortcuts.items()
                          if isinstance(said, str) and isinstance(typed, str)
                          } if isinstance(shortcuts, dict) else {}
         except (OSError, ValueError, AttributeError):
             states, model, microphone, words, remote, share, look = {}, "", "", [], None, None, ""
-            hotkey, shortcuts = "", {}
+            hotkey, shortcuts, sentence_ends = "", {}, ""
         loaded = cls({k: bool(v) for k, v in states.items() if k in BY_KEY}, path, model,
-                     microphone, words, remote, share, look, hotkey, shortcuts)
+                     microphone, words, remote, share, look, hotkey, shortcuts, sentence_ends)
         loaded.first_time = first_time
         return loaded
 
@@ -445,7 +485,8 @@ class Settings:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             # The key is written even when there is none: its being missing is how a
             # file from before there was a choice of key is known (see load).
-            saved = {"states": dict(self.states), "model": self.model, "hotkey": self.hotkey}
+            saved = {"states": dict(self.states), "model": self.model, "hotkey": self.hotkey,
+                     "sentence_ends": self.sentence_ends}
             if self.microphone:
                 saved["microphone"] = self.microphone
             if self.words:
@@ -527,6 +568,14 @@ class Settings:
             self.shortcuts = found
             self.save()
         return problems
+
+    def set_sentence_ends(self, chosen: str) -> None:
+        """Where full stops go at the ends of phrases: see joins.py. The old tick box is
+        kept in step, for an earlier version reading the same file."""
+        if chosen in SENTENCE_ENDS:
+            self.sentence_ends = chosen
+            self.states["keep_final"] = chosen == "pause"
+            self.save()
 
     def set_remote(self, **changes) -> None:
         self.remote = _remote({**self.remote, **changes})

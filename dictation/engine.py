@@ -6,6 +6,7 @@ import json
 import math
 import os
 import queue
+import re
 import secrets
 import threading
 import time
@@ -18,7 +19,8 @@ from .commands import (
     last_words_length, move_steps,
 )
 from .commands import normalise as plain_words
-from .formatting import SPOKEN, fit
+from .formatting import BREAKS, LINE, PARAGRAPH, SPOKEN, fit
+from .formatting import _cap_first as cap_first
 from .mailbridge import MailBridge, own_key
 from .targets import Targets
 from .vscode_target import VSCodeTarget
@@ -26,8 +28,9 @@ from .words import Lexicon, repetitive
 from .settings import Settings, available_models, model_label
 from .segmenter import END, FELL_AWAY, LIMIT, NO_VOICE, ROOM, START, Segmenter, SegmenterConfig
 from .selecting import variants
-from . import (accessibility, actions, audio, clicking, coding, endings, models, money, opinions, quick, remote,
-               speech, spelling, training, vocabulary, voicetest)
+from . import (accessibility, actions, audio, clicking, coding, endings, joins, letters, models,
+               money, opinions, punctuation, quick, remote, sense, speech, spelling, tidy, training,
+               vocabulary, voicetest)
 from .status import State, Status
 
 
@@ -144,6 +147,65 @@ def from_pieces(result) -> str:
     return " ".join("".join(pieces).split()) or str(getattr(result, "text", "")).strip()
 
 
+_MARKS = (".", "?", "!", ",")
+
+
+WithJoin = joins.WithJoin
+
+
+def split_at_lead(tokens: list, times: list, lead_seconds: float) -> tuple:
+    """A Parakeet hearing of the end of the phrase before and the new phrase together, cut
+    where the new phrase begins: (the pieces of the phrase before, the new phrase's). By the
+    model's own times for its pieces, with config.LEAD_SLACK to spare. A word that was begun
+    before the join is the phrase before's, all of it; so is a mark written at the join,
+    unless there is nothing else after it: then the new phrase was that mark, said by itself
+    ("comma", written as the sign)."""
+    after = next((i for i, at in enumerate(times) if at >= lead_seconds), len(tokens))
+    if after < len(tokens) and all(piece.strip() in _MARKS for piece in tokens[after:]):
+        return tokens[:after], tokens[after:]   # clearly after the join, and nothing else
+    start = lead_seconds - config.LEAD_SLACK
+    first = next((i for i, at in enumerate(times) if at >= start), len(tokens))
+    # Not from the middle of a word: a piece that doesn't begin one belongs to the word before,
+    # unless it was said after the join. Then the model wrote one word, or one number, across
+    # the pause ("for | give me" as "forgive me", "at three | thirty" as "3:30"), and it can't
+    # be cut: None, and the phrase is heard by itself.
+    while first < len(tokens) and not tokens[first].startswith(" ") and tokens[first].strip() not in _MARKS:
+        if times[first] >= lead_seconds:
+            return None
+        first += 1
+    # A mark at the join is the join's, not the new phrase's.
+    while first < len(tokens) and tokens[first].strip() in _MARKS:
+        first += 1
+    return tokens[:first], tokens[first:]
+
+
+def _after_the_word(text: str) -> str:
+    """The words of "Correct, John E." after the command word, as the recogniser wrote them."""
+    return re.sub(r"(?i)^\W*(?:correct|select)\b[\s,.;:!?…-]*", "", text).strip()
+
+
+def untyped(held: tuple) -> tuple:
+    """A held mark (see Engine._dictate) no longer on the page: the recogniser's own mark again,
+    not the one typed for the time being in its place (a full stop where it wrote none)."""
+    return (held[0], held[1], held[4] if len(held) > 4 else held[2], False)
+
+
+def mark_at_join(before: list, after: list) -> tuple:
+    """What the model wrote where the two phrases meet, heard together: (the mark, or "" for
+    none; whether the new phrase's first word has a capital)."""
+    mark = ""
+    for piece in reversed(before):
+        if piece.strip() in _MARKS:
+            mark = mark or piece.strip()
+            continue
+        if piece.strip() in ("”", "’", '"', "'", ")", "]") and not mark:
+            continue                      # (a closing quote or bracket after the mark)
+        break                             # the phrase before's last word
+    words = "".join(after).split()
+    capital = bool(words) and words[0][:1].isupper()
+    return mark, capital
+
+
 def normalise(audio):
     """Turn a quiet phrase up so Whisper hears it at a normal level."""
     peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
@@ -155,6 +217,19 @@ def normalise(audio):
 SHORT_WINDOW_FRAMES = 1000  # ten seconds of sound, as Whisper counts it
 SHORT_SECONDS = 9.0         # sound up to this long goes through that window whole
 GUEST_MODELS = 3            # how many models are kept loaded for other computers
+# The commands that act on the last phrase as each program has it on record (its newest
+# insertion). A full stop typed for the time being after a quiet spell is an insertion of its
+# own, so it is taken back first (see _scratch_the_mark): or they would act on that alone,
+# and "correct that" would select only the stop. ("That was a noise" does it itself.)
+ON_THE_LAST_PHRASE = frozenset(("scratch", "undo", "delete", "select_last", "cap", "all_caps",
+                                "no_caps", "bold", "italic", "underline"))
+FORMATTING = frozenset(("cap", "all_caps", "no_caps", "bold", "italic", "underline"))
+# "Correct" or "select" and at most this many words, not found: the command was meant, and
+# it is said so ("correct John E"). With more, or with words that begin a phrase as these do
+# ("select the best option"), it is most likely a sentence that begins with the word.
+SHORT_CORRECTION = 2
+SENTENCE_STARTS = frozenset("the a an all some any my your his her its our their this that these "
+                            "those one each every no".split())
 
 
 def shown(model: str, prompt: str) -> str:
@@ -222,18 +297,47 @@ class Transcriber:
     def _is_transducer(self, name: str) -> bool:
         return models.kind(config.MODEL_DIR, name) == "transducer"
 
-    def _by_transducer(self, name: str, audio, sure: bool = False, speech_only=None) -> str:
+    def _by_transducer(self, name: str, audio, sure: bool = False, speech_only=None,
+                       lead: int = 0) -> str:
         """The words. With `sure`, a voicetest.Heard that also says how sure the
         recogniser was of each word, where its library tells. A noise that was written
         down as a word is left out, unless `speech_only` (or this computer's own choice,
-        if that is None) says not to: see speech.py."""
+        if that is None) says not to: see speech.py.
+
+        `lead`: how many of `audio`'s samples, at its start, are the end of the phrase
+        before, put in front of this one so that it is heard with what led up to it (see
+        config.LEFT_CONTEXT). Only the words after the join are this phrase's; what the
+        model wrote at the join is kept in `join_heard` (see mark_at_join)."""
         recogniser = self._transducer(name)
         stream = recogniser.create_stream()
         stream.accept_waveform(config.RATE, audio)
         recogniser.decode_stream(stream)
         result = stream.result
-        text = from_pieces(result)
-        each = voicetest.word_sureness(list(result.tokens), getattr(result, "ys_log_probs", None))
+        tokens = [str(piece) for piece in (getattr(result, "tokens", None) or ())]
+        probs = getattr(result, "ys_log_probs", None)
+        self.join_heard = None
+        if lead:
+            times = list(getattr(result, "timestamps", None) or ())
+            if len(times) != len(tokens):
+                # Without the model's times it can't be cut: heard again by itself.
+                return self._by_transducer(name, audio[lead:], sure, speech_only)
+            cut = split_at_lead(tokens, times, lead / config.RATE)
+            if cut is None:
+                return self._by_transducer(name, audio[lead:], sure, speech_only)
+            before, tokens = cut
+            near = before[-1:] + tokens[:1]
+            if any(any(c.isdigit() for c in piece) for piece in near):
+                # A number said across the pause ("twenty | five dollars") is written as one,
+                # and can't be cut in two: the phrase is heard by itself.
+                return self._by_transducer(name, audio[lead:], sure, speech_only)
+            if any(piece.startswith(" ") or piece.strip() not in _MARKS for piece in before):
+                self.join_heard = mark_at_join(before, tokens)   # (none if nothing before was heard)
+            probs = list(probs)[len(before):] if probs is not None else None
+            audio = audio[lead:]          # what is measured below is this phrase's own sound
+            text = " ".join("".join(tokens).split())
+        else:
+            text = from_pieces(result)
+        each = voicetest.word_sureness(tokens, probs)
         self.measured = None  # for a phrase of a word or two: what was measured of it
         self.left_out = ""
         if text and (getattr(self, "speech_only", True) if speech_only is None else speech_only):
@@ -248,6 +352,8 @@ class Transcriber:
                 self.left_out = text
                 return voicetest.heard_as("", []) if sure else ""
         if not sure:
+            if lead:
+                text = joins.heard(text, self.join_heard)
             return text
         return voicetest.heard_as(text, each)
 
@@ -374,6 +480,7 @@ class Transcriber:
         """One piece of listening done for another computer: see remote.py."""
         started = time.monotonic()
         with self.lock:
+            self.join_heard, used_lead = None, 0
             code = bool(header.get("code", False))
             if header.get("kind") == "alone":
                 text, model, awake = self.hear_alone(audio), self._whisper_name(), True
@@ -394,14 +501,22 @@ class Transcriber:
                                           bool(header.get("quick", False)), sure=True,
                                           speech_only=wanted)
                 else:
+                    lead = header.get("lead", 0)
+                    lead = lead if isinstance(lead, int) and 0 < lead < len(audio) else 0
+                    used_lead = lead
                     text = self.transcribe(audio, awake, str(header.get("prompt", "")), model,
                                            quick=bool(header.get("quick", False)), exact=exact,
                                            speech_only=wanted, code=code,
-                                           letters=bool(header.get("letters", False)))
+                                           letters=bool(header.get("letters", False)), lead=lead)
             reply = {"ok": True, "text": str(text), "model": model,
                      "not_speech": 0.0 if awake else self.not_speech,
                      "ignored": "" if awake else self.ignored,
-                     "seconds": round(time.monotonic() - started, 2)}
+                     "seconds": round(time.monotonic() - started, 2),
+                     # Said back, so that the guest knows the phrase before was taken to be
+                     # there and not heard as part of this one (an older computer doesn't).
+                     "lead": used_lead}
+            if getattr(text, "at_join", None) is not None:
+                reply["join"] = list(text.at_join)
             if getattr(text, "sure", None) is not None:
                 reply["sure"] = [[word, round(how, 4)] for word, how in text.sure]
                 reply["extra"] = round(text.extra, 3)  # seconds spent on that, not on listening
@@ -552,24 +667,31 @@ class Transcriber:
 
     def transcribe(self, audio, awake: bool, prompt: str = "", model: str = "",
                    quick=None, exact: bool = False, speech_only=None, code: bool = False,
-                   letters: bool = False) -> str:
+                   letters: bool = False, lead: int = 0) -> str:
         """The words in `audio`, as the chosen model hears them: awake or asleep. `model`,
         `quick` and `speech_only` are for a guest that says which model it wants, whether
         to try the quick way, and whether a noise written as a word is to be left out;
         left out, this computer's own choices are used. `exact` is for listening that
         depends on the prompt, such as spelled letters, which a Parakeet can't be given:
         with one chosen that goes to a Whisper model, and with `code`, to the one kept
-        for source code."""
+        for source code. `lead`: see _by_transducer; only a Parakeet uses it, and only for
+        ordinary dictation: anything else is heard without the phrase before."""
+        if lead and not (awake and not exact and self._is_transducer(model or self.dictation_name)):
+            audio, lead = audio[lead:], 0
         if awake and exact and letters:
             return self.letters(audio, prompt)      # the spelling box: see letters()
         with self.lock:
+            # (Under the lock, with the reading of it in _by_transducer: another thread's
+            # transcribe clearing it between the two would lose the mark heard at the join.)
+            self.join_heard = None
             self._let_go_of_code_model()
             model = model or self.dictation_name
             if self._is_transducer(model):
                 if not awake:
                     return self._asleep_by_transducer(model, audio, speech_only)
                 if not exact:
-                    return self._by_transducer(model, audio, speech_only=speech_only)
+                    return self._by_transducer(model, audio, speech_only=speech_only,
+                                               **({"lead": lead} if lead else {}))
                 model = self._whisper_name(code)
             return self._transcribe(audio, awake, prompt, model,
                                     self.quick if quick is None else quick)
@@ -668,6 +790,11 @@ class Engine:
         # Something to tell the person at once, in a sentence: (text, "info" or "problem").
         self.on_notice = lambda text, kind="info": None
         self._told = {}            # when each notice was last given, so none is repeated at once
+        self._ended = {}           # when each phrase still waiting was taken to be over
+        # Putting right what was typed a moment ago (tidy.py): the run of this program's own
+        # text before the cursor, as (the program, the text); what it was before each of the
+        # last few phrases; what was put right with the last one; and what was taken back.
+        self._run, self._runs, self._last_tidy, self._refused = None, [], None, tidy.Refused()
         self.on_level = lambda: None  # the level meter changed
         self.boost = config.DEFAULT_BOOST
         self.settings = Settings.load()
@@ -848,7 +975,13 @@ class Engine:
         if getattr(self, "_drops", None) and not quietly:
             self._drops = []              # switched on by hand: a clean slate
         self._set(State.AWAKE if awake else State.ASLEEP)
+        speech.ready_detector()           # (not on the microphone's thread: see speech.py)
         threading.Thread(target=self._listen, args=(recorder,), daemon=True).start()
+        if joins.sentence_ends(self.settings) == "words":
+            self._decider_failed = False  # tried again each time dictation is switched on
+            self._words_decider()         # ready before the first pause, not at it
+        if self.settings.enabled("tidy"):
+            self._sense_ready()           # (see sense.py)
         return True
 
     def microphones(self) -> list:
@@ -874,6 +1007,9 @@ class Engine:
         is being changed, a recording made) or the program is closing: then nothing is
         kept and nobody is told."""
         self._stop_choosing()  # don't leave numbers showing in the document
+        if remember:
+            self._finish_later("off")     # the held mark, if the last sentence is waiting for one
+            self._heard_units = []        # (and nothing heard so far is gone on with)
         was_on = self.status.state is not State.OFF
         with self._lock:
             recorder, self._recorder = self._recorder, None
@@ -896,6 +1032,8 @@ class Engine:
         self.on_event("wake")
 
     def sleep(self) -> None:
+        self._finish_later("asleep")      # the held mark, if the last sentence is waiting for one
+        self._heard_units = []            # (and nothing heard so far is gone on with)
         self._stop_choosing()
         self.status.spelling = False
         if self.status.state is not State.OFF:
@@ -967,7 +1105,7 @@ class Engine:
             if event == START:
                 best = 0
                 phrase = list(preroll)
-                watch.start(len(phrase))
+                watch.start(len(phrase), phrase)
                 self._hearing(True)
             if segmenter.in_phrase or event == END:
                 phrase.append(frame)
@@ -988,9 +1126,11 @@ class Engine:
                             "sound: what came before it was left out")
                 elif seen == speech.GONE:
                     # The voice has stopped and the sound goes on. The phrase is over: all
-                    # of it up to a moment after the voice was last heard.
+                    # of it up to a moment after the voice was last heard. (Unless what
+                    # goes on is talk, far softer: that may be the same person, and none
+                    # of it is left out. It starts a phrase of its own at once.)
                     spare = watch.frames_since_voice() - watch.frames_for(watch.AFTER)
-                    if 0 < spare < len(phrase):
+                    if 0 < spare < len(phrase) and not watch.soft:
                         phrase = phrase[:-spare]
                     event = segmenter.cut() or None
             if event == END and segmenter.ended_by == ROOM:
@@ -1004,6 +1144,7 @@ class Engine:
                 if self.status.state is State.HEARING:
                     self.status.state = State.AWAKE
                     self.on_change()
+                self._speaking = False    # nothing is being said after all
                 continue
             if event == END:
                 audio = np.concatenate(phrase).astype(np.float32) / 32768.0
@@ -1022,8 +1163,10 @@ class Engine:
                     low, high = segmenter.tail_spread
                     how = {FELL_AWAY: "because the sound fell away from the voice, though the "
                                       "room stayed louder than it had been",
-                           NO_VOICE: "because the voice in it had stopped, though the sound "
-                                     "went on",
+                           NO_VOICE: ("because the talking in it had gone far softer: other "
+                                      "people, or an aside" if watch.soft else
+                                      "because the voice in it had stopped, though the sound "
+                                      "went on"),
                            LIMIT: "at the longest a phrase may be: the sound never fell quiet"
                            }.get(segmenter.ended_by, "at a pause")
                     voice = segmenter.voice_was or 1.0
@@ -1033,6 +1176,15 @@ class Engine:
                         f"{'level' if segmenter.tail_steady else 'rising and falling'}, "
                         f"from {low:.2f} to {high:.2f} of its middle; "
                         f"room {segmenter.room_was:.0f}, now {segmenter.noise:.0f})")
+                waiting = self.__dict__.setdefault("_ended", {})
+                if len(waiting) > 50:            # of phrases that were never taken up
+                    waiting.clear()
+                # For the log (see _say_if_slow): when it was taken to be over, and how
+                # long that was after the voice was last heard, where that is known.
+                waiting[id(audio)] = (time.monotonic(),
+                                      watch.frames_since_voice() / watch.per_second
+                                      if watch.heard else None)
+                self._speaking = False
                 self._phrases.put(("audio", audio))
         self.status.level = self.status.meter = 0
         self.status.loud = False
@@ -1081,6 +1233,7 @@ class Engine:
                 return
 
     def _hearing(self, on: bool) -> None:
+        self._speaking = on               # a phrase is being said: see _hear_again
         if on and self.status.state is State.AWAKE:
             self.status.state = State.HEARING
             self.on_change()
@@ -1182,6 +1335,15 @@ class Engine:
         self.on_event("ready")
         self.on_change()
 
+    def set_sentence_ends(self, chosen: str) -> None:
+        """Where full stops go at the ends of phrases, chosen in Settings: see joins.py."""
+        self.settings.set_sentence_ends(chosen)
+        self._held_mark = None            # nothing held back under the old choice carries over
+        log(f"full stops at the ends of phrases: {joins.sentence_ends(self.settings)}")
+        if joins.sentence_ends(self.settings) == "words":
+            self._decider_failed = False
+            self._words_decider()         # fetched and loaded now, not at the first pause
+
     def setting_changed(self, key: str) -> None:
         """Called when a tick box in Settings is changed."""
         if key == "other_apps":
@@ -1189,6 +1351,8 @@ class Engine:
             self._vscode_switch()
         if key == "commands_only":
             self._apply_mode()
+        if key == "tidy" and self.settings.enabled("tidy") and self.status.state is not State.OFF:
+            self._sense_ready()
 
     def _vscode_switch(self) -> None:
         """VS Code only shows its panels to other programs when started with a switch for
@@ -1321,6 +1485,17 @@ class Engine:
                 "and the other computer does the listening: "
                 + (problem if problem else "it isn't answering.")
                 + " It is asked again as you speak.")
+        elif not there:
+            # With a model here nothing is lost, but it is this computer doing the work,
+            # and that may be far slower: slow enough to be taken for a fault of some
+            # other kind. So it is said, once when it happens and for as long as it lasts.
+            self._standing["remote"] = (
+                "The other computer isn't doing the listening: "
+                + (problem if problem else "it isn't answering.")
+                + " This computer is doing it meanwhile, which may be slower, and asks the "
+                "other again every twenty seconds.")
+            self.tell("The other computer can't be used just now, so this one is doing the "
+                      "listening, which may be slower. " + problem, "problem", every=600)
         else:
             self._standing.pop("remote", None)
         self._problems()
@@ -1568,6 +1743,8 @@ class Engine:
         return True
 
     def handle_audio(self, audio) -> None:
+        began = time.monotonic()
+        ended, tail = getattr(self, "_ended", {}).pop(id(audio), None) or (None, None)
         if self._only_breath(audio):
             return
         if self._transcriber is None and not self._no_model_here():
@@ -1616,7 +1793,18 @@ class Engine:
         # voice test, another computer's phrase).
         if getattr(self._transcriber, "measured", None) is not None:
             self._transcriber.measured = None
-        text = ears.transcribe(sound, awake, hint + prompt, **exact)
+        asked = time.monotonic()
+        # Heard with the end of the phrase before in front, where there is one to go on with
+        # (see config.LEFT_CONTEXT): only the words after the join come back.
+        lead = self._lead_for(prose and awake and not exact)
+        self._heard_join = None
+        if lead is not None:
+            text = ears.transcribe(np.concatenate([lead, sound]), awake, hint + prompt,
+                                   lead=len(lead), **exact)
+            self._heard_join = getattr(text, "at_join", None)
+        else:
+            text = ears.transcribe(sound, awake, hint + prompt, **exact)
+        heard = time.monotonic()
         measured = getattr(ears, "measured", None)
         # The person's codes, such as part numbers, are put in as they spelled them wherever
         # their letters and figures were written: there is no doubt about those to settle.
@@ -1657,7 +1845,47 @@ class Engine:
         # been a noise and is said to be: see "that was a noise".
         self._heard_sound = (sound, text, getattr(ears, "dictation_name", ""),
                              measured) if awake and text else None
+        settled = time.monotonic()
+        self._just_typed = None
         self.handle_text(text, awake)
+        if awake:
+            ended = began if ended is None else ended
+            self._keep_for_context(sound, text, ended, prose and not exact)
+            # Dictation samples being recorded (samples.py): the phrase is kept with its sound.
+            sampler = getattr(self, "sampler", None)
+            if sampler is not None and text.strip() and sampler.wants(self.targets):
+                action = interpret(text, True, self.settings.disabled_commands())
+                if not (isinstance(action, Command) and action.name in ("sleep", "wake")):
+                    sampler.add(audio, text, ended, len(audio) / config.RATE)
+            self._say_if_slow(len(audio) / config.RATE, ended, began, asked, heard, settled,
+                              time.monotonic(), tail)
+            took = heard - asked
+            if lead is not None:          # (the end of the phrase before was heard too)
+                took *= len(sound) / (len(sound) + len(lead))
+            self._hear_again(sound, ended, took, prose and not exact, hint)
+
+    def _say_if_slow(self, seconds: float, ended: float, began: float, asked: float,
+                     heard: float, settled: float, done: float, tail=None) -> None:
+        """Put in the log where the time went, for a phrase whose words were long in
+        coming: what to look at when somebody says dictation is slow. The times are
+        when the phrase was taken to be over, when its turn came, when it was sent to be
+        heard, when the words came back, when they were settled and when they had been
+        acted on. `tail` is how long after the voice stopped the phrase was taken to be
+        over, where that is known: in a noisy room that can be the longest wait of all."""
+        if done - ended + (tail or 0.0) < config.SLOW_PHRASE:
+            return
+        offload = self._offload
+        where = ("on the other computer" if offload is not None and offload.there
+                 else "on this computer")
+        log(f"slow: {done - ended + (tail or 0.0):.1f} s from the end of "
+            + ("the voice" if tail is not None else "the phrase")
+            + f" to the words of a {seconds:.1f} s phrase: "
+            + (f"{tail:.1f} s to see that it was over, " if tail is not None else "")
+            + f"{began - ended:.1f} s waiting its turn, "
+            f"{asked - began:.1f} s finding where they are to go, "
+            f"{heard - asked:.1f} s being heard {where}, "
+            f"{settled - heard:.1f} s being checked or heard again, "
+            f"{done - settled:.1f} s being acted on")
 
     def _checked(self, text: str, sound, prompt: str) -> str:
         """`text` as a second recogniser lets it stand, or as a third settled it where the
@@ -1788,14 +2016,37 @@ class Engine:
                 self.on_event("app:" + action.arg)
                 self._back_to_awake()
                 return
+        if isinstance(action, Command) and action.maybe and not self._just_typed_words(_after_the_word(text)):
+            action = Dictation(text)      # "Correct, yes.": a sentence, as it sounded
         if isinstance(action, Command):
             self.status.last_heard = text
+            stood = (getattr(self, "_run", None), getattr(self, "_last_typed", None),
+                     getattr(self, "_held_mark", None))   # (what "scratch that" after it brings back)
+            together = False              # the held stop went in with the line break
+            if action.name in ("new_line", "new_paragraph", "press_enter", "enter"):
+                together = self._finish_sentence(action.name)   # the held mark ends the line first
+                stood = (getattr(self, "_run", None), getattr(self, "_last_typed", None),
+                         getattr(self, "_held_mark", None))      # (as they are after it)
+            elif action.name in ON_THE_LAST_PHRASE:
+                if action.name == "delete":
+                    # With nothing selected, "delete that" takes the last phrase back, as
+                    # "scratch that" does: what follows has to know (see _tidy_after).
+                    self._deleting_phrase = not self.targets.request({"op": "context"}).get("selected")
+                self._scratch_the_mark(action.name)   # a stop typed for the time being goes first
+                if action.name in ("scratch", "undo", "delete"):
+                    # (To tell afterwards whether anything was taken back: a program can say
+                    # it did and take nothing, as Writer does after "undo that".)
+                    self._page_before = self.targets.request({"op": "context"}).get("before")
+            elif action.name not in ("select", "correct", "redo", "noise", "unselect"):
+                self._held_mark = None    # ("select"/"correct" may be typed as words after all)
             self._last_typed = None       # a command in between: see _dictate
             # "Press enter" is the Enter key: a new paragraph. So is "enter" by itself,
             # where that has been switched on.
             name = "press_enter" if action.name == "enter" else action.name
             reply = {"why": "unknown request"}
-            if name == "noise":
+            if together:
+                reply = {"ok": True}
+            elif name == "noise":
                 reply = self._was_noise()
             elif name == "delete_words":
                 reply = self._delete_words(int(action.arg))
@@ -1834,6 +2085,21 @@ class Engine:
                     "op": "command", "name": name, "arg": action.arg,
                     "nearest": not self.settings.enabled("choose_numbers"),
                 })
+            if name in ("select", "correct") and reply.get("why") == "can't find that":
+                # The recogniser may have heard the words asked for as it heard them the first
+                # time, and the person's own word was put in there since: "correct John E"
+                # for "Johnny". Asked again as their word.
+                said = _after_the_word(text)    # (as written: "John E", not "john e")
+                own = vocabulary.by_sound(said, "", vocabulary.names(self.settings.words),
+                                          getattr(self, "lexicon", None))
+                own = plain_words(own) if own != said else action.arg
+                if own != action.arg:
+                    again = self.targets.request({
+                        "op": "command", "name": name, "arg": own,
+                        "nearest": not self.settings.enabled("choose_numbers"),
+                    })
+                    if again.get("ok"):
+                        reply = again
             if (name in ("select", "correct") and reply.get("why") == "can't find that"
                     and not reply.get("sounds_tried")):
                 # A program that looks for the words itself looks for exactly those. Ask
@@ -1866,9 +2132,21 @@ class Engine:
             if name == "press_enter" and reply.get("why") == "unknown command":
                 # Where Enter isn't known as a command, it is a new paragraph.
                 reply = self.targets.request({"op": "command", "name": "new_paragraph"})
+            if (action.name in ("select", "correct") and reply.get("why") == "can't find that"
+                    and not action.maybe and len(action.arg.split()) <= SHORT_CORRECTION
+                    and plain_words(action.arg).split()[:1] not in ([w] for w in SENTENCE_STARTS)):
+                # A word or two to correct, not there to be found: what was meant was the
+                # command, and typed as words it only adds to what is to be put right
+                # ("Correct, John E." after "John E."). Said so, and nothing typed.
+                log(f"command {action.name}: can't find that")
+                self.tell(f"\u201c{action.arg}\u201d isn't there to be {'corrected' if action.name == 'correct' else 'selected'}. "
+                          "Say it as it was typed, or select it and say it again.", "info")
+                self._note(reply)
+                self._back_to_awake()
+                return
             if action.name in ("select", "correct") and reply.get("why") == "can't find that":
-                # Words that aren't there to be selected: most likely a sentence that
-                # begins with "Select" or "Correct". It is typed like any other, as
+                # More words than that, not there to be selected: most likely a sentence
+                # that begins with "Select" or "Correct". It is typed like any other, as
                 # Dragon does.
                 log(f"command {action.name}: can't find that, so it is typed")
                 action = Dictation(text)
@@ -1876,6 +2154,9 @@ class Engine:
                 if reply.get("choices", 0) > 1:
                     self._start_choosing(reply["choices"])
                 self._selected_that = action.name == "select_last" and bool(reply.get("ok"))
+                # (A held full stop stays through "select ..." and "correct ...": what is said
+                # over the words keeps it coming where they were the end of the text, and it is
+                # only used where the text before the cursor still ends as it did.)
                 self._note(reply)
                 self._say_how_it_went(action, text, reply)
                 typed = getattr(self, "_typed_sound", None)
@@ -1884,6 +2165,16 @@ class Engine:
                 if older and reply.get("ok"):
                     self.status.last_heard += ("  (the cursor will stay there: this program's "
                                                "Linux Speaking extension is an older one)")
+                if (not together and reply.get("ok")
+                        and name in ("new_line", "new_paragraph", "press_enter", "space", "tab")):
+                    # What it put in is a step of its own in the program's record: "scratch
+                    # that" straight after takes it, and brings back how things stood. ("Tab
+                    # three times" is three.)
+                    runs = self.__dict__.setdefault("_runs", [])
+                    times = int(action.arg) if name == "tab" and action.arg.isdigit() else 1
+                    runs.extend([(*stood, False)] * max(1, min(times, 12)))
+                    del runs[:-12]
+                self._tidy_after(action.name, reply)
                 log(f"command {action.name}: {outcome(reply)}"
                     + (", and the words it was said over are back" if reply.get("restored") else "")
                     + (", as select: the program's extension is older" if older else ""))
@@ -2193,6 +2484,9 @@ class Engine:
         if elsewhere:
             self.tell(f"That sound is kept. What it was written as is in {where}: take it "
                       "out there.")
+        self._noise_scratched = not (gone or elsewhere)
+        if self._noise_scratched:
+            self._scratch_the_mark("scratch")   # a stop typed for the time being after it goes first
         reply = {"ok": True} if gone or elsewhere else self.targets.request(
             {"op": "command", "name": "scratch"})
         try:
@@ -2267,12 +2561,29 @@ class Engine:
         settings never need LibreOffice to be restarted.
         """
         spoken_off = [p for p, _ in SPOKEN] if exact else self.settings.spoken_off()
+        heard_join, self._heard_join = getattr(self, "_heard_join", None), None   # (this phrase's only)
         context = self.targets.request({"op": "context"})
         if not context.get("ok"):
             return context
         before, after = context.get("before", ""), context.get("after", "")
         place, comment = coding.where(before) if self._coding(context) and not exact else ("", "")
         plain = not place and not exact and not then   # ordinary dictated prose
+        # A mark held back and then typed after a quiet spell, or as dictation slept, is only
+        # there for the time being (see _finish_sentence): with more of what is said it is
+        # decided again. The text before is taken as it was without it, and it is taken out
+        # with this phrase; the join gets what the words say now, which may be the same.
+        provisional = 0
+        held = getattr(self, "_held_mark", None)
+        # (A word spelled or a shortcut said goes on where the phrase ended, too.)
+        if (not place and (plain or exact) and held and len(held) > 3 and held[3]
+                and held[0] == self.targets.name
+                and joins.sentence_ends(self.settings) == "words"
+                and not context.get("selected") and not after.strip()):
+            stem = before.rstrip(" \t")
+            if held[2] and stem.endswith(held[1] + held[2]):
+                provisional = len(before) - (len(stem) - len(held[2]))
+                before = before[:len(before) - provisional]
+        carried = None    # whether the last sentence end was said aloud, where that is known
         if place in ("code", "string"):
             # Source code has its own rules, and knows the names already in the file.
             ins = coding.fit_code(raw, before, after, self._names(), self._scope)
@@ -2287,18 +2598,35 @@ class Engine:
             if not exact and self.settings.enabled("money"):
                 raw = money.in_figures(raw, before)   # sums of money one way: see money.py
             last = getattr(self, "_last_typed", None)   # (program, the end of what was typed, said)
-            carried = None
             if (plain and last and last[0] == self.targets.name
                     and before.rstrip(" ").endswith(last[1])):
                 carried = last[2]
-            ins = fit(raw, comment if place == "comment" else before, after,
-                      self.lexicon, spoken_off=spoken_off, names=self.settings.words,
-                      keep_final=self.keep_final or exact or self.settings.enabled("keep_final"),
-                      greeting_comma=exact or not self.settings.enabled("no_greeting_comma"),
-                      after_said_end=carried)
+            around = comment if place == "comment" else before
+
+            def fitted(phrase):
+                return fit(phrase, around, after,
+                           self.lexicon, spoken_off=spoken_off, names=self.settings.words,
+                           keep_final=(self.keep_final or exact
+                                       or joins.sentence_ends(self.settings) == "pause"),
+                           greeting_comma=exact or not self.settings.enabled("no_greeting_comma"),
+                           after_said_end=carried)
+            self._sensed = None
+            if plain and self.settings.enabled("tidy") and sense.might_need(raw):
+                raw = self._make_sense(raw, around, fitted, spoken_off)   # would a person write it?
+            ins = fitted(raw)
             # (A word that was spelled keeps its last full stop: "e.g." was spelled so.)
         text = ins.text
         replacing_last, self._selected_that = self._selected_that, False
+        last_lead = getattr(self, "_last_lead", None)
+        if (replacing_last and plain and last_lead and last_lead[0] == self.targets.name
+                and joins.sentence_ends(self.settings) == "words"):
+            # "Correct that" chose the last phrase as the program has it, with the mark the
+            # words decided at its join in front ("…for me" and ". Then we left"): what is said
+            # in its place goes in with that mark, and a capital after a sentence end.
+            body = text.lstrip(" ")
+            if last_lead[1].strip()[-1:] in joins.ENDS:
+                body = cap_first(body)
+            text = last_lead[1] + body
         edges = context.get("selected_edges")
         if context.get("selected") and not replacing_last:
             # Spoken over a selection, the words take its place, fitted to what is on
@@ -2334,16 +2662,749 @@ class Engine:
             last = getattr(self, "_last_typed", None)
             self._last_typed = (self.targets.name, last[1] if last else before.rstrip(" ")[-40:], True)
             return {"ok": True}
+        # What was typed a moment ago is looked over again with the new words beside it,
+        # and what they show to have been a slip is put right as they go in: see tidy.py.
+        # Only ordinary prose that goes in at the cursor, and never over a selection.
+        ours = plain and bool(text) and not context.get("selected") and not replacing_last
+        delete_before, amended, whole = ins.delete_before, [], ""
+        # Where the words decide where sentences end (see joins.py), the recogniser's own
+        # mark at the end of the phrase before was held back, and the join is decided now
+        # that what follows it is known. The mark goes in with this phrase.
+        words_decide = plain and joins.sentence_ends(self.settings) == "words"
+        join_decided = False
+        breaks = BREAKS + "\n\r"
+        if (words_decide and ours and held and held[0] == self.targets.name
+                and carried is not True and not after.strip()
+                and before.rstrip(" \t").endswith(held[1])
+                and before.rstrip(" \t")[-1:] not in breaks and not joins.ends_marked(before)):
+            head = before[:len(before) - delete_before] if delete_before else before
+            first = text.lstrip(" ")[:1]
+            # (A word or a figure, and an opening quote or bracket or a sign of money, which
+            # start a sentence like any word. Not a closing quote or bracket, an apostrophe or
+            # a dash: those go on from what is before them.)
+            opening = first == '"' and text.lstrip(" ")[1:2].isalnum()   # (a straight one, opening)
+            if first and (first.isalnum() or first in "“‘([{$€£¥#" or opening):
+                if heard_join is not None:
+                    # Heard together, the recogniser wrote this where they meet: it hears a
+                    # sentence end far better than the words alone tell it.
+                    mark = heard_join[0]
+                    if mark != held[2]:
+                        log(f"sentence end decided by hearing the join: {held[2] or 'none'} held, "
+                            f"{mark or 'none'} put")
+                else:
+                    mark = self._decide_join(head, text, held[4] if len(held) > 4 else held[2])
+                join_decided = True
+                if mark:
+                    text, took = joins.joined(head, text, mark, cap_first)
+                    delete_before += took
+                if provisional and mark == held[2] and not delete_before and text.startswith(mark):
+                    # The stop typed for the time being is the mark decided: it stays as it is,
+                    # and the phrase goes on after it. (Taken out and typed again, it was one
+                    # step more for the program's own Undo than the phrase was, and "undo
+                    # that" twice then brought back the stop and lost the record of a phrase.)
+                    whole_before = context.get("before", "")
+                    delete_before = provisional - len(mark)    # (the spaces after it, if any)
+                    text = text[len(mark):]
+                    before, provisional = whole_before, 0
+            elif text.lstrip(" ")[:1] in breaks and not joins.ends_marked(head):
+                # "New paragraph, thanks for your help": the line it ends was a sentence.
+                if joins.looks_like_a_sentence(re.split("[\n\r  ]", head)[-1]):
+                    delete_before += len(head) - len(head.rstrip(" \t"))
+                    text = (held[2] or ".") + text.lstrip(" ")
+        if words_decide and ours and not said_end and text.rstrip(" ")[-1:] in breaks:
+            # "...tomorrow new paragraph": the line it ends gets its stop before the break,
+            # where it reads as a sentence and has no mark of its own.
+            body = text.rstrip(" ").rstrip(breaks)
+            head = before[:len(before) - delete_before] if delete_before else before
+            if (body.strip() and not joins.ends_marked(body)
+                    and joins.looks_like_a_sentence(re.split("[\n\r  ]", head + body)[-1])):
+                text = body.rstrip(" \t") + (joins.held_mark(raw) or ".") + text[len(body):].lstrip(" \t")
+        if ours and self.settings.enabled("tidy"):
+            run_now = None
+            if provisional:
+                # The stop typed for the time being is going: the run is read without it.
+                program, run = getattr(self, "_run", None) or ("", "")
+                if program == self.targets.name and run.endswith(held[2]):
+                    run_now = (program, run[:-len(held[2])])
+            text, delete_before, amended, whole = self._tidied(text, delete_before, before,
+                                                               carried is False, join_decided,
+                                                               run_now)
+        if provisional and not (ours or (exact and text)):
+            provisional = 0               # not decided again: the mark typed stays as it is
+        scratched = False
+        if provisional:
+            # The mark typed for the time being goes, taken out with this phrase: one step, as
+            # each phrase is for the program's own Undo. (Taken back first, as a step of its
+            # own, "undo that" twice undid only that step and the record of the phrase before
+            # was lost: in VS Code the next "scratch that" took words from the middle.)
+            delete_before += provisional
+            before = context.get("before", "")
         reply = self.targets.request({
-            "op": "insert", "text": text, "delete_before": ins.delete_before,
+            "op": "insert", "text": text, "delete_before": delete_before,
             "delete_after": ins.delete_after, "capitalise_next": ins.capitalise_next,
         })
         if reply.get("why") == "unknown request":  # an extension from before "insert"
             reply = self.targets.request({"op": "dictate", "text": raw, "spoken_off": spoken_off})
+            ours = False                  # it did its own fitting: what it typed isn't known
+        self._typed_run(ours and bool(reply.get("ok")), before, delete_before, text, amended, whole,
+                        scratched)
+        self._held_mark = None            # (kept by _typed_run for "scratch that" to bring back)
+        ended_with_a_break = text.rstrip(" ")[-1:] in breaks   # "new paragraph" said: ended
+        if (words_decide and (ours or replacing_last) and reply.get("ok") and not said_end
+                and not ended_with_a_break and not after.strip() and not joins.ends_marked(text)):
+            # The mark the recogniser put at this phrase's end, held back for the words
+            # of the next to decide; with the end of what was typed, to know it by. (Not
+            # where the phrase ends with a mark already: "comma" said, a closing quote.)
+            self._held_mark = (self.targets.name, text.rstrip(" ")[-40:], joins.held_mark(raw), False)
+            self._quiet_later()
+        continuing = bool(provisional) or bool(
+            held and len(held) > 3 and not held[3] and held[0] == self.targets.name
+            and before.rstrip(" \t").endswith(held[1]))
+        if (continuing and reply.get("ok") and getattr(self, "_held_mark", None) is None
+                and not said_end and not ended_with_a_break and not after.strip()):
+            # A word spelled, or a shortcut said, on from where the sentence's end was
+            # waiting (typed for the time being, or still only held): the stop went with
+            # this phrase, or was about to, and the sentence waits for its new end, as
+            # after "correct ...". (Without this, a sentence whose last word was spelled
+            # never got its full stop.)
+            now = self.targets.request({"op": "context"})
+            end = now.get("before", "") if now.get("ok") else ""
+            if (isinstance(end, str) and end.strip() and not now.get("selected")
+                    and not str(now.get("after", "")).strip() and not joins.ends_marked(end)
+                    and end.rstrip(" \t")[-1:] not in breaks):
+                self._held_mark = (self.targets.name, end.rstrip(" \t")[-40:],
+                                   held[4] if len(held) > 4 else held[2], False)
+                self._quiet_later()
+        if (context.get("selected") and not replacing_last and held and held[0] == self.targets.name
+                and words_decide and reply.get("ok") and getattr(self, "_held_mark", None) is None):
+            # A word put right with "correct ...": where that was the end of the text, the
+            # sentence still waits for its full stop, at its new end. ("…to the Vat", "correct
+            # vat", "vet": without this the next sentence ran on.)
+            now = self.targets.request({"op": "context"})
+            end = now.get("before", "") if now.get("ok") else ""
+            if (isinstance(end, str) and end.strip() and not now.get("selected")
+                    and not str(now.get("after", "")).strip() and not joins.ends_marked(end)
+                    and end.rstrip(" \t")[-1:] not in breaks):
+                self._held_mark = (self.targets.name, end.rstrip(" \t")[-40:],
+                                   held[4] if len(held) > 4 else held[2], False)
+                self._quiet_later()
+        # The mark the words decided at this phrase's join, if it went in with it: for "correct
+        # that" to put back in front of what is said in its place.
+        lead = re.match(r"[ \t]*[.,;:?!]+[ \t]+", text) if (ours or replacing_last) and reply.get("ok") else None
+        self._last_lead = (self.targets.name, lead.group()) if lead else None
+        # For _hear_again: what went in, how far back it reached, and whether its end was said.
+        self._just_typed = ((delete_before, text, said_end)
+                            if ours and reply.get("ok") and not after.strip() else None)
         typed = text.rstrip(" ")[-40:]
         self._last_typed = ((self.targets.name, typed, said_end)
                             if plain and typed and reply.get("ok") else None)
         return reply
+
+    def _just_typed_words(self, words: str) -> bool:
+        """Whether `words` (as said, or as the person's own word they sound like) are among
+        what this program typed a moment ago, in the program in front: for "Correct, John
+        T." said with a pause after the word, which is the command only if so."""
+        program, run = getattr(self, "_run", None) or ("", "")
+        if program != self.targets.name or not run or not words.strip():
+            return False
+        typed = " " + plain_words(run) + " "
+        if " " + plain_words(words) + " " in typed:
+            return True
+        own = vocabulary.by_sound(words, "", vocabulary.names(self.settings.words),
+                                  getattr(self, "lexicon", None))
+        return own != words and " " + plain_words(own) + " " in typed
+
+    def _keep_for_context(self, sound, text: str, ended: float, prose: bool) -> None:
+        """After a phrase heard awake: what the next can be heard with (see _lead_for). A
+        phrase typed as dictation, or a line break said ("new paragraph" in front of
+        "Cheers" helped it be heard so), is kept, with the two before it. A sound that came
+        to nothing changes nothing: a cough is no reason to forget. "Scratch that", "undo
+        that", "delete that" and "that was a noise" take away the one they took back; any
+        other command, the spelling box or source code, all of it."""
+        units = self.__dict__.setdefault("_heard_units", [])
+        if not text.strip():
+            return
+        action = interpret(text, True, self.settings.disabled_commands())
+        if isinstance(action, Command):
+            if action.name in ("new_line", "new_paragraph", "press_enter", "enter"):
+                units.append({"program": self.targets.name, "sound": sound, "ended": ended})
+            elif action.name in ("scratch", "undo", "delete", "noise"):
+                if units and getattr(self, "_took_back", False):
+                    units.pop()           # (only if it took something back)
+            else:
+                units.clear()
+        elif prose and getattr(self, "_just_typed", None) is not None:
+            units.append({"program": self.targets.name, "sound": sound, "ended": ended})
+        else:
+            units.clear()
+        del units[:-3]
+
+    def _lead_for(self, wanted: bool):
+        """The end of the phrase before, to be heard in front of this one (see
+        config.LEFT_CONTEXT), or None: only for ordinary dictation, with it switched on,
+        after a phrase typed (or a line break said) in the same program a moment ago, with
+        nothing in between that ends it (see _keep_for_context). Its last seconds as they
+        were, the pause after its last word with them: cutting that pause short was tried,
+        and the words came out a little worse."""
+        if not wanted or not self.settings.enabled("left_context") or config.LEFT_CONTEXT <= 0:
+            return None
+        units = getattr(self, "_heard_units", None) or []
+        unit = units[-1] if units else None
+        if (not unit or unit.get("program") != self.targets.name
+                or time.monotonic() - unit.get("ended", 0.0) > config.LEFT_CONTEXT_GAP):
+            return None
+        lead = unit["sound"][-int(config.LEFT_CONTEXT * config.RATE):]
+        return lead if len(lead) >= config.RATE // 4 else None
+
+    def _make_sense(self, raw: str, before: str, fitted, spoken_off=()) -> str:
+        """The phrase as heard, or the reading of it that makes far more sense after the
+        text before it: a spoken command or a sign-off heard as another word (sense.py).
+        `fitted(phrase)` fits a phrase to the text around the cursor. As heard, until the
+        model that judges it is ready."""
+        reader = getattr(self, "_sense", None)
+        if reader is None:
+            return raw
+
+        def render(phrase):
+            ins = fitted(phrase)
+            head = before[:len(before) - ins.delete_before] if ins.delete_before else before
+            return head + ins.text
+        try:
+            new, what = reader.reread(raw, before, render, spoken_off, time.monotonic())
+        except Exception as e:                  # the phrase is never lost to it
+            log(f"whether the phrase makes sense could not be asked ({type(e).__name__}: {e})")
+            return raw
+        if what:
+            self._sensed = (self.targets.name, what[0])
+            log(f"made sense of the phrase: a word in it was taken as \"{what[1]}\"")
+        return new
+
+    def _sense_ready(self) -> None:
+        """Make ready the model that judges whether what was heard makes sense (sense.py), on
+        a thread of its own: fetched if it isn't here (138 MB, once), and loaded. Until it is
+        ready, phrases are typed as heard."""
+        if not config.MAKE_SENSE:
+            return
+        with self._lock:
+            if getattr(self, "_sense_loading", False) or getattr(self, "_sense", None) is not None:
+                return
+            self._sense_loading = True
+
+        def ready():
+            try:
+                if not sense.installed(config.HELPER_MODEL_DIR):
+                    self.tell("The small language model that checks what was heard makes sense is "
+                              f"being downloaded ({sense.MEGABYTES} MB, once).", "info", every=600)
+                    sense.fetch(config.HELPER_MODEL_DIR)
+                    log("the language model for making sense is downloaded")
+                self._sense = sense.Reader(sense.Scorer(config.HELPER_MODEL_DIR))
+                log("the language model for making sense is loaded")
+            except Exception as e:
+                self._sense_failed = True
+                sense.check(config.HELPER_MODEL_DIR)   # a damaged file is fetched again next time
+                log(f"the language model for making sense could not be made ready: {type(e).__name__}: {e}")
+                self.tell("The small language model that checks what was heard makes sense could "
+                          "not be made ready, so phrases are typed as heard. The log says why; it is "
+                          "tried again when dictation is next switched on.", "problem", every=600)
+            finally:
+                self._sense_loading = False
+        threading.Thread(target=ready, daemon=True).start()
+
+    def _words_decider(self) -> None:
+        """Make ready what decides where sentences end from the words (punctuation.py), on a
+        thread of its own: the model is fetched if it isn't here (31 MB, once), and loaded.
+        Until it is ready the recogniser's own marks are used, and that is said."""
+        with self._lock:
+            if getattr(self, "_deciding", False) or isinstance(getattr(self, "_decider", None),
+                                                               punctuation.WordsDecider):
+                return
+            self._deciding = True
+
+        def ready():
+            try:
+                if not punctuation.installed(config.HELPER_MODEL_DIR):
+                    self.tell("The model that decides where sentences end is being downloaded "
+                              f"({punctuation.ARCHIVE_MEGABYTES} MB, once). Until it is here, "
+                              "the recogniser's own full stops are kept.", "info", every=600)
+                    punctuation.fetch(config.HELPER_MODEL_DIR)
+                    log("the punctuation model is downloaded")
+                self._decider = punctuation.WordsDecider(punctuation.Model(config.HELPER_MODEL_DIR))
+                log("the punctuation model is loaded")
+            except Exception as e:
+                self._decider_failed = True   # not tried again until dictation is switched on
+                punctuation.check(config.HELPER_MODEL_DIR)   # a damaged file is fetched again then
+                log(f"the punctuation model could not be made ready: {type(e).__name__}: {e}")
+                self.tell("The model that decides where sentences end could not be made ready, "
+                          "so the recogniser's own full stops are kept. The log says why; it is "
+                          "tried again when dictation is next switched on.", "problem", every=600)
+            finally:
+                self._deciding = False
+        threading.Thread(target=ready, daemon=True).start()
+
+    def _decide_join(self, before: str, text: str, held: str) -> str:
+        """The mark for the join between `before` and the phrase `text` (see joins.py):
+        as the words decide, or as the recogniser wrote it if they can't be asked."""
+        decider = getattr(self, "_decider", None)
+        if not isinstance(decider, punctuation.WordsDecider) and not getattr(self, "_decider_failed", False):
+            self._words_decider()         # (ready for the next one)
+        if decider is None:
+            decider = joins.Decider()
+        try:
+            mark = decider.decide(before, text, held)
+        except Exception as e:                  # the phrase is never lost to it
+            log(f"where the sentence ends could not be decided ({type(e).__name__}: {e}): "
+                "the recogniser's mark is kept")
+            mark = held
+        if mark not in joins.MARKS:
+            mark = held
+        if mark != held:
+            log(f"sentence end decided by the words: {held or 'none'} held, {mark or 'none'} put")
+        return mark
+
+    def _finish_sentence(self, why: str, for_now: bool = False, only=None) -> bool:
+        """Type the mark that was held back at the end of the last phrase, now that nothing
+        more is coming to decide it: before a new line or paragraph (for good), and after a
+        quiet spell or when dictation is put to sleep or switched off (`for_now`: the next
+        phrase, if it goes on where this one ended, decides it again). Only where the
+        cursor is still where that phrase ended, and where what it ends reads as a sentence
+        (see joins.py). `only`: only if what is held is still that, and no newer phrase
+        has come since (which has its own quiet spell to wait for).
+
+        Where it can't be typed for the time being (the line is too short to tell, or
+        another program is in front), it is kept, and the next phrase there decides it.
+
+        For "new line" and "new paragraph" the break goes in with the mark, as one insertion:
+        then "scratch that" takes both back at once, and the mark is held again, as it was.
+        (Typed apart, "scratch that" took the break, then only the stop.) Returns whether it
+        did that: the command itself is then not sent."""
+        held = getattr(self, "_held_mark", None)
+        if only is not None and held is not only:
+            return False
+        if not held or joins.sentence_ends(self.settings) != "words":
+            self._held_mark = None
+            return False
+        if held[0] != self.targets.name:
+            return False                  # another program is in front: kept for when it's back
+        breaking = not for_now and why in ("new_line", "new_paragraph")
+        typed = len(held) > 3 and held[3]
+        if typed and not breaking:
+            if not for_now:
+                self._held_mark = None    # typed already, for the time being: now for good
+            return False
+        context = self.targets.request({"op": "context"})
+        if held[0] != self.targets.name:
+            return False                  # (what was in front is only looked at now and then)
+        before = context.get("before", "")
+        if not context.get("ok") or not isinstance(before, str):
+            if not for_now:
+                self._held_mark = None
+            return False
+        if typed:
+            # Typed for the time being, as a step of its own: taken back, to go in again with
+            # the break. Where it can't be, it stays, for good, and the break goes in by itself.
+            if (context.get("selected") or context.get("after", "").strip()
+                    or not before.endswith(held[1] + held[2])
+                    or not self.targets.request({"op": "command", "name": "scratch"}).get("ok")):
+                self._held_mark = None
+                return False
+            program, run = getattr(self, "_run", None) or ("", "")
+            if program == held[0] and run.endswith(held[2]):
+                self._run = (program, run[:-len(held[2])])
+            before = before[:len(before) - len(held[2])]
+        if (context.get("selected") or context.get("after", "").strip()
+                or not before.rstrip(" \t").endswith(held[1]) or joins.ends_marked(before)):
+            self._held_mark = None        # the cursor has moved, or a mark is there already
+            return False
+        line = re.split("[\n\r\u2028\u2029]", before)[-1]
+        if not joins.looks_like_a_sentence(line):
+            if not for_now:
+                self._held_mark = None
+            return False
+        self._held_mark = None
+        mark = held[2] or "."
+        trailing = len(before) - len(before.rstrip(" \t"))
+        text = mark + ((LINE if why == "new_line" else PARAGRAPH) if breaking else "")
+        runs = self.__dict__.setdefault("_runs", [])
+        if not for_now:
+            # What "scratch that" brings back when it takes it away (the two, for "new line"
+            # or "new paragraph"; the stop alone before "press enter"): the mark held again.
+            runs.append((getattr(self, "_run", None), getattr(self, "_last_typed", None),
+                         untyped(held), False))
+            del runs[:-12]
+        reply = self.targets.request({"op": "insert", "text": text, "delete_before": trailing,
+                                      "delete_after": 0, "capitalise_next": False})
+        if not reply.get("ok"):
+            if not for_now and runs:
+                runs.pop()
+            # Nothing was typed: the mark is held again, as it was, rather than lost with
+            # the break that never went in.
+            self._held_mark = untyped(held)
+            return False
+        # The mark alone is not one of the phrases that "scratch that" takes back: see
+        # _scratch_the_mark. The run of the program's own text goes on with it.
+        program, run = getattr(self, "_run", None) or ("", "")
+        if program == self.targets.name:
+            self._run = (program, run.rstrip(" \t") + text)
+        self._last_typed = (self.targets.name, (before.rstrip(" \t") + mark)[-40:], False)
+        self._unit = None                 # a sentence heard again doesn't reach across it
+        if for_now:
+            # (The recogniser's own mark is kept with it: it is what decides the join if the
+            # sentence goes on, not the stop typed in its place.)
+            self._held_mark = (held[0], held[1], mark, True, held[4] if len(held) > 4 else held[2])
+        log(f"the held mark typed: {why}" + (", for the time being" if for_now else "")
+            + (", with the line break" if breaking else ""))
+        return breaking
+
+    def _finish_later(self, why: str, only=None) -> None:
+        """_finish_sentence, for the time being, on the worker after anything it is doing:
+        a phrase still being heard as dictation is put to sleep is typed first, and its
+        mark is the one finished."""
+        self._phrases.put(("call", lambda: self._finish_sentence(why, for_now=True, only=only)))
+
+    def _quiet_later(self, tries: int = 20) -> None:
+        """After a quiet spell (config.SENTENCE_QUIET) with nothing more said, type the mark
+        held back at the end of the last phrase, for the time being. While something is
+        being said, waiting to be heard, or spelled, it waits a while longer: that may come
+        to nothing (a cough, the room)."""
+        held = getattr(self, "_held_mark", None)
+        if config.SENTENCE_QUIET <= 0 or not held or (len(held) > 3 and held[3]):
+            return
+
+        def quiet():
+            if self._held_mark is not held or self.status.state in (State.OFF, State.ASLEEP):
+                return                    # decided by a newer phrase, or finished by sleep or off
+            if (getattr(self, "_speaking", False) or not self._phrases.empty() or self.status.spelling
+                    or self.status.state is not State.AWAKE):   # (being said, or being heard)
+                if tries > 1:
+                    self._quiet_later(tries - 1)
+                return
+            self._finish_later("after a quiet spell", only=held)
+        timer = threading.Timer(config.SENTENCE_QUIET, quiet)
+        timer.daemon = True
+        timer.start()
+
+    def _scratch_the_mark(self, name: str) -> None:
+        """Before "scratch that", "undo that" or "delete that": a mark typed for the time
+        being after the last phrase is a step of its own to the program, and is taken away
+        first, so that the command takes away the phrase as it always has."""
+        held = getattr(self, "_held_mark", None)
+        if not held or len(held) < 4 or not held[3] or held[0] != self.targets.name:
+            return
+        context = self.targets.request({"op": "context"})
+        if name == "delete" and context.get("selected"):
+            self._held_mark = None        # what is selected goes, not the phrase
+            return
+        before = context.get("before", "")
+        if isinstance(before, str) and before.endswith(held[1] + held[2]):
+            step = {"op": "command", "name": "undo" if name == "undo" else "scratch"}
+            if self.targets.request(step).get("ok"):
+                program, run = getattr(self, "_run", None) or ("", "")
+                if program == held[0] and run.endswith(held[2]):
+                    self._run = (program, run[:-len(held[2])])
+        self._held_mark = untyped(held)
+
+    def _tidied(self, text: str, delete_before: int, before: str, stop_not_said: bool,
+                join_decided: bool = False, run_now=None) -> tuple:
+        """An insertion with what tidy.py's checks would put right fitted into it:
+        (the text, how many characters go first, the changes, the text they are in).
+        `join_decided` is whether the words decided the mark at its join (see joins.py);
+        `run_now`, the run of the program's own text as it is to be read, where not as kept."""
+        program, run = run_now or getattr(self, "_run", None) or ("", "")
+        head = before[:len(before) - delete_before] if delete_before else before
+        # Where it isn't known whether a sentence ended at the join, a word there has to be
+        # as plainly wrong as one anywhere else to be changed: after a long pause, and
+        # wherever the words don't decide the sentence ends (see joins.py). Without that,
+        # "it works too" and then "let me know", with the stop between them left off, made
+        # "too" into "to"; and a stop wrongly put before "than" made it "Then". Where the
+        # words decide, the join has had its mark put in by now, and is known: but only
+        # where they were asked (not after a command, nor with text after the cursor).
+        long_pause = time.monotonic() - getattr(self, "_typed_at", 0.0) > config.HEAR_AGAIN_GAP
+        # (A phrase that starts with a comma, a colon or a semicolon shows it went on.)
+        known = join_decided or text.lstrip(" ")[:1] in (",", ";", ":")
+        from . import soundalike
+        words = self.settings.words
+        checks = [tidy.chained(
+            lambda found: tidy.soundalikes(head, words,
+                                           soundalike.ELSEWHERE if long_pause and not join_decided
+                                           else 0.0,
+                                           join_known=known),
+            lambda found: tidy.stop_before_comma(stop_not_said),
+            tidy.name_after_greeting,
+            lambda found: letters.signoff(words))]
+        return tidy.amend(text, delete_before, before, run if program == self.targets.name else "",
+                          checks, getattr(self, "_refused", None))
+
+    def _typed_run(self, ours: bool, before: str, delete_before: int, text: str,
+                   amended: list, whole: str, scratched: bool = False) -> None:
+        """Remember what has just been typed as part of the run of this program's own
+        text before the cursor (see tidy.py), and what was put right with it, in case it
+        is taken back. `ours` is whether it was ordinary prose that went in as given.
+        `scratched`: whether a mark typed for the time being was taken back first."""
+        was = getattr(self, "_run", None)
+        runs = self.__dict__.setdefault("_runs", [])
+        # What "scratch that" would bring back: the run, and with it what was known of
+        # how the text before it ended (it is not yet changed for this phrase).
+        runs.append((was, getattr(self, "_last_typed", None), getattr(self, "_held_mark", None),
+                     scratched))
+        self._undone = []                 # (what "redo that" could bring back is gone now)
+        del runs[:-12]
+        self._last_tidy = (whole, amended) if ours and amended else None
+        # What the insertion took out, if it was more than spaces, and the text before
+        # that: a program's own "scratch that" takes away what was typed and does not
+        # put this back, so it is seen to here (see _tidy_after).
+        head = before[:len(before) - delete_before] if delete_before else before
+        gone = before[len(head):]
+        self._took_out = (head[-40:], gone) if ours and gone.strip() else None
+        if not ours:
+            self._run = None
+            return
+        program, run = was or ("", "")
+        run = (tidy.ours(head, run) if program == self.targets.name else "") + text
+        if len(run) > tidy.RUN_LENGTH:    # only so much is kept, and from the start of a word
+            run = run[-tidy.RUN_LENGTH:]
+            run = run[run.find(" ") + 1:]
+        self._run = (self.targets.name, run)
+        self._typed_at = time.monotonic()
+        if amended:
+            log(f"put right as the phrase went in: {tidy.kinds(amended)}")
+
+    def _fitted(self, raw: str, before: str, after: str):
+        """Ordinary prose fitted to the text around it, as _dictate fits it (and made sense
+        of, as there: what was put right in a phrase must not come back when it is heard
+        again with the next)."""
+        if self.settings.enabled("money"):
+            raw = money.in_figures(raw, before)
+        spoken_off = self.settings.spoken_off()
+
+        def fitted(phrase):
+            return fit(phrase, before, after, self.lexicon, spoken_off=spoken_off,
+                       names=self.settings.words,
+                       keep_final=self.keep_final or joins.sentence_ends(self.settings) == "pause",
+                       greeting_comma=not self.settings.enabled("no_greeting_comma"))
+        if self.settings.enabled("tidy") and sense.might_need(raw):
+            sensed = getattr(self, "_sensed", None)
+            raw = self._make_sense(raw, before, fitted, spoken_off)
+            self._sensed = sensed or getattr(self, "_sensed", None)
+        return fitted(raw)
+
+    def _hear_again(self, sound, ended: float, took: float, plain: bool, hint: str) -> None:
+        """A sentence said in two phrases is heard as two, and each hearing lacks what the
+        other half would have told the recogniser. When the second half has been typed
+        and there is time, the two sounds are put together and heard once more as one.
+        If that comes out a word or two different, the two phrases are taken back and
+        typed again as they were heard together: as two phrases still, so "scratch that"
+        takes away the last of them as it would have. See tidy.py.
+
+        Only when nothing else is waiting or being said, and only when the hearing can
+        be expected to be quick: on a slow computer it would hold up the next phrase.
+        `took` is how long the phrase just typed took to be heard."""
+        typed, self._just_typed = getattr(self, "_just_typed", None), None
+        was, self._unit = getattr(self, "_unit", None), None
+        if typed is None or not plain:
+            return                        # a command, code, or nothing typed: the run is broken
+        took_out, text, said_end = typed
+        seconds = len(sound) / config.RATE
+        name = self.targets.name
+        self._unit = {"program": name, "sound": sound, "text": text, "ended": ended,
+                      "said_end": said_end}
+        if (was is None or was["program"] != name or was["said_end"]
+                or not self.settings.enabled("hear_again") or self.status.choosing
+                or took_out > len(was["text"]) or (ended - seconds) - was["ended"] > config.HEAR_AGAIN_GAP
+                or getattr(self.targets, "typed", lambda: False)()):
+            return
+        first = was["text"][:len(was["text"]) - took_out] if took_out else was["text"]
+        joined = np.concatenate([was["sound"], sound])
+        long = len(joined) / config.RATE
+        if long > config.HEAR_AGAIN_SECONDS or took / max(seconds, 0.3) * long > config.HEAR_AGAIN_MOST:
+            return
+        if not self._phrases.empty() or getattr(self, "_speaking", False):
+            return                        # something is waiting to be heard, or being said
+        began = time.monotonic()
+        ears = self._ears()
+        if isinstance(ears, remote.Offload):
+            # Heard again where it was heard, and only there: if the other computer has
+            # stopped answering, this computer's own model would take far longer than the
+            # guard above reckoned on, and the next phrase would wait on it.
+            if not ears.there:
+                return
+            raw = ears.transcribe(joined, True, hint, there_only=True)
+        else:
+            raw = ears.transcribe(joined, True, hint)
+        if hint and raw:
+            raw = vocabulary.spell_codes(raw, self.settings.words)
+        heard = time.monotonic() - began
+        context = self.targets.request({"op": "context"})
+        before, after = context.get("before", ""), context.get("after", "")
+        old = first + text
+        if (not raw or not context.get("ok") or context.get("selected") or after.strip()
+                or not before.endswith(old) or not self._phrases.empty()
+                or not isinstance(interpret(raw, True, self.settings.disabled_commands()), Dictation)):
+            return
+        # The mark the first phrase went in with, at its join with the text before it (the
+        # words decided it: see joins.py), belongs to that join, not to the phrase: the two
+        # sounds heard again say nothing of it. It stays as it is, and what is heard again
+        # is fitted after it. (Heard without it, "...here today" and then ". The sun is
+        # shining, and" lost the stop and the capital.)
+        lead = re.match(r"[ \t]*[.,;:?!]+[ \t]+", first)
+        lead = lead.group() if lead else ""
+        first_body, old_body = first[len(lead):], first[len(lead):] + text
+        if hint and raw:
+            # The person's own words, put in by sound as the first hearing had them: without
+            # this, "Johnny" put in there came back as "John E" when heard again.
+            raw = vocabulary.by_sound(raw, before[:len(before) - len(old_body)],
+                                      vocabulary.names(self.settings.words), getattr(self, "lexicon", None))
+        ins = self._fitted(raw, before[:len(before) - len(old_body)], after)
+        new = lead + ins.text
+        parts = None
+        if not (ins.delete_before or ins.delete_after) and tidy.worth_typing(old_body, ins.text):
+            parts = tidy.split_like(ins.text, first_body, text)
+            if parts is not None:
+                parts = (lead + parts[0], parts[1])
+        if parts is None:
+            log(f"heard again in one piece ({long:.1f} s of sound, {heard:.1f} s): "
+                + ("the same" if new == old else "left as it was"))
+            return
+        # Take the two phrases back, and type them again as they were heard together.
+        scratch = {"op": "command", "name": "scratch"}
+        if not self.targets.request(scratch).get("ok"):
+            return
+        if not self.targets.request(scratch).get("ok"):
+            self.targets.request({"op": "insert", "text": text, "delete_before": 0,
+                                  "delete_after": 0, "capitalise_next": False})   # as it was
+            return
+        for part in parts:
+            reply = self.targets.request({"op": "insert", "text": part, "delete_before": 0,
+                                          "delete_after": 0, "capitalise_next": False})
+            if not reply.get("ok"):
+                self._run = self._unit = None
+                log(f"heard again in one piece: could not be typed again: {outcome(reply)}")
+                return
+        changed = tidy.words_changed(old, new)
+        log(f"heard again in one piece ({long:.1f} s of sound, {heard:.1f} s): "
+            + (f"{changed} word{'s' if changed != 1 else ''} put right" if changed
+               else "its marks or capitals put right"))
+        # What is remembered of what was typed, brought into line with what is there now.
+        program, run = getattr(self, "_run", None) or ("", "")
+        base = run[:len(run) - len(old)] if program == name and run.endswith(old) else ""
+        self._run = (name, base + new)
+        runs = getattr(self, "_runs", [])
+        if runs:                          # what "scratch that" brings back: the first half, as it is now
+            # ...with the mark held for it, as the second phrase found it (the end it knew it
+            # by is the first half's end now).
+            first_held = runs[-1][2] if len(runs[-1]) > 2 else None
+            if first_held and not joins.ends_marked(parts[0]):
+                first_held = (name, parts[0].rstrip(" ")[-40:], first_held[2], False)
+            else:
+                first_held = None
+            runs[-1] = ((name, base + parts[0]), (name, parts[0].rstrip(" ")[-40:], False), first_held, False)
+        self._last_typed = (name, new.rstrip(" ")[-40:], said_end)
+        self._unit["text"] = parts[1]
+        if joins.sentence_ends(self.settings) == "words" and not said_end:
+            # The end is now the one heard with the two phrases together: its mark is held.
+            self._held_mark = None
+            if not joins.ends_marked(parts[1]) and parts[1].rstrip(" ")[-1:] not in BREAKS + "\n\r":
+                self._held_mark = (name, parts[1].rstrip(" ")[-40:], joins.held_mark(raw), False)
+                self._quiet_later()
+
+    def _tidy_after(self, name: str, reply: dict) -> None:
+        """A command has been carried out: what it means for what was last put right.
+
+        "Undo that" straight after takes the change back with the phrase it came with,
+        and says it was not wanted: it is not made again there. "Scratch that" takes it
+        back too, but may only mean the new phrase was misheard: twice, and it is the
+        same. Either way the run of this program's own text is as it was before."""
+        last, self._last_tidy = getattr(self, "_last_tidy", None), None
+        took, self._took_out = getattr(self, "_took_out", None), None
+        sensed, self._sensed = getattr(self, "_sensed", None), None
+        undone = self.__dict__.setdefault("_undone", [])
+        if name == "redo":
+            if reply.get("ok") and undone:
+                self._redone(*undone.pop())
+            return
+        if name == "select_last":
+            return                        # selected: what is said next takes its place, or not
+        if name in FORMATTING or name == "unselect":
+            # The phrase is still there (formatted, or let go of): a stop held for it, taken
+            # back to let the command reach the phrase, comes again after its quiet spell, if
+            # the phrase still ends the text. (Capitals that were changed are its own.)
+            self._reconcile_held()
+            return
+        taken_back = (name in ("undo", "scratch")
+                      or (name == "delete" and getattr(self, "_deleting_phrase", False))
+                      or (name == "noise" and getattr(self, "_noise_scratched", False)))
+        self._deleting_phrase = self._noise_scratched = False
+        was, self._page_before = getattr(self, "_page_before", None), None
+        self._took_back = False
+        if not taken_back or not reply.get("ok"):
+            return
+        if isinstance(was, str) and name in ("undo", "scratch", "delete"):
+            now = self.targets.request({"op": "context"}).get("before")
+            if now == was:
+                return                    # nothing was taken back, whatever the program said
+        self._took_back = True
+        reader = getattr(self, "_sense", None)
+        if sensed and reader is not None and sensed[0] == self.targets.name:
+            # The phrase taken back had a word in it read as something that sounds like it
+            # (see sense.py): said again, it is typed as heard.
+            reader.refuse(sensed[1], time.monotonic())
+            log("the reading that made sense of the last phrase was taken back: "
+                "it won't be made again for a while")
+        if took:
+            # The phrase has gone. If what it took out with it has not come back, put it
+            # back: the text is then as it was before the phrase.
+            now = self.targets.request({"op": "context"}).get("before")
+            if isinstance(now, str) and now.endswith(took[0]) and not now.endswith(took[0] + took[1]):
+                self.targets.request({"op": "insert", "text": took[1], "delete_before": 0,
+                                      "delete_after": 0, "capitalise_next": False})
+        runs = getattr(self, "_runs", [])
+        entry = runs.pop() if runs else (None, None, None)
+        if name == "undo":                # kept for "redo that", with how things stood
+            undone.append((entry, (getattr(self, "_run", None), getattr(self, "_last_typed", None),
+                                   getattr(self, "_held_mark", None))))
+            del undone[:-12]
+        self._run, self._last_typed, self._held_mark = entry[:3]
+        # (A stop typed for the time being that the phrase took back first is not undone
+        # with it: no program has a record of it any more. The held mark is found below not
+        # to be typed, and its quiet spell types it again.)
+        self._reconcile_held()
+        refused = getattr(self, "_refused", None)
+        if last and refused is not None:
+            for change in last[1]:
+                refused.add(last[0], change, sure=name == "undo")
+            log("what was put right with the last phrase was taken back"
+                + (": it won't be done again there" if name == "undo" else ""))
+
+    def _reconcile_held(self) -> None:
+        """The mark held for the phrase that now ends the text (brought back by "scratch
+        that", "undo that" or "redo that"): typed for the time being, or not, as the page
+        shows it now; and its quiet spell waited for again."""
+        held = getattr(self, "_held_mark", None)
+        if not held or len(held) < 4 or held[0] != self.targets.name:
+            return                        # (another program in front: kept as it is)
+        context = self.targets.request({"op": "context"})
+        if context.get("selected"):
+            return                        # (what is before a selection is not where it ends)
+        now = context.get("before")
+        if isinstance(now, str):
+            stem = now.rstrip(" \t")
+            # The same words with other capitals ("cap that") are the same phrase still.
+            tail = stem[-len(held[1]):] if len(stem) >= len(held[1]) else ""
+            if not held[3] and tail.lower() == held[1].lower() and tail != held[1]:
+                held = (held[0], tail, held[2], held[3])
+            if held[3] and not stem.endswith(held[1] + held[2]):
+                held = untyped(held) if stem.endswith(held[1]) else None
+            elif not held[3] and not stem.endswith(held[1]):
+                held = None
+            self._held_mark = held
+        if held and not held[3]:
+            self._quiet_later()
+
+    def _redone(self, entry, after) -> None:
+        """ "Redo that" has brought back the phrase "undo that" took away: what was known of
+        it comes back too (the run, how its sentence ended, the mark held for it)."""
+        self.__dict__.setdefault("_runs", []).append(entry)
+        self._run, self._last_typed, self._held_mark = after
+        self._reconcile_held()
 
     def _typing_into(self, name: str) -> None:
         if name != self.status.target:

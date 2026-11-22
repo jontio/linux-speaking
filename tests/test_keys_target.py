@@ -275,6 +275,31 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(self.typed[-1], [("press", "backspace", 6)])
         self.assertEqual(self.ask(op="command", name="scratch")["why"], "nothing to scratch")
 
+    def test_a_phrase_taken_out_whole_by_the_next_is_no_longer_scratched(self):
+        self.box = Box("Hello world", "", "", "Code.exe")
+        self.ask(op="insert", text=".")                         # a stop typed for the time being
+        self.box = Box("Hello world.", "", "", "Code.exe")
+        self.ask(op="insert", text=" and more", delete_before=1)   # the next phrase takes it out
+        self.box = Box("Hello world and more", "", "", "Code.exe")
+        self.assertTrue(self.ask(op="command", name="scratch")["ok"])
+        self.assertEqual(self.typed[-1], [("press", "backspace", 9)])
+        self.assertEqual(self.target.history, [])
+
+    def test_the_web_boxes_keep_the_programs_own_line_breaks(self):
+        from dictation.formatting import LINE, PARAGRAPH
+        from dictation.portal_keys import typable
+        self.assertEqual(typable("One" + PARAGRAPH + "two" + LINE + "three"), "One" + PARAGRAPH + "two" + LINE + "three")
+
+    def test_a_phrase_ending_in_a_line_break_is_only_scratched_where_it_is(self):
+        from dictation.formatting import PARAGRAPH
+        self.box = Box("Dear Sam,\nThe meeting moved to Thursday. ", "", "", "Code.exe")
+        self.ask(op="insert", text="I will send it" + PARAGRAPH)
+        self.box = Box("Dear Sam,\nThe meeting moved to Thursday", " at the usual place.", "", "Code.exe")
+        self.assertEqual(self.ask(op="command", name="scratch")["why"], "nothing to scratch")
+        self.ask(op="insert", text="I will send it" + PARAGRAPH)
+        self.box = Box("Dear Sam,\nThe meeting moved to Thursday. I will send it\r\n\r\n", "", "", "Code.exe")
+        self.assertTrue(self.ask(op="command", name="scratch")["ok"])
+
     def test_scratch_refuses_if_the_cursor_has_moved(self):
         self.ask(op="insert", text="world.")
         self.box = Box("Somewhere else", "", "", "Code.exe")

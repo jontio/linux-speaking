@@ -65,6 +65,15 @@ Five things say what the program is doing:
   the installer again: it puts right Python packages that no longer load. Once a model
   is there, loading is tried again by itself the next time the microphone hears a
   sound.
+- **In a noisy room, what you say is acted on late.** A phrase is ended by the pause
+  after it. Where the room hides the pause (keys being pressed, a fan, a microphone that
+  turns itself up when you stop) the program sees your voice itself stop, and ends the
+  phrase a little under a second after it. Other people talking near by are another
+  matter: at about a fifth of your loudness at the microphone or less they are left
+  out, but louder than that it can't tell them from you going on, and waits for them to
+  pause. A headset, or a microphone nearer your mouth, is the cure for that. [The
+  log](#the-log) says how each such phrase ended, and how loud the voice and the room
+  were.
 - **The icon is purple.** A speech model is being loaded. That takes a few seconds, and
   longer for a big model. What you say meanwhile waits, and is dealt with when the
   model is ready.

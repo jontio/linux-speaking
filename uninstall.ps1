@@ -112,6 +112,12 @@ if (Test-Path -LiteralPath "$state\noises") {
     $what = Many $count "sound"
     if ($count -gt 0) { $yours += "$what marked `"that was a noise`" ($size), in $state\noises" }
 }
+if (Test-Path -LiteralPath "$state\samples") {
+    $count = @(Get-ChildItem -LiteralPath "$state\samples" -Recurse -File -Filter "sample.json" -ErrorAction SilentlyContinue).Count
+    $size = Size "$state\samples"
+    $what = if ($count -eq 1) { "1 dictation sample" } else { "$count dictation samples" }
+    if ($count -gt 0) { $yours += "$what ($size), in $state\samples" }
+}
 $retrained = @()    # models retrained to your voice: each has a trained.json in its folder
 if (Test-Path -LiteralPath "$dir\models") {
     foreach ($model in @(Get-ChildItem -LiteralPath "$dir\models" -Force | Where-Object { $_.PSIsContainer })) {
@@ -201,7 +207,7 @@ if ($installed) {
     if ($keeping) {
         if (Test-Path -LiteralPath $state) {
             foreach ($item in @(Get-ChildItem -LiteralPath $state -Force)) {
-                if (@("training", "noises", "voice-test.wav", "voice-test.json") -notcontains $item.Name) { Remove-It $item.FullName }
+                if (@("training", "noises", "samples", "voice-test.wav", "voice-test.json") -notcontains $item.Name) { Remove-It $item.FullName }
             }
         }
         if (Test-Path -LiteralPath "$dir\models") {

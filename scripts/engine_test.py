@@ -334,6 +334,117 @@ client.request({"op": "command", "name": "doc_top"})
 client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
 client.request({"op": "command", "name": "delete"})
 engine.settings.shortcuts, engine.settings.states = {}, {}
+
+
+def empty():
+    client.request({"op": "command", "name": "doc_top"})
+    client.request({"op": "move", "steps": [["view", "gotoEnd", True]]})
+    client.request({"op": "command", "name": "delete"})
+
+
+# What was typed a moment ago is put right as the next phrase goes in (tidy.py): here the
+# stop the recogniser put at the end of a phrase, when the next one starts with a comma.
+engine.settings.states = {"keep_final": True}
+engine.settings.sentence_ends = "pause"        # the recogniser's stop kept: what the tick box did
+engine.handle_text("Hi Rick.", awake=True)
+engine.handle_text(", how are you?", awake=True)
+check("the stop before a comma goes as the next phrase goes in", doc(), "Hi Rick, how are you?")
+engine.handle_text("Scratch that.", awake=True)
+check("scratch that takes the phrase and the change back together", doc(), "Hi Rick.")
+engine.handle_text(", how are you?", awake=True)
+check("said again, it is put right again", doc(), "Hi Rick, how are you?")
+engine.handle_text("Undo that.", awake=True)
+check("undo that takes them back too", doc(), "Hi Rick.")
+engine.handle_text(", how are you?", awake=True)
+check("and after it the change is not made again there", doc(), "Hi Rick., how are you?")
+engine.settings.states = {}
+engine.settings.sentence_ends = "said"
+empty()
+
+# A word that sounds like another is put right once the next words show which it was: where
+# the words decide where sentences end, the join is known, and "too" becomes "to". Where
+# they don't, the words at the join are left: "it works too" and then "let me know" reads
+# just the same with the stop left off.
+engine.handle_text("take the cat too", awake=True)
+engine.handle_text("the vet", awake=True)
+check("with sentence ends not decided, the words at the join are left", doc(), "Take the cat too the vet")
+engine.handle_text("Scratch that.", awake=True)
+engine.handle_text("Scratch that.", awake=True)
+empty()
+engine.settings.sentence_ends = "words"
+engine._held_mark = None
+engine.handle_text("take the cat too", awake=True)
+engine.handle_text("the vet", awake=True)
+check("too becomes to once the vet follows", doc(), "Take the cat to the vet")
+engine.handle_text("Scratch that.", awake=True)
+check("and scratch that takes it back with the phrase", doc(), "Take the cat too")
+engine.handle_text("Scratch that.", awake=True)
+engine.settings.sentence_ends = "said"
+engine._held_mark = None
+empty()
+
+# Where the words decide where sentences end (joins.py, punctuation.py), with the real model
+# where it is installed: the recogniser's stop is held back, and the next phrase decides it.
+from dictation import config as _config, punctuation as _punctuation  # noqa: E402
+if _punctuation.installed(_config.HELPER_MODEL_DIR):
+    engine.settings.sentence_ends = "words"
+    engine._held_mark = None
+    engine._decider = _punctuation.WordsDecider(_punctuation.Model(_config.HELPER_MODEL_DIR))
+    engine.handle_text("Also, it should be an option.", awake=True)
+    check("the recogniser's stop is held back", doc(), "Also, it should be an option")
+    engine.handle_text("That the user can select.", awake=True)
+    check("a pause in mid-sentence gets no stop", doc(), "Also, it should be an option that the user can select")
+    engine.handle_text("Thanks for sending the report.", awake=True)
+    check("a sentence that ended gets its stop with the next phrase",
+          doc(), "Also, it should be an option that the user can select. Thanks for sending the report")
+    engine.handle_text("Scratch that.", awake=True)
+    check("scratch that takes the phrase and its stop back", doc(),
+          "Also, it should be an option that the user can select")
+    engine.handle_text("Thanks for sending the report.", awake=True)
+    engine.sleep()
+    # The engine's own worker types it, a moment later: wait for it, a few seconds at most.
+    want = "Also, it should be an option that the user can select. Thanks for sending the report."
+    for _ in range(50):
+        if doc() == want:
+            break
+        time.sleep(0.1)
+    check("going to sleep types the last stop", doc(), want)
+    engine.status.state = State.AWAKE
+    engine.handle_text("And the invoice.", awake=True)
+    check("and it is decided again when the sentence goes on", doc(),
+          "Also, it should be an option that the user can select. Thanks for sending the report and the invoice")
+    engine.settings.sentence_ends = "said"
+    engine._held_mark = None
+    empty()
+else:
+    print("SKIP the punctuation model is not installed here")
+
+# A sentence said in two phrases is heard again in one piece, and the two are typed again
+# if a word comes out differently. (The second hearing is given here: the robot voice
+# can't be relied on to be misheard on cue.)
+class HeardTogether:
+    def transcribe(self, sound, awake, prompt=""):
+        return "Take the cat to the vet."
+
+
+second = np.zeros(16000, dtype=np.float32)
+real_ears = engine._ears
+engine.settings.states = {"tidy": False}   # it would put "too" right itself: see above
+engine._just_typed = None
+engine.handle_text("take the cat too", awake=True)
+engine._hear_again(second, time.monotonic(), 0.05, True, "")
+engine._ears = lambda: HeardTogether()
+engine._just_typed = None
+engine.handle_text("the vet", awake=True)
+check("two phrases as they were first heard", doc(), "Take the cat too the vet")
+engine._hear_again(second, time.monotonic() + 1.5, 0.05, True, "")
+engine._ears = real_ears
+check("heard again in one piece, they are typed again", doc(), "Take the cat to the vet")
+engine.handle_text("Scratch that.", awake=True)
+check("and scratch that still takes away the last of them", doc(), "Take the cat to")
+engine.handle_text("Scratch that.", awake=True)
+check("and then the first", doc(), "")
+engine.settings.states = {}
 if len(sys.argv) > 1:
     w = wave.open(sys.argv[1])
     hear(engine, np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0)

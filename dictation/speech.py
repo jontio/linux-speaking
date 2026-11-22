@@ -125,6 +125,80 @@ def spoken(audio, threshold: float):
     return seconds
 
 
+PIECE_OF_SPEECH = 512     # the detector reads a sound in pieces of so many samples (32 ms)
+_no_pieces = False        # it can't be read piece by piece here: see likelihoods()
+_piece_failures = 0       # how many times running that has failed
+
+
+_loaded = threading.Event()   # the detector has been loaded, or found not to be there
+_loading = threading.Lock()   # (held for good once loading has started)
+
+
+def ready_detector() -> None:
+    """Load the detector if it isn't yet, on a thread of its own. Loading it brings in
+    faster_whisper and much with it, and builds an onnxruntime session: done the first time
+    a phrase is looked at, on the thread that reads the microphone, it held the reading up,
+    and on Windows the sound read meanwhile was lost (the first phrase after a start, which
+    is often "wake up")."""
+    if _loaded.is_set() or not _loading.acquire(blocking=False):
+        return
+
+    def load():
+        try:
+            likelihoods(np.zeros(PIECE_OF_SPEECH, dtype=np.float32))
+        finally:
+            _loaded.set()
+    threading.Thread(target=load, daemon=True).start()
+
+
+def watched(audio):
+    """likelihoods(), for the thread that reads the microphone: None (do without: the voice's
+    pitch is looked for) until the detector is loaded, which this starts if nothing has."""
+    if not _loaded.is_set():
+        ready_detector()
+        return None
+    return likelihoods(audio)
+
+
+def likelihoods(audio):
+    """How likely the detector takes each 32 thousandths of a second of `audio` to be
+    speech, from 0 to 1 (`audio` is numbers from -1 to 1 at config.RATE). The last piece
+    ends where the sound ends: what is over, at the start, is left out. None if the
+    detector isn't there or can't be read this way: whoever asks then does without.
+
+    This is asked several times a second while a phrase is being taken down (see
+    VoiceWatch), and is kept apart from spoken(), which is asked once of each phrase: if
+    this way of reading the detector fails, that one goes on being used."""
+    global _no_pieces, _piece_failures
+    if _no_pieces:
+        return None
+    try:
+        from faster_whisper import vad
+        model = vad.get_vad_model()
+    except Exception as e:
+        _no_pieces = True
+        print(f"the voice detector can't be used to see a voice stop, so a noisy room is "
+              f"judged by the voice's pitch alone: {type(e).__name__}: {e}", flush=True)
+        return None
+    try:
+        sound = np.asarray(audio, dtype=np.float32)
+        sound = sound[len(sound) % PIECE_OF_SPEECH:]
+        if not len(sound):
+            return np.zeros(0, dtype=np.float32)
+        marks = np.asarray(model(sound), dtype=np.float32).reshape(-1)
+        if len(marks) != len(sound) // PIECE_OF_SPEECH:
+            raise ValueError(f"{len(marks)} answers for {len(sound) // PIECE_OF_SPEECH} pieces")
+    except Exception as e:
+        _piece_failures += 1
+        if _piece_failures >= MOST_FAILURES:
+            _no_pieces = True
+            print(f"the voice detector has failed {_piece_failures} times running at seeing a "
+                  f"voice stop and is not asked that again: {type(e).__name__}: {e}", flush=True)
+        return None
+    _piece_failures = 0
+    return marks
+
+
 def not_speech(text: str, audio, spoken=spoken, sure=None, numbers=None) -> str:
     """Why `text`, written for `audio`, is taken for a noise and not for speech: or ""
     if it stands. `spoken` is the detector, which a test can stand in for. `sure` is how
@@ -249,51 +323,112 @@ BEGAN_LATE, GONE = "the voice began late", "the voice has gone"
 
 
 class VoiceWatch:
-    """Whether there is still a voice in what is being listened to: looked at a few times
-    a second, while a phrase is being taken down.
+    """Whether there is still a voice in what is being listened to: looked at several
+    times a second, while a phrase is being taken down.
 
     A phrase ends at the pause after it, and a pause is quiet. In a room that isn't
-    quiet (a fan that roars, a keyboard, wind on the microphone) no pause comes: the
-    phrase ran on to its limit, twenty seconds, before anything was done with what had
-    been said. But a voice has a pitch and such a room has none, so the voice can be
-    seen to have stopped though the sound goes on.
+    quiet (a fan that roars, keys being pressed, wind on the microphone) no pause comes:
+    the phrase ran on to its limit, twenty seconds, before anything was done with what
+    had been said. But the voice can be seen to have stopped though the sound goes on.
 
     feed() is given each frame of the phrase. It answers GONE when a voice has been
-    heard in the phrase and none has been for `gone` seconds: the phrase is over. And it
-    answers BEGAN_LATE when a voice is first heard well into a phrase that the room's
-    noise had started: what came before it is only the room.
+    heard in the phrase and none has been for GONE_AFTER seconds: the phrase is over.
+    And it answers BEGAN_LATE when a voice is first heard well into a phrase that the
+    room's noise had started: what came before it is only the room.
+
+    The voice detector is asked (likelihoods(), above): it says of each 32 thousandths
+    of a second whether it is speech. So the moment the voice stopped is known closely,
+    and the wait after it need be little longer than the pause that ends a phrase in a
+    quiet room. It used to be the voice's pitch that was looked for, a second of sound
+    at a time, four times a second, and that was slow and could be blind:
+
+    - A second of sound still has voice in it for most of a second after the voice has
+      stopped, and the wait was counted from the last such second. A word said in a room
+      where keys were being pressed was acted on 2.2 seconds after it ended, where in a
+      quiet room it is 0.66.
+    - A short word among louder noises might never be seen at all: voice had to make up
+      a share of the loud part of the second, and the noises were the loud part. Nothing
+      then ended the phrase but its limit, twenty seconds. Of 65 short words among key
+      presses that was 3 to 11, depending on how hard the keys were pressed and how
+      quietly the word was said.
+    - It was not given the start of the phrase, which is kept from before the sound was
+      loud enough to begin one: of a word a quarter of a second long, that is most.
+
+    With the detector those are 0.82 to 0.84 seconds (0.9 for one word in ten, 1.04 at
+    the most), and none or one of the 65. (Measured on one man's recorded sentences, 65
+    short words cut from them or made by a speaking program, and 40 of the sentences,
+    with made noises mixed in: steady, swelling and sinking, coming on with the voice,
+    key presses, and other recordings as people talking; a loud voice and a quiet one.
+    Not in a real room.) The price: in such a room a sentence with a long pause in it is
+    now cut there, as it is in a quiet room. Of the 40 sentences that was 4 or 5 among
+    key presses, where it had been one or none, and is 5 or 6 in a quiet room.
+
+    Other people talking are speech to the detector too. What tells them from the one
+    who is dictating is how loud they are at the microphone. So a phrase also ends when
+    for SOFT_AFTER seconds there has been talk, but none as much as QUIETER of the
+    loudness of the speech this phrase has had. Behind a loud voice, talk a tenth as
+    loud had kept 6 sentences in 24 and 16 short words in 45 from being ended within
+    eight seconds: now none and one, and the phrase is ended about 1.2 seconds after the
+    voice. Talk a fifth as loud is told from the voice only some of the time, and louder
+    than that hardly ever: nothing here can tell it from the person going on. It might
+    be the same person, in an aside: so of such a phrase nothing is left out (`soft`
+    says so), and the softer talk begins a phrase of its own at once. (At 0.3 for
+    QUIETER, talk a fifth and a third as loud is told apart far more often: but somebody
+    who trails off at a quarter of their loudness has the sentence cut in two.)
+
+    Where the detector isn't there to ask, the pitch is looked for as before.
 
     Nothing is ever cut for want of a voice that was never there: somebody who dictates
     in a whisper is listened to as before."""
 
-    WINDOW = 1.0   # seconds of sound each look takes in
-    EVERY = 0.25   # seconds between one look and the next
-    HEARD = 0.15   # the share of a look's loud part that has to be voice: see voiced()
-    GONE_AFTER = 1.25  # seconds without a voice, once there has been one, that end the phrase
-    LATE = 2.0     # a voice first heard later than this began in a phrase the room had started
-    BEFORE = 1.5   # seconds kept from before the look that first heard a voice
-    AFTER = 0.25   # and seconds kept after the last look that did
+    SPAN = 1.5        # seconds of sound each look takes in
+    EVERY = 0.1       # seconds between one look and the next
+    FIRST = 0.3       # seconds of a phrase there have to be before it is looked at
+    SPEECH = 0.5      # how likely the detector has to take a piece to be speech
+    RUN = 3           # so many pieces in a row are a voice (a tenth of a second): fewer may be a click
+    GONE_AFTER = 0.7  # seconds without a voice, once there has been one, that end the phrase
+    QUIETER = 0.2     # how loud, beside the speech of this phrase, talk has to be to be its voice
+    SOFT_AFTER = 1.2  # seconds of nothing but far softer talk that end it
+    LATE = 2.0        # a voice first heard later than this began in a phrase the room had started
+    BEFORE = 1.5      # seconds kept from before the look that first heard a voice
+    AFTER = 0.4       # and seconds kept after the voice was last heard: of 65 short words said
+                      # quietly over a noise half as loud, a quarter of a second cut one short
+    # Without the detector, by the voice's pitch (see voiced()):
+    WINDOW = 1.0      # seconds of sound each look takes in
+    SLOWLY = 0.25     # seconds between one look and the next
+    HEARD = 0.15      # the share of a look's loud part that has to be voice
+    GONE_SLOWLY = 1.25  # seconds without a voice, counted from the last look that heard one
 
-    def __init__(self, rate: int = config.RATE, frame: int = config.FRAME):
+    def __init__(self, rate: int = config.RATE, frame: int = config.FRAME, detector=watched):
         self.per_second = rate / frame
-        self.recent = collections.deque(maxlen=round(self.WINDOW * self.per_second))
-        self.every = max(1, round(self.EVERY * self.per_second))
+        self.frame = frame
+        self.detector = detector
+        self.recent = collections.deque(maxlen=round(max(self.SPAN, self.WINDOW) * self.per_second))
+        self.by_pitch = False       # the detector couldn't be asked: the pitch is looked for
         self.start()
 
-    def start(self, frames: int = 0) -> None:
-        """A phrase begins: `frames` of it have been kept already."""
+    def start(self, frames: int = 0, kept=()) -> None:
+        """A phrase begins: `frames` of it have been kept already, from before the sound
+        was loud enough to start it. `kept` is those frames: a short word may be half
+        over by the time its phrase has started, and without its beginning the detector
+        did not take what was left of it for speech."""
         self.frames = frames        # how many frames of this phrase there have been
         self.heard = False          # whether a voice has been heard in it
-        self.last = 0               # the frame at which a look last heard one
+        self.last = 0               # the frame at which a voice was last heard, however soft
+        self.soft = False           # GONE was for talk that went on, but far more softly
         self.recent.clear()
+        self.recent.extend(kept)
+        self.by_pitch = False       # the detector is asked afresh: it may only have failed once
         self._since_look = 0
+        self._loud = 0.0            # how loud the speech of this phrase has been
+        self._mine = 0              # the frame at which speech about that loud was last heard
 
     def began_at(self, frames: int) -> None:
         """The phrase was cut down to its last `frames`, at which a voice was just heard."""
-        self.frames = self.last = frames
+        self.frames = self.last = self._mine = frames
 
     def frames_since_voice(self) -> int:
-        return self.frames - self.last if self.heard else 0
+        return int(self.frames - self.last) if self.heard else 0
 
     def frames_for(self, seconds: float) -> int:
         return round(seconds * self.per_second)
@@ -304,14 +439,87 @@ class VoiceWatch:
         self.recent.append(frame)
         self.frames += 1
         self._since_look += 1
-        if self._since_look < self.every or len(self.recent) < self.recent.maxlen:
+        if self.by_pitch:
+            return self._look_for_pitch()
+        if (self._since_look < self.frames_for(self.EVERY)
+                or len(self.recent) < self.frames_for(self.FIRST)):
+            return None
+        span = list(self.recent)[-self.frames_for(self.SPAN):]
+        sound = np.concatenate(span).astype(np.float32) / 32768.0
+        sound = sound[len(sound) % PIECE_OF_SPEECH:]
+        # The detector is shown the sound turned up, as the recogniser is: of short words
+        # said quietly in a noisy room it missed 2 to 5 in 15 as they came, and at most 2
+        # turned up. How loud each piece is, is taken from the sound as it came.
+        peak = float(np.max(np.abs(sound))) if len(sound) else 0.0
+        gain = min(config.NORMALISE_PEAK / peak, config.MAX_GAIN) if peak > 0 else 1.0
+        marks = self.detector(sound * gain) if self.detector else None
+        if marks is None or len(marks) != len(sound) // PIECE_OF_SPEECH:
+            self.by_pitch = True    # for the rest of this phrase: one way or the other, not both
+            return self._look_for_pitch()
+        self._since_look = 0
+        return self._seen(sound, np.asarray(marks))
+
+    def _seen(self, sound, marks):
+        """What a look found: `marks` is the detector's reading of `sound`, piece by piece."""
+        pieces = len(marks)
+        if not pieces:
+            return None
+        loud = np.sqrt(np.mean(sound.reshape(pieces, PIECE_OF_SPEECH) ** 2, axis=1))
+        speech = marks >= self.SPEECH
+        # Only speech that lasts is a voice: the pieces that are in a run of them.
+        lasting, at, last_run = np.zeros(pieces, dtype=bool), 0, None
+        while at < pieces:
+            if not speech[at]:
+                at += 1
+                continue
+            end = at
+            while end < pieces and speech[end]:
+                end += 1
+            if end - at >= self.RUN:
+                lasting[at:end] = True
+                last_run = (at, end)
+                # How loud this phrase's speech is: the loudest pieces of its loudest run.
+                self._loud = max(self._loud, float(np.sort(loud[at:end])[(3 * (end - at)) // 4]))
+            at = end
+        if last_run is None:
+            return self._gone()
+        frames_per_piece = PIECE_OF_SPEECH / self.frame
+        when = lambda piece: self.frames - (pieces - piece) * frames_per_piece
+        self.last = max(self.last, when(last_run[1]))
+        # The voice of this phrase: speech that is not far softer than its speech has been.
+        # It is followed piece by piece, and not run by run: talk in the background runs
+        # on from the voice without a break, and is no part of it.
+        mine = np.nonzero(lasting & (loud >= self.QUIETER * self._loud))[0]
+        if len(mine):
+            self._mine = max(self._mine, when(int(mine[-1]) + 1))
+        first, self.heard = not self.heard, True
+        if first and self.frames > self.frames_for(self.LATE):
+            return BEGAN_LATE
+        return self._gone()
+
+    def _gone(self):
+        if not self.heard:
+            return None
+        if self.frames - self.last >= self.frames_for(self.GONE_AFTER):
+            self.soft = False       # no speech at all: the voice has stopped
+            return GONE
+        if self.frames - self._mine >= self.frames_for(self.SOFT_AFTER):
+            self.soft = True        # speech goes on, but far softer than this phrase's
+            return GONE
+        return None
+
+    def _look_for_pitch(self):
+        """A look the way it was done before there was a detector to ask."""
+        window = self.frames_for(self.WINDOW)
+        if self._since_look < self.frames_for(self.SLOWLY) or len(self.recent) < window:
             return None
         self._since_look = 0
-        sound = np.concatenate(self.recent).astype(np.float64) / 32768.0
+        sound = np.concatenate(list(self.recent)[-window:]).astype(np.float64) / 32768.0
         if voiced(sound) >= self.HEARD:
             first, self.heard, self.last = not self.heard, True, self.frames
+            self._mine = self.frames
             return BEGAN_LATE if first and self.frames > self.frames_for(self.LATE) else None
-        if self.heard and self.frames - self.last >= self.frames_for(self.GONE_AFTER):
+        if self.heard and self.frames - self.last >= self.frames_for(self.GONE_SLOWLY):
             return GONE
         return None
 

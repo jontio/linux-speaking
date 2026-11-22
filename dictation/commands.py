@@ -100,6 +100,9 @@ APP_COMMANDS = {
 class Command:
     name: str
     arg: str = ""
+    # Only perhaps a command: "Correct, John T." Said with a pause after the word, as a
+    # sentence often is; the engine decides by what is on the page (see Engine.handle_text).
+    maybe: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,8 +196,11 @@ _NOT_A_COUNT = ("to", "too", "for", "won", "a")
 # word, not a command: nobody picks out so many words by saying them all.
 MAX_SELECT_WORDS = 8
 # "Correct, yes." and "Select: the first one." The recogniser hears a pause after the
-# word and writes it down. After a command word there is none.
+# word and writes it down. After a command word there is mostly none; but some people
+# pause after "correct" before the words to put right, and then it is only perhaps a
+# sentence: a word or two after it, that were typed a moment ago, are the command.
 _THEN_PUNCTUATION = re.compile(r"\s*(?:[,.;:!?…]|[-–—]\s)")
+MAYBE_SELECT_WORDS = 3
 
 
 _DELETE_WORDS = re.compile(r"delete (?:the )?(?:last|previous) (?:" + _N + r" )?words?")
@@ -419,9 +425,12 @@ def _selecting(phrase: str, raw: str, disabled) -> Command | None:
             continue
         words = phrase[len(said) + 1:]
         first = re.search(r"\b" + said + r"\b", raw, re.IGNORECASE)
-        if len(words.split()) > MAX_SELECT_WORDS or (
-                first and _THEN_PUNCTUATION.match(raw, first.end())):
+        if len(words.split()) > MAX_SELECT_WORDS:
             return None
+        if first and _THEN_PUNCTUATION.match(raw, first.end()):
+            if len(words.split()) > MAYBE_SELECT_WORDS:
+                return None
+            return Command(said, words, maybe=True)
         return Command(said, words)
     return _clicking(phrase, raw, disabled)
 

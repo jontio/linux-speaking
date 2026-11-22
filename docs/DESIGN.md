@@ -139,6 +139,15 @@ of 20 ms frames. It measures the room for half a second, then treats anything we
 that level as speech, and ends a phrase after 650 ms of quiet. A phrase that never pauses
 is cut at 20 seconds.
 
+In a room that isn't quiet no pause shows: keys are being pressed, a fan roars, the
+microphone turns itself up when the talking stops. So while a phrase is being taken down
+a voice detector is asked, ten times a second, whether there is still speech in it
+(`speech.VoiceWatch`). When there has been none for 0.7 seconds the phrase is ended,
+though the sound goes on. Talk that goes on far softer than the phrase's own (other
+people, in the background) ends it too, after 1.2 seconds, and starts a phrase of its
+own. Where the detector isn't installed, the voice's pitch is looked for instead, which
+is slower.
+
 Each phrase is turned up to a normal level and given to Whisper, through faster-whisper,
 on the processor. While asleep, only phrases under six seconds are transcribed, and only
 "wake up", or a mishearing of it such as "wake app" or "weak up", does anything (or

@@ -311,10 +311,39 @@ said goodbye". Untick **No comma after Hello or Hi** in Settings to have it back
 
 ### At the end of a phrase
 
-Only punctuation you say is typed at the end of a phrase: the recogniser's own full stop
-or question mark there is dropped, because it adds one after every phrase, and a pause
-in the middle of a sentence would get one too. So you say "full stop" or "question
-mark" where you want one.
+A recogniser hears each phrase by itself, cut where you paused, and ends nearly every one
+with a full stop, as if it were the whole of what you said. But a pause in the middle of
+a sentence, to think, gets one too, with a capital after it: "it should be an option.
+That the user can select." Settings has three ways to have it, under Formatting: **Full
+stops at the ends of phrases**.
+
+- **Only where I say "full stop"** (to begin with): the recogniser's stop is left off,
+  and you say "full stop" or "question mark" where you want one. Nothing is ever put in
+  wrongly, but a sentence only ends where you say so.
+- **Where the words show a sentence has ended**: the recogniser's stop is held back
+  until you say your next words, and then the words decide. A pause in the middle of a
+  sentence gets no stop and no capital ("an option that the user can select"); where a
+  sentence did end, the stop goes in with the next words, and they start with a capital.
+  It can also be a comma. The last sentence gets its stop after about three seconds of
+  quiet, or when you say "new line" or "new paragraph", or put dictation to sleep; if you
+  then carry on with the same sentence, that stop is taken out again. "Full stop", said,
+  always ends a sentence there.
+- **At every pause, as the recogniser writes them**: its stops are kept. That suits
+  short messages said in one go; expect a stray full stop where you paused part of the
+  way through a sentence.
+
+What decides, in the second way, is a small punctuation model made for speech
+recognition (7.6 MB, downloaded the first time that way is chosen), which looks at the
+last thirty words or so and the first words of your next phrase. Over dictation recorded
+for the purpose (read sentences cut at real pauses and in mid-sentence, and written
+dictation of emails, notes and technical text), it put the right mark at 89 of every 100
+sentence ends it marked, where keeping the recogniser's gets 49, and the stray full stops
+at pauses in the middle of a clause fell from 82 in 100 to 3. Mistakes in marks and
+capitals together fell from 15 to 5 in 100 words. It decides in a few thousandths of a
+second.
+
+The rest of this section is about the first way, which is what you have unless you
+choose another.
 
 A shortening keeps the full stop that is its own: "We met at 5 p.m." ends with its
 stop, and so do "etc.", "U.S." and "Ph.D.". That stop does not say whether the sentence
@@ -331,16 +360,64 @@ cursor still ends with what was last typed there. Where it can't be known, as af
 have clicked somewhere else, the phrase after "p.m." gets a capital unless it begins
 with a word that seldom starts a sentence, such as "and", "to" or "from".
 
-If you would rather have the recogniser's own marks, tick **Keep the full stop or
-question mark the recogniser writes at the end of a phrase**, under Formatting in
-Settings. It is off to begin with. That suits short messages said in one go. Expect a
-stray full stop where you paused part of the way through a sentence. Words put into the
-middle of a sentence never get one.
+Words put into the middle of a sentence never get a full stop at their end, whichever
+way is chosen.
+
+**Dictation samples.** How well any of this does depends on how you dictate: where you
+pause, and what your recogniser writes. Settings has **Record dictation samples…**: you
+dictate an email or a message into its box as you naturally would, put the text right
+to what you meant, and keep it. The sound of each phrase is kept with what was written
+for it and what you meant, on your computer only. Then
+
+    python scripts/check_punctuation.py
+
+(with the install's own Python, from its folder) types each sample again each of the
+three ways and says how many full stops, commas and capitals each got right and wrong.
+`--show` shows each sample as it would be typed. Make up what you dictate there: it is
+kept, sound and all, on your computer only. The window lists what is kept, with the text
+you meant on resting the mouse on one, opens the folder they are in, and deletes one or
+all of them.
 
 If you pause before saying "question mark", the recogniser sometimes writes the sign and
 not the words, which would then be dropped too. So when a phrase ends with a pause and a
 few last words, and no punctuation word came out, those last words are listened to once
 more by themselves. That takes well under a second.
+
+## Putting right what was just typed
+
+A phrase is heard and typed by itself, and what you say next can show that part of it was
+wrong. Two things are done about that, each with a tick box in Settings.
+
+**Put right what was just typed when the next words show what it was** (under
+Formatting). As a new phrase goes in, the end of what was typed before it is looked over
+again with the new words beside it:
+
+- a word that should have been another that sounds the same: "take the cat too", and then
+  "the vet", becomes "take the cat to the vet";
+- a full stop that the recogniser put at the end of a phrase, when the next one goes on
+  with a comma: "Hi Joe." and then ", how are you" becomes "Hi Joe, how are you". A stop
+  that you said stays.
+
+**Hear a sentence again in one piece when it was said in two** (under Speed). A sentence
+said with a pause in the middle is heard as two halves, and each half lacks what the other
+would have told the recogniser: over 128 read sentences cut at a pause, that made nearly
+four times as many words wrong as hearing them whole. So when the second half has been
+typed and nothing else is waiting, the two sounds are put together and heard once more.
+If a word or two comes out differently, the two phrases are typed again. It is only done
+when the recogniser is quick enough for it to take under half a second, so it never holds
+up what you say next by more than that; on a slow computer that does its own listening it
+is mostly left out. It is not yet done in a box that is typed into key by key, such as a
+form in a browser.
+
+Neither will fight you:
+
+- Only this program's own words are touched, and only while they are exactly as it typed
+  them. Change a word back by hand and it is left alone from then on.
+- "Scratch that" takes away the phrase and any change that came with it. Said twice over
+  the same change, the change is not made again there.
+- "Undo that" straight after a change says it was not wanted: it is not made again in
+  those words, and a kind of swap undone in two places is not made anywhere until the
+  program is started again.
 
 ## Sums of money
 
@@ -444,11 +521,12 @@ red when the microphone is too loud.
 
 ## Your own words
 
-Names and unusual words are often misheard: "Jonti" comes out as "Jaunty" or "John T".
+Names and unusual words are often misheard: "Joe" comes out as "Jo", and "Johnny" as
+"John E" or a made-up "Junny".
 List such words under **My words** in Settings, one to a line, spelled the way you want
 them typed.
 
-They are used where they fit. "Cheers, Jonti" gets the name, and "a jaunty little tune"
+They are used where they fit. "Cheers, Johnny" gets the name, and "a rose in the garden"
 still gets the ordinary word. To tell, a phrase that comes out with one of your words in
 it is listened to a second time without the list, and the two are compared. Your word
 stays if the second hearing wrote a name there or a word it didn't know, if a greeting or
@@ -481,9 +559,9 @@ and with "Win11", so is "we win 11 games".
 
 **With Parakeet.** Parakeet can't be given the list, so there is one hearing and no
 second to compare. Your word is put in by its sound, where Parakeet wrote a name or a
-word that the dictionary doesn't know ("I spoke to Johnty" or "I spoke to John T", for
-Jonti), or where the word was said by itself, or right after a greeting or a sign-off
-("Cheers," or "Best wishes," and then "Jaunty").
+word that the dictionary doesn't know ("I spoke to Johnie" or "I spoke to John E", for
+Johnny), or where the word was said by itself, or right after a greeting or a sign-off
+("Cheers," or "Best wishes," and then "Johnie").
 
 - **Another spelling of the same name is yours.** The list is there to put right a name
   that the recogniser spelled the usual way: with "Sarah" on the list, "Sara" becomes

@@ -6,6 +6,7 @@ rm -rf build/oxt && mkdir -p build/oxt
 cp -r extension/. build/oxt/
 mkdir -p build/oxt/pythonpath/dictation
 cp dictation/__init__.py dictation/formatting.py dictation/words.py dictation/selecting.py \
+   dictation/letters.py \
    build/oxt/pythonpath/dictation/
 find build/oxt -name __pycache__ -prune -exec rm -rf {} +
 rm -f build/linux-speaking.oxt

@@ -26,10 +26,11 @@ lost, and tries the other again after twenty seconds. (A computer with
 [no speech model of its own](#a-small-computer-with-no-speech-model-of-its-own) has
 nothing to do the work with: see there.) The same happens if the other
 computer is slow to answer, or if something else answers at its address: it is given
-five seconds to say hello and a minute for a phrase. The tray icon's tip then says that
-the recognising is being done on this computer, and the line under the address in
-Settings says what went wrong when Settings is next opened, such as "The other computer
-took too long to answer."
+five seconds to say hello and a minute for a phrase. You are told when it happens, and
+for as long as it lasts the tray icon's tip and the top of Settings say that this
+computer is doing the listening and why, such as "The other computer took too long to
+answer": on a slow computer it is the difference between words that come at once and
+words that take seconds.
 
 ## A small computer with no speech model of its own
 

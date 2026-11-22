@@ -65,7 +65,7 @@ def typable(text: str) -> str:
     import unicodedata
     out = []
     for character in text:
-        if character in "\n\t" or 0x20 <= ord(character) <= 0x7E:
+        if character in "\n\t\u2028\u2029" or 0x20 <= ord(character) <= 0x7E:
             out.append(character)
         elif character in _PLAIN:
             out.append(_PLAIN[character])

@@ -169,7 +169,7 @@ def parse(raw: str) -> tuple[list, list]:
         elif len(token) == 1 and token.isalnum():
             add = token
         elif original[i].isupper() and token.isalpha() and len(token) <= 12:
-            add = token  # Whisper ran the letters together, as in "JONTI"
+            add = token  # Whisper ran the letters together, as in "JOE"
         elif token.isdigit():
             add = token
         else:

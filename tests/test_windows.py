@@ -84,6 +84,7 @@ if HAVE_QT and ALONE:
             self.targets = SimpleNamespace(office=None, own=None)
             self.on_event, self.on_level = (lambda name: None), (lambda: None)
             self.asked = []
+            self.sampler = None
 
         def turn_on(self, awake=False):
             self.asked.append("turn_on")
@@ -110,6 +111,10 @@ if HAVE_QT and ALONE:
         def unhold(self, asleep=False): self.asked.append("unhold")
         def setting_changed(self, key): self.asked.append(("setting", key))
         def set_words(self, text): self.asked.append(("words", text))
+
+        def set_sentence_ends(self, chosen):
+            self.asked.append(("sentence_ends", chosen))
+            self.settings.set_sentence_ends(chosen)
         def set_microphone(self, name): self.asked.append(("microphone", name))
         def check_remote(self): return {"ok": False, "why": ""}
 
@@ -255,6 +260,169 @@ if HAVE_QT and ALONE:
             window.refill_models()                                    # as when one is installed
             self.assertFalse(window.remote_wake.isChecked())
             self.assertEqual(window.remote_wake.styleSheet(), "")
+
+    class DictationSamples(unittest.TestCase):
+        """The window that records dictation as it is really done, with what was meant."""
+
+        def window(self):
+            import tempfile
+            engine = Engine()
+            self.engine = engine
+            self.folder = tempfile.mkdtemp()
+            window = tray.SamplesWindow(engine, self.folder)
+            self.addCleanup(window.close)
+            window.show()
+            QApplication.processEvents()
+            return window
+
+        def test_its_box_takes_dictation_and_the_phrases_are_kept_with_what_was_meant(self):
+            import numpy as np
+            from dictation import samples
+            window = self.window()
+            self.assertIs(self.engine.sampler, window.catcher)
+            window.on_box_focus(True)
+            self.assertIs(self.engine.targets.own, window.own)
+            targets = SimpleNamespace(own=window.own, name="the samples box")
+            self.assertTrue(window.catcher.wants(targets))
+            self.assertFalse(window.catcher.wants(SimpleNamespace(own=None, name="Writer")))
+            self.assertFalse(window.keep_button.isEnabled())          # nothing dictated yet
+            window.catcher.add(np.zeros(8000, dtype=np.float32), "Also, it should be an option.", 10.0, 0.5)
+            window.catcher.add(np.zeros(8000, dtype=np.float32), "That the user can select.", 12.0, 0.5)
+            QApplication.processEvents()
+            self.assertTrue(window.keep_button.isEnabled())
+            self.assertIn("2 phrases", window.said.text())
+            window.box.setPlainText("Also, it should be an option that the user can select.")
+            window.keep()
+            kept = samples.kept(self.folder)
+            self.assertEqual(len(kept), 1)
+            here, record = kept[0]
+            self.assertEqual(record["meant"], "Also, it should be an option that the user can select.")
+            self.assertEqual([p["written"] for p in record["phrases"]],
+                             ["Also, it should be an option.", "That the user can select."])
+            self.assertEqual([p["pause_before"] for p in record["phrases"]], [None, 1.5])
+            self.assertTrue(os.path.exists(os.path.join(here, "phrase-01.wav")))
+            self.assertEqual(window.box.toPlainText(), "")            # emptied for the next
+            self.assertIn("1 sample kept", window.kept_label.text())
+
+        def test_phrases_dictated_are_shown_though_the_engine_is_on_its_own_thread(self):
+            import threading
+            import numpy as np
+            window = self.window()
+            told = []
+            window.taken.connect(lambda: told.append(1))
+            window.catcher.taken()            # (the window's own signal: a timer started on
+            self.assertEqual(told, [1])       #  the engine's thread would never fire)
+            done = threading.Thread(target=window.catcher.add,
+                                    args=(np.zeros(800, dtype=np.float32), "Hello.", 1.0, 0.1))
+            done.start()
+            done.join()
+            QApplication.processEvents()      # the window hears of it on its own thread
+            self.assertIn("1 phrase", window.said.text())
+            self.assertTrue(window.keep_button.isEnabled())
+
+        def test_the_samples_kept_are_listed_and_can_be_deleted(self):
+            import numpy as np
+            from dictation import samples
+            answers = []
+            yes = [True, False, True]     # delete one; delete all, answered No; then Yes
+
+            def ask(window, text, careful=False):
+                answers.append((text, careful))
+                return yes.pop(0)
+            self.addCleanup(setattr, tray, "ask", tray.ask)
+            tray.ask = ask
+            window = self.window()
+            for written, meant in (("Hello.", "Hello."), ("Again.", "Again.")):
+                window.catcher.add(np.zeros(800, dtype=np.float32), written, 1.0, 0.1)
+                window.box.setPlainText(meant)
+                window.keep()
+            oldest, newest = [path for path, _ in samples.kept(self.folder)]
+            self.assertEqual(window.kept_list.count(), 2)
+            self.assertIn("phrase", window.kept_list.item(0).text())
+            self.assertEqual(window.kept_list.item(0).toolTip(), "Again.")   # newest first
+            self.assertEqual(window.kept_list.item(1).toolTip(), "Hello.")
+            self.assertEqual(answers, [])
+            window.kept_list.setCurrentRow(1)              # the older one, chosen on purpose
+            window.delete_one()
+            self.assertEqual([path for path, _ in samples.kept(self.folder)], [newest])
+            self.assertEqual(window.kept_list.count(), 1)
+            self.assertIn("Delete the sample kept", answers[-1][0])
+            self.assertTrue(answers[-1][1])                # asked first, and carefully
+            window.delete_all()                            # answered No: nothing goes
+            self.assertEqual(len(samples.kept(self.folder)), 1)
+            window.delete_all()                            # answered Yes: it goes
+            self.assertEqual(samples.kept(self.folder), [])
+            self.assertEqual(window.kept_list.count(), 0)
+            self.assertFalse(window.delete_button.isEnabled())
+            self.assertFalse(window.delete_all_button.isEnabled())
+
+        def test_the_row_chosen_stays_chosen_while_you_dictate(self):
+            import numpy as np
+            window = self.window()
+            for written, meant in (("Hello.", "Hello."), ("Again.", "Again.")):
+                window.catcher.add(np.zeros(800, dtype=np.float32), written, 1.0, 0.1)
+                window.box.setPlainText(meant)
+                window.keep()
+            window.kept_list.setCurrentRow(1)              # the older one
+            chosen = window.chosen()
+            window.catcher.add(np.zeros(800, dtype=np.float32), "More.", 3.0, 0.1)
+            QApplication.processEvents()                   # (as each dictated phrase does)
+            self.assertEqual(window.chosen(), chosen)      # a phrase arriving moves nothing
+
+        def test_the_folder_can_be_opened(self):
+            from unittest import mock
+            window = self.window()
+            with mock.patch.object(tray.QDesktopServices, "openUrl") as opened:
+                window.show_folder()
+            self.assertTrue(os.path.isdir(self.folder))
+            self.assertEqual(opened.call_args[0][0].toLocalFile(), self.folder)
+
+        def test_start_again_keeps_nothing(self):
+            import numpy as np
+            from dictation import samples
+            window = self.window()
+            window.catcher.add(np.zeros(800, dtype=np.float32), "Hello.", 1.0, 0.1)
+            window.box.setPlainText("Hello")
+            window.start_again()
+            self.assertEqual((samples.kept(self.folder), window.box.toPlainText()), ([], ""))
+
+        def test_closed_it_takes_nothing(self):
+            window = self.window()
+            window.hide()
+            self.assertIsNone(self.engine.sampler)
+
+    class WhereFullStopsGo(unittest.TestCase):
+        """The choice of where full stops go at the ends of phrases, in place of the old
+        tick box for keeping the recogniser's."""
+
+        def window(self, **states):
+            engine = Engine()
+            engine.settings.states.update(states)
+            engine.settings.sentence_ends = "pause" if states.get("keep_final") else "said"
+            self.engine = engine
+            window = tray.SettingsWindow(engine)
+            self.addCleanup(window.close)
+            return window
+
+        def test_three_choices_in_place_of_the_tick_box(self):
+            window = self.window()
+            chooser = window.sentence_ends
+            self.assertEqual([chooser.itemData(n) for n in range(chooser.count())], ["said", "words", "pause"])
+            self.assertEqual(chooser.currentData(), "said")
+            self.assertNotIn("keep_final", window.ticks)
+            self.assertIn("next words", chooser.toolTip())
+
+        def test_the_old_tick_shows_as_every_pause(self):
+            self.assertEqual(self.window(keep_final=True).sentence_ends.currentData(), "pause")
+
+        def test_choosing_is_passed_on_and_kept(self):
+            window = self.window()
+            chooser = window.sentence_ends
+            chooser.setCurrentIndex(chooser.findData("words"))
+            chooser.activated.emit(chooser.currentIndex())
+            self.assertEqual(self.engine.asked[-1], ("sentence_ends", "words"))
+            self.assertEqual(self.engine.settings.sentence_ends, "words")
+            self.assertFalse(self.engine.settings.states["keep_final"])
 
     class HowTheSoundIsSent(unittest.TestCase):
         """The choice of how the sound is packed for the journey to the other computer."""

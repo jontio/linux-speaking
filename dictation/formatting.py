@@ -378,6 +378,10 @@ class Insertion:
     # back with the next phrase (fit's `after_said_end`), because after "p.m." or "etc."
     # the text alone can't say whether a sentence ended.
     said_end: bool = False
+    # Where in `text` the signs are that were said ("comma", "full stop", "new line"), as
+    # (start, end) pairs: they are the person's own, and whatever puts the text right
+    # afterwards leaves them as they are. (The recogniser's own marks are not here.)
+    said_marks: tuple = ()
 
 
 def sentence_start(before: str) -> bool:
@@ -465,6 +469,10 @@ def _in_a_path(text: str) -> bool:
     # What stands since the last space, or since a bracket or quote that opened: "(C:".
     run = re.split(r"[\s" + re.escape(OPENERS) + "\"'*_`$]", text)[-1] if text else ""
     return "\\" in run or bool(re.fullmatch(r"[A-Za-z]:|\.\.?", run))
+
+
+# The signs that end a phrase by themselves, one of which a sign said next takes the place of.
+_ONE_SIGN_ENDS = ".?!,;:"
 
 
 def _said_end(tokens: list, before_them: bool = False) -> bool:
@@ -569,6 +577,10 @@ def _without_capital(tokens: list, at: int, previous: str, names, lexicon: Lexic
         return lead + own + core[len(own):] + rest  # as they spelled it, capital or none
     if not core[0].isupper():
         return token
+    if rest.startswith("++") and core.lower() in _PLUS_PLUS:
+        return lead + _PLUS_PLUS[core.lower()] + rest[2:]   # "C++", "Notepad++", and "g++" as it is written
+    if rest.startswith(("++", "#")):
+        return token                      # "C#", "F#": names, written as they are
     if previous.rstrip(".") in _TITLES:
         return token                      # "See Dr." and then "Smith": a title is followed by a name
     after = tokens[at + 1] if at + 1 < len(tokens) else ""
@@ -659,6 +671,11 @@ def fit(
     off = set(DEFAULT_OFF if spoken_off is None else spoken_off)
     lexicon = lexicon or Lexicon()
     text = plus_plus(" ".join(raw.split()))
+    try:
+        from .letters import said as said_in_a_letter     # (letters.py imports this module)
+        text = said_in_a_letter(text, before)   # "Hi joe, common": "Hi Joe" and the comma said
+    except ImportError:
+        pass                            # an older copy of the rules, in Writer's extension
 
     after_text = after.lstrip(" \t")
     mid_sentence = bool(after_text) and after_text[0] not in BREAKS + "\n\r"
@@ -693,13 +710,32 @@ def fit(
     capital = sentence_start(before)
     # Whether the text before ends with the stop of "p.m.", "etc." or "Dr.": the word's own.
     own = before.rstrip(" \t").endswith(".") and own_stop(before.split()[-1])
-    # "At 5 p.m." and then "full stop": the stop that is there does for both.
-    merged = own and _is_sym(tokens[0]) and _sym(tokens[0]) == "."
+    # A sign said at the start of a phrase where the text before already ends with one:
+    # the recogniser's full stop, kept by keep_final, or a sign said in the phrase before.
+    # The same sign twice is typed once: "I have something." and then "full stop" is
+    # one stop, not two; and "at 5 p.m." and then "full stop", whose stop does for both.
+    # Another sign takes the place of the one there, because what is said is what
+    # stands: "I have something." and then "question mark" is "I have something?". Not
+    # a shortening's own stop, which stays ("at 5 p.m.?"), nor the dots of "...".
+    stem = before.rstrip(" \t")
+    said_sign = _sym(tokens[0]) if _is_sym(tokens[0]) else ""
+    there = stem[-1:] if stem[-1:] in _ONE_SIGN_ENDS else ""
+    trailing = stem.endswith(("..", "…"))
+    if said_sign == "." and stem.endswith("…"):
+        there = "."                       # "Well…" and then "full stop": it ends there already
+    merged = bool(said_sign) and said_sign == there
+    # (Nor the stop after an initial, "John F.", or after a word that is only sometimes
+    # shortened, "3 Jan.", "Fig.": it may be the word's own, and it stays.)
+    maybe_own = there == "." and bool(before.split()) and (
+        _shortening(before.split()[-1]) or bool(re.search(r"(?:^|\s)[A-Z]\.$", stem)))
+    replaced = (said_sign in _ONE_SIGN_ENDS and bool(there) and not merged
+                and not own and not maybe_own and not trailing)
     if merged:
-        tokens, capital = tokens[1:], True
+        tokens, capital = tokens[1:], said_sign in SENTENCE_END
         if all(token == _LOWER for token in tokens):
-            return Insertion("", capitalise_next=mid_sentence and after_text[0].islower(),
-                             said_end=True)
+            ends = said_sign in SENTENCE_END
+            return Insertion("", capitalise_next=ends and mid_sentence and after_text[0].islower(),
+                             said_end=ends)
     elif after_said_end and _stop_before(before):
         capital = True   # a sentence ended there, and it was said: even after "St."
     elif capital and own:
@@ -738,6 +774,7 @@ def fit(
     path = before if before and (_joins_on(before) or _opening_context(before)) else ""
     out = []
     prev = None
+    at, said = 0, []   # how long the text is so far, as it will be typed; where the said signs are
     for token in tokens:
         if prev is not None:
             joined = (
@@ -747,23 +784,32 @@ def fit(
             )
             if not joined:
                 out.append(" ")
-        out.append(_sym(token) if _is_sym(token) else token)
+                at += 1
+        piece = _sym(token) if _is_sym(token) else token
+        length = len(piece.replace(_PROTECT, "").replace(_PROTECT_SPACE, " "))
+        if _is_sym(token) and length:
+            said.append((at, at + length))
+        out.append(piece)
+        at += length
         prev = token
     result = "".join(out).replace(_PROTECT, "").replace(_PROTECT_SPACE, " ")
 
     # Spaces against the document. A sign that was said sits as _hug has it; anything
     # else goes by its first and last characters. An "@" that starts a phrase starts a
-    # name ("@jonti"), so it gets the space a word would.
+    # name ("@joe"), so it gets the space a word would.
     first, last = result[0], result[-1]
     said_first, said_last = _is_sym(tokens[0]), _is_sym(tokens[-1])
     delete_before = 0
     if (_hug(tokens[0]) in ("left", "both") and tokens[0] != _AT_SIGN) if said_first \
             else (first in ATTACH_LEFT or first == "-"):
         delete_before = len(before) - len(before.rstrip(" \t"))
+        if said_first and replaced:
+            delete_before += 1            # the sign that was there: the one said takes its place
     elif before and not before[-1].isspace() and not _joins_on(before) \
             and not _opening_context(before) \
             and not (tokens[0] in _BACKSLASHES and _in_a_path(before)):
         result = " " + result
+        said = [(start + 1, end + 1) for start, end in said]
 
     delete_after = 0
     if last in BREAKS:
@@ -779,7 +825,7 @@ def fit(
         and after_text[0].islower()
     )
     return Insertion(result, delete_before, delete_after, capitalise_next,
-                     _said_end(tokens, merged))
+                     _said_end(tokens, merged and said_sign in SENTENCE_END), tuple(said))
 
 
 def _stop_before(before: str) -> bool:

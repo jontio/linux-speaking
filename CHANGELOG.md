@@ -2,6 +2,192 @@
 
 ## Unreleased
 
+- **Samples of your dictation can be seen and thrown away.** The samples window (Settings →
+  Record dictation samples…) lists the samples kept: when each was kept, how many phrases,
+  and the text you meant when the mouse rests on one. It opens the folder they are in, and
+  deletes one or all of them, asking first and naming what goes; the row you chose stays
+  chosen while you dictate. They are recordings of your voice, so a way to remove them
+  matters. Dictating into the box again also updates the window now: it was told of each
+  phrase from the worker's thread, which Qt will not act on, so what you had dictated was
+  never shown and a sample could not be kept from the window at all.
+- In "words" mode, a word spelled (or a shortcut said) on from where a quiet spell had
+  typed the sentence's stop for the time being kept the stop away for good; the sentence
+  now waits for the full stop at its new end. A line break that could not be typed holds
+  the stop for later rather than losing it, and a phrase heard for another computer no
+  longer loses the mark heard at its join to this computer's own listening beside it.
+- check_punctuation counts a comma missed at a line or paragraph break (the break's full
+  stop took the comma's place, which hid the missing comma), and a stop typed where a
+  comma was meant is counted once, as the comma missed, not twice.
+
+- **Each phrase is heard with the end of the one before.** A recogniser hears each phrase
+  by itself, cut where you paused, with nothing to go on: "Cheers" said alone on its line
+  came out "Chairs", and every pause to think was heard as a sentence ending. Now the last
+  four seconds of the phrase before are heard with it, as you said them, and only the new
+  words are typed. Where the words decide the full stops, what the recogniser wrote where
+  the two phrases meet decides the full stop there: heard together, it tells a sentence
+  end from a pause to think far better than the words alone. On four samples of natural
+  dictation, misheard words fell from 12 to 7 in 232, and at the pauses the recogniser's
+  own mark was right at 9 of 10 where the words alone were right at 6. Each phrase takes
+  about a third of a second longer to hear. It works on the other computer too, and an
+  other computer with an earlier version is asked as before. For Parakeet models; it can
+  be switched off under Speed.
+- "New line" and "new paragraph" put the full stop held back for the sentence before in
+  with the line break, as one step: "scratch that" then takes both away and the stop is
+  held again, instead of taking the break and then only the stop.
+- "Correct that", "select that", "bold that", "cap that" and the rest of the commands
+  about the last phrase reached only the full stop typed after a quiet spell, which is a
+  step of its own: "correct that" selected the stop, and what was said next went in after
+  the old phrase. They now take that stop away first and act on the phrase, and the stop
+  comes back after the next quiet spell. "Delete that" with nothing selected, and "that
+  was a noise", now put things back as "scratch that" does; "redo that" brings back the
+  held full stop with the phrase.
+- A sentence that starts with an opening quote, a bracket or a sign of money now gets the
+  full stop it needs before it, where the words decide them.
+- In the text boxes of web pages on Linux, "new line" and "new paragraph" typed nothing:
+  the line breaks were left out as characters the keyboard hasn't got. They are typed
+  with Shift+Enter, as everywhere else.
+- A phrase said after a quiet spell is one step for "undo that" again. The full stop typed
+  for the time being stays where the sentence had ended, and goes out with the phrase where
+  it goes on; taken back as a step of its own, "undo that" twice undid only that, and in VS
+  Code the next "scratch that" took words from the middle of the text.
+- "Press enter" after a sentence: "scratch that" takes the key, then the full stop, then the
+  phrase, one at a time.
+- "Hi Joe", a pause, and "comma new paragraph" gave "Hi Joe, common" and the paragraph:
+  said after a pause, "comma new" is heard as "common new". A phrase that starts with
+  "common" (or "coma") on its own, with only a line break or a pause after it, is now the
+  comma where the line before it is a greeting and a name, or a sign-off. "Common sense"
+  after "Hi Joe" is still words.
+- "Cheers comma enter" and your name, with a recogniser that can't be given your words (a
+  Parakeet model), left the name as it was misheard ("Cheers," and "Johnie" under it):
+  "enter" between the sign-off and the name stopped your word going in, where "new line"
+  didn't. Now it doesn't. And a word that is in no dictionary, which the recogniser made
+  up for a name, is taken for one of your words with a short "u" for its "o" ("Junny" for
+  Johnny); a real word or a known name still has to sound the same ("Russ" is not Ross).
+- "Correct ..." with a pause after "correct" (written "Correct, John E.") is the command
+  where the words were typed a moment ago, and a sentence otherwise ("Correct, yes."); it
+  used to be typed every time. "Correct" with a word or two that aren't there says so and
+  types nothing, where it used to type them. The person's own words are looked for too:
+  "correct John E" finds "Johnny". A word put right at the end of the text keeps its
+  sentence's full stop coming ("…to the Vat", "correct vat", "vet", and then the next
+  sentence). Hearing two phrases again in one piece keeps the person's own words that the
+  first hearing put in: "Johnny" came back as "John E".
+- In text boxes that are typed into key by key (Windows, and web pages on Linux), "scratch
+  that" after a phrase that ended with a line break pressed Backspace wherever the cursor had
+  gone since. It now takes the phrase only where it still is.
+- "Correct that" after a phrase that went in with a full stop or a comma decided at its join
+  keeps that mark in front of what is said in its place, and the new words get their full
+  stop like any others. A full stop typed after a quiet spell where the recogniser wrote none
+  no longer counts as its own, and a held full stop is no longer dropped while something is
+  selected or another program is in front. "Tab three times" is three steps for "scratch
+  that". A sentence that starts with a straight quote now gets the full stop before it.
+- Where a program says it took back the last phrase but took nothing (Writer, straight
+  after "undo that"), Linux Speaking no longer takes it that the phrase went, so what it
+  knows of the text stays in step. In Writer, "scratch that" straight after "undo that" may need saying
+  again; that was so before.
+
+- (Switched off for now, while it is made sound: a review found its scores moved with what
+  else was scored beside them. Set LS_MAKE_SENSE=1 to try it.) **What was heard is checked to
+  make sense.** A spoken command heard as a word, "Hi
+  Joe" and then "comma" typed as "Hi Joe common", and a sign-off by itself on its line
+  heard as "Chairs", are now put right as the phrase goes in. Only readings that sound
+  like what was heard are tried, never a word that wasn't, and a small language model
+  (SmolLM2-135M, Apache-2.0, 138 MB, downloaded once and checked) says which a person
+  would write: the other reading is taken only if it is far more likely, so "a common
+  mistake" and "we have a lot in common" stay as they are. It is part of "Put right what
+  was just typed", and "scratch that" straight after keeps it from being made again for a
+  while.
+- A recording window (the microphone level, the voice test, reading aloud) could leave
+  dictation off when it was closed, or switch it on asleep after it had been switched off,
+  in some cases since the full stops were held back.
+- A sign said at the end of a phrase got a second mark after it where the words decide
+  the full stops: "When it rains comma" and then "we stay in" gave "When it rains,. We".
+  So did a phrase ending inside quotes.
+- The last sentence lost its full stop if dictation was switched off or put to sleep
+  while it was still being heard, or if the quiet spell came while its line was too
+  short to tell or another program was in front. "Scratch that" or "undo that" after a
+  full stop typed for the time being took away only the stop, or needed saying twice. A
+  word spelled, or a shortcut said, after a quiet spell went in after a full stop and a
+  capital: "I sent the parcel to. Smith". And with no network, the punctuation model was
+  downloaded again for every phrase.
+- "New paragraph" said at the start or the end of a phrase now ends the sentence before
+  it where the words decide full stops: "...tomorrow." and then the paragraph.
+- The full stop of a shortening the program knows ("Acme Corp.", "approx."), of an
+  initial ("John F.") or of "Jan." or "Fig." stays when a comma is said after it.
+
+- **Full stops where the words show a sentence has ended, not at every pause.** A pause
+  to think in the middle of a sentence used to get a full stop and a capital with "keep
+  the recogniser's full stop" ticked, and no sentence ended without "full stop" said with
+  it unticked. That tick box is now a choice of three, under Formatting: **Full stops at
+  the ends of phrases**: only where I say "full stop" (as before, and to begin with);
+  where the words show a sentence has ended; or at every pause (the old tick box). In the
+  new way the recogniser's stop is held back until the next words are said, and a small
+  punctuation model (sherpa-onnx's English one, 7.6 MB, Apache-2.0, downloaded once and
+  checked) decides from the words either side whether a sentence ended there, a comma
+  goes there, or nothing. The stop goes in with the next words, and a capital only after
+  it. The last sentence gets its stop after three seconds of quiet, at "new line" or "new
+  paragraph", or when dictation is put to sleep; it is taken out again if the sentence
+  goes on. Over dictation recorded and written for the purpose, mistakes in marks and
+  capitals fell from 15 in 100 words to 5, and stray full stops at pauses in mid-clause
+  from 82 in 100 to 3.
+- **Record dictation samples**, in Settings: dictate as you naturally would, put the text
+  right, and keep it, sound and all, on your computer. `scripts/check_punctuation.py`
+  then types your samples again each of the three ways and counts what each got right.
+- The sound-alike check leaves the words either side of a pause alone where it can't be
+  known whether a sentence ended there, which is wherever the words don't decide it.
+  "It works too" and then "let me know" became "it works to let me know", and "who told
+  you" and then "no, I did" became "you know". Measured on dictation, every change it made
+  there was wrong. Where the words decide where sentences end, the pause has its mark by
+  then, and "take the cat too" and then "the vet" still becomes "to the vet".
+- **No more ".." when "full stop" is said after a phrase that already ends with one.**
+  With the recogniser's own full stop kept at the end of a phrase, saying "full stop"
+  next typed a second: "I have something..". The same sign said twice is now typed once,
+  and another said sign takes the place of the one there: "question mark" after a full
+  stop gives "I have something?", and "comma" gives "I have something, and" with the
+  next words going on in small letters. A shortening keeps its own dot: "at 5 p.m.?".
+- "C++", "C#" and "Notepad++" said at the start of a phrase in the middle of a sentence
+  kept their capital in name only: "I like" and then "C++" was typed "I like c++".
+- **In a noisy room a phrase is acted on much sooner.** Where the room hides the pause
+  after a phrase (keys being pressed, a microphone that turns itself up), the program
+  sees the voice itself stop. It used to take about 2.2 seconds to be sure, and a short
+  word among louder noises could be missed altogether and wait out the full twenty
+  seconds. Now the voice detector is asked ten times a second, and the phrase is ended
+  about 0.8 seconds after the voice. In such a room a sentence with a long pause in it
+  is now cut at the pause, as it is in a quiet room.
+- Other people talking in the background, at about a tenth of your loudness at the
+  microphone, no longer hold a phrase open: it is ended about 1.2 seconds after you
+  stop. Louder than a fifth or so they still can.
+- **What was just typed is put right when the next words show what it was.** A phrase is
+  heard by itself: "take the cat too" is a fair guess with nothing after it. Now, as the
+  next phrase goes in, the end of what was typed before it is looked over again with the
+  new words beside it, and a word that should have been another that sounds the same is
+  changed ("to the vet"), as is a full stop the recogniser put where the next phrase goes
+  on with a comma ("Hi Joe." and ", how are you"). Only this program's own words are
+  touched, and only while they are as it typed them; "scratch that" takes the change back
+  with the phrase, and after "undo that" it is not made again there. A tick box under
+  Formatting switches it off.
+- Which of two sound-alike words was meant is told from the two words either side, for 54
+  sets (to, too and two; their, there and they're; then and than; your and you're; and
+  others), from counts of which word stood next to which in 825 public-domain books; "High
+  joe," at the start of a greeting becomes "Hi Joe,". It says nothing unless the other
+  word is many times as likely: tried on books the counts were not taken from, it put
+  right about six mix-ups in ten where a pause fell, and changed a right word about once
+  in 2,500. After a long pause, when the sentence may have ended there, it asks far more.
+  Your own words are never changed. Nothing is downloaded for it.
+- **A sentence said in two phrases is heard again in one piece.** With a pause in the
+  middle, each half is heard without the other, and over 128 read sentences that made
+  nearly four times as many words wrong. When the second half has been typed and nothing
+  else is waiting, the two sounds are heard once more together, and the two phrases are
+  typed again if a word or two comes out differently. Only when the recogniser is quick
+  enough for that to take under half a second, and not yet in boxes that are typed into
+  key by key. A tick box under Speed switches it off.
+- **You are told when the other computer stops doing the listening.** A computer with a
+  model of its own carried on by itself without a word, and only the tray icon's tip
+  said so: on a slow computer everything then took seconds, for no reason that could be
+  seen. Now it says so when it happens, and the tray icon's tip and the top of Settings
+  say so, with the reason, for as long as it lasts.
+- The log says where the time went for a phrase whose words were more than a second and
+  a half in coming: waiting its turn, finding where the words are to go, being heard
+  (and on which computer), being checked or heard again, and being acted on.
 - **The sound sent to another computer is packed, and you choose how.** It used to go as
   it is, 32 kB for each second of speech. Now it goes as FLAC, which halves it and gives
   back exactly what was heard. **Sound sent**, in Settings under the other computer's

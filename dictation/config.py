@@ -72,6 +72,13 @@ if os.path.isdir(os.path.join(_OWN_MODELS, "small.en")) \
 else:  # models already downloaded by the Speech Note app
     _DIR, _ASLEEP, _AWAKE = _SPEECH_NOTE, "en_fasterwhisper_base", "en_fasterwhisper_small"
 MODEL_DIR = os.environ.get("LS_MODEL_DIR", _DIR)
+# The small models that help (punctuation, making sense: see punctuation.py and sense.py) are
+# kept with the speech models, except where those are Speech Note's: nothing is written into
+# another program's folder.
+HELPER_MODEL_DIR = _OWN_MODELS if os.path.normpath(MODEL_DIR) == os.path.normpath(_SPEECH_NOTE) else MODEL_DIR
+# Whether what was heard is checked to make sense (see sense.py). Off while that check is
+# made sound: a review found its scores moved with what else was scored beside them.
+MAKE_SENSE = os.environ.get("LS_MAKE_SENSE", "") == "1"
 ASLEEP_MODEL = os.environ.get("LS_ASLEEP_MODEL", _ASLEEP)
 AWAKE_MODEL = os.environ.get("LS_AWAKE_MODEL", _AWAKE)
 THREADS = int(os.environ.get("LS_THREADS", "0")) or min(8, cores())
@@ -117,6 +124,29 @@ PENDING_EXTENSION = os.path.expanduser(
 CHOICE_SECONDS = float(os.environ.get("LS_CHOICE_SECONDS", "20"))
 # A phrase this long, in seconds, has its loudness put in the log: see Engine._listen.
 LONG_PHRASE = float(os.environ.get("LS_LONG_PHRASE", "8"))
+# A phrase whose words were this long in coming, in seconds from when it was taken to be
+# over, has where the time went put in the log: see Engine._say_if_slow.
+SLOW_PHRASE = float(os.environ.get("LS_SLOW_PHRASE", "1.5"))
+# Hearing a sentence again in one piece, when it was said in two phrases (Engine._hear_again):
+# how long the pause between them may be, in seconds; how much sound is heard again at the
+# most; and the longest the hearing may be expected to take. Past that it is left: nothing
+# that is said next should have to wait on it.
+HEAR_AGAIN_GAP = float(os.environ.get("LS_HEAR_AGAIN_GAP", "4"))
+# Where the words decide where sentences end (joins.py): after this many seconds of quiet
+# the mark held back at the end of the last phrase is typed, for the last sentence of what
+# was said. It is decided again if the sentence turns out to go on.
+SENTENCE_QUIET = float(os.environ.get("LS_SENTENCE_QUIET", "3"))
+HEAR_AGAIN_SECONDS = float(os.environ.get("LS_HEAR_AGAIN_SECONDS", "15"))
+# Hearing each phrase with the end of the one before put in front of it (left context), so
+# that the recogniser hears what led up to it, as a person would: so many seconds of the
+# phrase before, if it ended no longer ago than LEFT_CONTEXT_GAP. Only the words after the
+# join are typed, by the model's own times for them (LEAD_SLACK to spare); what it wrote at
+# the join decides the full stop there where the words decide them (see joins.py). A little
+# slower: the sound heard is longer. (What was measured: see docs/MODELS.md.)
+LEFT_CONTEXT = float(os.environ.get("LS_LEFT_CONTEXT", "4"))
+LEFT_CONTEXT_GAP = float(os.environ.get("LS_LEFT_CONTEXT_GAP", "30"))
+LEAD_SLACK = 0.16    # (two of the model's 80 ms steps)
+HEAR_AGAIN_MOST = float(os.environ.get("LS_HEAR_AGAIN_MOST", "0.5"))
 # How long a command of the person's own that begins with "ask first" waits for "yes".
 ASK_SECONDS = float(os.environ.get("LS_ASK_SECONDS", "10"))
 CHOICE_WORDS = 1  # so few words said while numbers show, and no number: asked again, not typed

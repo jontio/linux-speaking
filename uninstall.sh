@@ -101,6 +101,9 @@ many() { if [ "$1" = 1 ]; then echo "1 $2"; else echo "$1 $2s"; fi; }
 [ "$readings" = 0 ] || yours+=("$(many "$readings" sentence) read aloud for training ($(size "$state/training")), in $state/training")
 [ ! -f "$state/voice-test.wav" ] || yours+=("the recording made for the voice test ($(size "$state/voice-test.wav")), $state/voice-test.wav")
 [ "$noises" = 0 ] || yours+=("$(many "$noises" sound) marked \"that was a noise\" ($(size "$state/noises")), in $state/noises")
+samples=0
+if [ -d "$state/samples" ]; then samples="$(count "$state/samples" 'sample.json')"; fi
+[ "$samples" = 0 ] || yours+=("$(many "$samples" "dictation sample") ($(size "$state/samples")), in $state/samples")
 retrained=()   # models retrained to your voice: each has a trained.json in its folder
 for about in "$dir"/models/*/trained.json; do
   [ -f "$about" ] || continue
@@ -199,7 +202,7 @@ if [ "$keep" = 1 ] && [ -d "$state" ]; then
   for thing in "$state"/* "$state"/.[!.]*; do
     [ -e "$thing" ] || [ -L "$thing" ] || continue
     case "$(basename "$thing")" in
-      training|noises|voice-test.wav|voice-test.json) ;;
+      training|noises|samples|voice-test.wav|voice-test.json) ;;
       *) rm -rf "$thing" ;;
     esac
   done
